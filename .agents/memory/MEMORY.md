@@ -1,0 +1,1 @@
+- [Zod codegen compatibility](zod-codegen-compatibility.md) — keep OpenAPI numeric shapes aligned with the installed Zod/generator pair.
