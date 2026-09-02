@@ -27,7 +27,10 @@ if (!basePath) {
   );
 }
 
+const apiUrl = process.env.API_URL ?? 'http://127.0.0.1:5000';
+
 export default defineConfig({
+  envDir: path.resolve(import.meta.dirname, '..', '..'),
   base: basePath,
   plugins: [
     react(),
@@ -71,6 +74,12 @@ export default defineConfig({
     allowedHosts: true,
     fs: {
       strict: true,
+    },
+    proxy: {
+      '/api': {
+        target: apiUrl,
+        changeOrigin: true,
+      },
     },
   },
   preview: {

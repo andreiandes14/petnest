@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { ClerkProvider, Show, SignIn, SignUp, useClerk } from '@clerk/react';
+import { ClerkProvider, Show as ClerkShow, SignIn, SignUp, useClerk } from '@clerk/react';
 import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -71,10 +71,10 @@ import {
 
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
-const clerkPubKey = publishableKeyFromHost(
-  window.location.hostname,
-  import.meta.env.VITE_CLERK_PUBLISHABLE_KEY,
-);
+const configuredClerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const clerkPubKey = configuredClerkPubKey
+  ? publishableKeyFromHost(window.location.hostname, configuredClerkPubKey)
+  : null;
 const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
 const clerkAppearance = {
   theme: shadcn,
@@ -431,6 +431,10 @@ function AccountPage() {
   return <div className="animate-in"><p className="eyebrow">A quick look around</p><h1 className="page-title">Hi, Alex.</h1><p className="page-subtitle">Your pet-care life, in one calm corner.</p>{summary.isLoading ? <div className="mt-8"><LoadingState label="Preparing your account snapshot" /></div> : summary.isError ? <div className="mt-8"><ErrorState onRetry={() => summary.refetch()} /></div> : <><div className="stat-grid mt-8"><div className="stat-card surface-card"><p className="stat-value">{summary.data?.petCount ?? 0}</p><p className="stat-label">pet profiles</p></div><div className="stat-card surface-card"><p className="stat-value">{summary.data?.upcomingBookingCount ?? 0}</p><p className="stat-label">upcoming bookings</p></div><div className="stat-card surface-card"><p className="stat-value">{summary.data?.recordCount ?? 0}</p><p className="stat-label">care records</p></div></div><div className="mt-8 grid gap-5 lg:grid-cols-[1.1fr_.9fr]"><section className="surface-card p-5"><div className="flex items-end justify-between"><div><p className="eyebrow">Next on the calendar</p><h2 className="section-title mt-1">Your next visit</h2></div><Link href="/bookings" className="text-xs font-bold text-primary hover:underline" data-testid="link-account-bookings">All bookings</Link></div>{summary.data?.nextBooking ? <div className="mt-5 rounded-2xl bg-accent p-5 text-accent-foreground"><div className="flex items-start justify-between gap-3"><div><p className="font-display text-3xl">{summary.data.nextBooking.serviceName}</p><p className="mt-1 text-sm">{summary.data.nextBooking.providerName} · {summary.data.nextBooking.petName}</p></div><CalendarDays size={20} /></div><div className="mt-6 flex items-center justify-between border-t border-accent-foreground/15 pt-4 text-xs font-semibold"><span>{formatDate(summary.data.nextBooking.date)}</span><span>{summary.data.nextBooking.time}</span></div></div> : <EmptyState icon={CalendarDays} title="Nothing booked yet" copy="Find a provider when your pet is ready for their next bit of care." action={<Link href="/providers" className="btn btn-primary" data-testid="link-account-discover">Discover care</Link>} />}</section><section className="surface-card p-5"><div className="flex items-end justify-between"><div><p className="eyebrow">Latest notes</p><h2 className="section-title mt-1">Care trail</h2></div><Link href="/pets" className="text-xs font-bold text-primary hover:underline" data-testid="link-account-records">View records</Link></div>{recent.length ? <div className="mt-5 list-stack">{recent.slice(0, 3).map((record: CareRecord) => <div className="flex items-start gap-3 border-b border-border pb-3 last:border-0 last:pb-0" key={record.id} data-testid={`activity-record-${record.id}`}><div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-secondary text-secondary-foreground">{record.type === 'vaccination' ? <Syringe size={14} /> : <Sparkles size={14} />}</div><div><p className="text-sm font-semibold">{record.title}</p><p className="mt-1 text-xs text-muted-foreground">{record.providerName} · {formatDate(record.date)}</p></div></div>)}</div> : <p className="mt-5 text-sm text-muted-foreground">Your care notes will collect here after visits.</p>}</section></div></>}<div className="mt-8 surface-card flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-semibold">Alex Rivera</p><p className="mt-1 text-sm text-muted-foreground">alex.rivera@example.com · Portland, Oregon</p></div><div className="flex items-center gap-2 text-xs text-muted-foreground" data-testid="status-health"><span className={`h-2 w-2 rounded-full ${health.isError ? 'bg-destructive' : 'bg-primary'}`} /> PetNest services {health.isError ? 'are reconnecting' : 'are healthy'}</div></div><Show when="signed-in"><LogoutButton /></Show><div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground"><ShieldCheck size={14} className="text-primary" /> Your pet and care details stay private to your account.</div>{pets.isError ? <p className="mt-3 text-xs text-destructive">Pet profiles could not be refreshed right now.</p> : null}</div>;
 }
 
+function Show({ children, when }: { children: ReactNode; when: 'signed-in' | 'signed-out' }) {
+  return clerkPubKey ? <ClerkShow when={when}>{children}</ClerkShow> : null;
+}
+
 function LogoutButton() {
   const { signOut } = useClerk();
   return <button className="btn btn-ghost mt-4" onClick={() => signOut({ redirectUrl: basePath || '/' })} data-testid="button-sign-out">Sign out</button>;
@@ -445,11 +449,15 @@ function Router() {
 }
 
 function SignInPage() {
-  return <div className="auth-page"><SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} /></div>;
+  return clerkPubKey
+    ? <div className="auth-page"><SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} /></div>
+    : <div className="auth-page"><p>Set VITE_CLERK_PUBLISHABLE_KEY to enable sign in locally.</p></div>;
 }
 
 function SignUpPage() {
-  return <div className="auth-page"><SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} /></div>;
+  return clerkPubKey
+    ? <div className="auth-page"><SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} /></div>
+    : <div className="auth-page"><p>Set VITE_CLERK_PUBLISHABLE_KEY to enable account creation locally.</p></div>;
 }
 
 function MainRouter() {
@@ -475,9 +483,18 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 }
 
 function App() {
+  const content = (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Router />
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+
   return (
     <WouterRouter base={basePath}>
-      <ClerkProvider
+      {clerkPubKey ? <ClerkProvider
         publishableKey={clerkPubKey}
         proxyUrl={clerkProxyUrl}
         appearance={clerkAppearance}
@@ -487,14 +504,7 @@ function App() {
           signIn: { start: { title: 'Welcome back', subtitle: 'Sign in to keep their care close' } },
           signUp: { start: { title: 'Create your PetNest account', subtitle: 'A softer place to care for them' } },
         }}
-      >
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <Router />
-            <Toaster />
-          </TooltipProvider>
-        </QueryClientProvider>
-      </ClerkProvider>
+      >{content}</ClerkProvider> : content}
     </WouterRouter>
   );
 }
