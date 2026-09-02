@@ -10,6 +10,16 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: marketplace
+    description: Provider and service discovery
+  - name: pets
+    description: Customer pet profiles and care records
+  - name: bookings
+    description: Grooming and vaccination bookings
+  - name: orders
+    description: Pet supply orders
+  - name: dashboard
+    description: Customer dashboard summaries
 paths:
   /healthz:
     get:
@@ -24,7 +34,201 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /providers:
+    get:
+      operationId: listProviders
+      tags: [marketplace]
+      summary: List pet care providers
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [grooming, vaccination, supplies]
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Provider"
+  /providers/{providerId}:
+    get:
+      operationId: getProvider
+      tags: [marketplace]
+      summary: Get provider details
+      parameters:
+        - $ref: "#/components/parameters/ProviderId"
+      responses:
+        "200":
+          description: Provider detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderDetail"
+        "404":
+          description: Provider not found
+  /pets:
+    get:
+      operationId: listPets
+      tags: [pets]
+      summary: List the customer's pets
+      responses:
+        "200":
+          description: Pet list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pet"
+    post:
+      operationId: createPet
+      tags: [pets]
+      summary: Add a pet profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PetInput"
+      responses:
+        "201":
+          description: Pet created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /pets/{petId}:
+    patch:
+      operationId: updatePet
+      tags: [pets]
+      summary: Update a pet profile
+      parameters:
+        - $ref: "#/components/parameters/PetId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PetUpdate"
+      responses:
+        "200":
+          description: Updated pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /pets/{petId}/records:
+    get:
+      operationId: getPetRecords
+      tags: [pets]
+      summary: Get a pet's grooming and vaccination records
+      parameters:
+        - $ref: "#/components/parameters/PetId"
+      responses:
+        "200":
+          description: Pet care records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PetRecords"
+  /bookings:
+    get:
+      operationId: listBookings
+      tags: [bookings]
+      summary: List the customer's bookings
+      responses:
+        "200":
+          description: Booking list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+    post:
+      operationId: createBooking
+      tags: [bookings]
+      summary: Book a pet care service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BookingInput"
+      responses:
+        "201":
+          description: Booking created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+  /orders:
+    get:
+      operationId: listOrders
+      tags: [orders]
+      summary: List the customer's supply orders
+      responses:
+        "200":
+          description: Order list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Order"
+    post:
+      operationId: createOrder
+      tags: [orders]
+      summary: Place a pet supply order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderInput"
+      responses:
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get customer dashboard summary
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
 components:
+  parameters:
+    ProviderId:
+      name: providerId
+      in: path
+      required: true
+      schema:
+        type: number
+    PetId:
+      name: petId
+      in: path
+      required: true
+      schema:
+        type: number
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +237,174 @@ components:
           type: string
       required:
         - status
+    Provider:
+      type: object
+      required: [id, name, location, description, categories, rating, reviewCount, startingPrice, imageUrl]
+      properties:
+        id: { type: number }
+        name: { type: string }
+        location: { type: string }
+        description: { type: string }
+        categories:
+          type: array
+          items: { type: string }
+        rating: { type: number }
+        reviewCount: { type: number }
+        startingPrice: { type: number }
+        imageUrl: { type: string }
+        verified: { type: boolean }
+    ProviderService:
+      type: object
+      required: [id, name, description, price, durationMinutes, category]
+      properties:
+        id: { type: number }
+        name: { type: string }
+        description: { type: string }
+        price: { type: number }
+        durationMinutes: { type: number }
+        category: { type: string }
+        available: { type: boolean }
+    ProviderProduct:
+      type: object
+      required: [id, name, description, price, imageUrl, category, inStock]
+      properties:
+        id: { type: number }
+        name: { type: string }
+        description: { type: string }
+        price: { type: number }
+        imageUrl: { type: string }
+        category: { type: string }
+        inStock: { type: boolean }
+    ProviderDetail:
+      allOf:
+        - $ref: "#/components/schemas/Provider"
+        - type: object
+          required: [contact, hours, services, products]
+          properties:
+            contact: { type: string }
+            hours: { type: string }
+            services:
+              type: array
+              items: { $ref: "#/components/schemas/ProviderService" }
+            products:
+              type: array
+              items: { $ref: "#/components/schemas/ProviderProduct" }
+    Pet:
+      type: object
+      required: [id, name, species, breed, age, gender, weight, notes]
+      properties:
+        id: { type: number }
+        name: { type: string }
+        species: { type: string }
+        breed: { type: string }
+        age: { type: string }
+        gender: { type: string }
+        weight: { type: string }
+        notes: { type: string }
+        avatarUrl: { type: string }
+        nextVaccine: { type: ["string", "null"] }
+    PetInput:
+      type: object
+      required: [name, species, breed, age, gender, weight]
+      properties:
+        name: { type: string }
+        species: { type: string }
+        breed: { type: string }
+        age: { type: string }
+        gender: { type: string }
+        weight: { type: string }
+        notes: { type: string }
+    PetUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        species: { type: string }
+        breed: { type: string }
+        age: { type: string }
+        gender: { type: string }
+        weight: { type: string }
+        notes: { type: string }
+    CareRecord:
+      type: object
+      required: [id, type, title, providerName, date, status]
+      properties:
+        id: { type: number }
+        type: { type: string, enum: [grooming, vaccination] }
+        title: { type: string }
+        providerName: { type: string }
+        date: { type: string }
+        status: { type: string }
+        notes: { type: string }
+    PetRecords:
+      type: object
+      required: [grooming, vaccinations]
+      properties:
+        grooming:
+          type: array
+          items: { $ref: "#/components/schemas/CareRecord" }
+        vaccinations:
+          type: array
+          items: { $ref: "#/components/schemas/CareRecord" }
+    BookingInput:
+      type: object
+      required: [providerId, serviceId, petId, date, time]
+      properties:
+        providerId: { type: number }
+        serviceId: { type: number }
+        petId: { type: number }
+        date: { type: string }
+        time: { type: string }
+        notes: { type: string }
+    Booking:
+      type: object
+      required: [id, providerId, providerName, serviceName, petId, petName, date, time, status, price]
+      properties:
+        id: { type: number }
+        providerId: { type: number }
+        providerName: { type: string }
+        serviceName: { type: string }
+        petId: { type: number }
+        petName: { type: string }
+        date: { type: string }
+        time: { type: string }
+        status: { type: string }
+        price: { type: number }
+    OrderInput:
+      type: object
+      required: [providerId, items]
+      properties:
+        providerId: { type: number }
+        items:
+          type: array
+          items:
+            type: object
+            required: [productId, quantity]
+            properties:
+              productId: { type: number }
+              quantity: { type: number }
+    Order:
+      type: object
+      required: [id, providerId, providerName, total, status, itemCount, createdAt]
+      properties:
+        id: { type: number }
+        providerId: { type: number }
+        providerName: { type: string }
+        total: { type: number }
+        status: { type: string }
+        itemCount: { type: number }
+        createdAt: { type: string }
+    DashboardSummary:
+      type: object
+      required: [petCount, upcomingBookingCount, recordCount, nextBooking, recentActivity]
+      properties:
+        petCount: { type: number }
+        upcomingBookingCount: { type: number }
+        recordCount: { type: number }
+        nextBooking:
+          anyOf:
+            - $ref: "#/components/schemas/Booking"
+            - type: "null"
+        recentActivity:
+          type: array
+          items: { $ref: "#/components/schemas/CareRecord" }
 

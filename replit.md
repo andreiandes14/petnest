@@ -1,6 +1,6 @@
-# [Project name]
+# PetNest
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+PetNest is a multi-provider pet care marketplace for discovering local grooming, vaccination, and pet supply providers.
 
 ## Run & Operate
 
@@ -22,23 +22,34 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/petnest/src/App.tsx` — customer-facing routes, marketplace interactions, pet profiles, bookings, orders, and account views
+- `artifacts/petnest/src/index.css` — PetNest visual tokens and responsive UI styles
+- `artifacts/api-server/src/routes/petnest.ts` — provider, pet, record, booking, order, and dashboard API routes
+- `lib/api-spec/openapi.yaml` — source-of-truth API contract; regenerate clients after changes
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The primary customer journey is category → provider → service/product → pet or basket → booking/order.
+- Provider discovery remains public while account entry uses Replit-managed Clerk.
+- Marketplace seed data is served by the shared API server so the first-run experience demonstrates the full product surface.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Discover providers by category and search
+- View provider services, hours, pricing, and supply products
+- Book grooming or vaccination visits for a specific pet
+- Add and edit pet profiles and view grooming/vaccination records
+- Track bookings and supply orders
+- Sign in and create an account through branded Clerk screens
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+The project brief prioritizes simplicity, provider-first flows, prominent landing-page categories, and no chatbot or AI diagnosis/recommendations.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Keep `info.title: Api` in the OpenAPI document so generated import paths remain stable.
+- The generated client expects the API at `/api`; use the shared proxy rather than hardcoding localhost in browser code.
 
 ## Pointers
 
