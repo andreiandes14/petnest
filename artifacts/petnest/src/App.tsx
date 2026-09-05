@@ -58,6 +58,7 @@ import {
   CircleHelp,
   Clock3,
   FileText,
+  Heart,
   House,
   MapPin,
   Package,
@@ -174,6 +175,79 @@ function initials(value: string) {
 
 function statusLabel(value: string) {
   return value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : value;
+}
+
+/** Two-tone wordmark. Colour is swapped by CSS when it sits on the sidebar. */
+function BrandWord({ className = "" }: { className?: string }) {
+  return (
+    <span className={`brand-word ${className}`}>
+      <span className="brand-word-a">Pet</span>
+      <span className="brand-word-b">Nest</span>
+    </span>
+  );
+}
+
+function BrandLockup({ size = 38 }: { size?: number }) {
+  return (
+    <span className="brand-mark">
+      <span
+        className="brand-mark-badge"
+        style={{ width: size, height: size }}
+        aria-hidden
+      >
+        <PawPrint size={Math.round(size * 0.53)} />
+      </span>
+      <BrandWord />
+    </span>
+  );
+}
+
+/** Round social buttons shown under the auth forms, matching the design. */
+function SocialRow() {
+  return (
+    <div className="social-row">
+      <button
+        type="button"
+        className="social-btn"
+        aria-label="Continue with Google"
+        title="Google sign-in is not connected yet"
+        disabled
+      >
+        <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden>
+          <path
+            fill="#EA4335"
+            d="M12 10.2v3.9h5.5a4.7 4.7 0 0 1-2 3.1l3.2 2.5c1.9-1.7 3-4.3 3-7.3 0-.7-.1-1.4-.2-2z"
+          />
+          <path
+            fill="#34A853"
+            d="M12 22c2.7 0 5-.9 6.7-2.3l-3.2-2.5c-.9.6-2 1-3.5 1a6 6 0 0 1-5.6-4.1l-3.3 2.6A10 10 0 0 0 12 22"
+          />
+          <path
+            fill="#FBBC05"
+            d="M6.4 14.1a6 6 0 0 1 0-3.8L3.1 7.7a10 10 0 0 0 0 8.6z"
+          />
+          <path
+            fill="#4285F4"
+            d="M12 5.9c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.7l3.3 2.6A6 6 0 0 1 12 5.9"
+          />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className="social-btn"
+        aria-label="Continue with Facebook"
+        title="Facebook sign-in is not connected yet"
+        disabled
+      >
+        <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden>
+          <path
+            fill="#1877F2"
+            d="M22 12a10 10 0 1 0-11.6 9.9v-7H7.9V12h2.5V9.8c0-2.5 1.5-3.9 3.8-3.9 1.1 0 2.2.2 2.2.2v2.4h-1.2c-1.2 0-1.6.8-1.6 1.6V12h2.7l-.4 2.9h-2.3v7A10 10 0 0 0 22 12"
+          />
+        </svg>
+      </button>
+    </div>
+  );
 }
 
 function LoadingState({
@@ -294,13 +368,9 @@ function AppShell({ children }: { children: ReactNode }) {
             <span className="brand-mark-badge">
               <PawPrint size={20} />
             </span>
-            <span className="font-display text-2xl tracking-tight">
-              PetNest
-            </span>
+            <BrandWord />
           </Link>
-          <p className="mt-3 px-1 text-xs leading-5 text-sidebar-foreground/50">
-            The softer place to care for them.
-          </p>
+          <p className="sidebar-tagline">The softer place to care for them.</p>
           <nav className="sidebar-nav" aria-label="Main navigation">
             {shellNavItems.map(({ href, label, icon: Icon }) => (
               <Link
@@ -318,19 +388,17 @@ function AppShell({ children }: { children: ReactNode }) {
             <div className="sidebar-footer">
               <Show when="signed-in">
                 <div className="mb-4 flex items-center gap-3">
-                  <div className="grid h-9 w-9 place-items-center rounded-full bg-sidebar-primary font-mono text-xs font-bold text-sidebar-primary-foreground">
-                    AR
-                  </div>
+                  <div className="sidebar-user-avatar">AR</div>
                   <div>
                     <p className="text-sm font-semibold">Alex Rivera</p>
-                    <p className="text-xs text-sidebar-foreground/50">
+                    <p className="text-xs font-semibold text-muted-foreground">
                       Pet parent
                     </p>
                   </div>
                 </div>
                 <Link
                   href="/account"
-                  className="text-xs font-semibold text-sidebar-primary hover:underline"
+                  className="text-xs font-bold text-primary hover:underline"
                   data-testid="link-sidebar-account"
                 >
                   Manage account{" "}
@@ -338,19 +406,19 @@ function AppShell({ children }: { children: ReactNode }) {
                 </Link>
               </Show>
               <Show when="signed-out">
-                <div className="rounded-2xl border border-sidebar-foreground/10 p-4">
-                  <p className="text-sm font-semibold">
+                <div className="sidebar-promo">
+                  <p className="font-display text-base leading-tight">
                     Keep your care history close.
                   </p>
-                  <p className="mt-1 text-xs leading-5 text-sidebar-foreground/60">
+                  <p className="mt-2 text-xs font-semibold leading-5 opacity-75">
                     Sign in to save pets, visits, and orders.
                   </p>
                   <Link
                     href="/sign-in"
-                    className="mt-3 inline-flex text-xs font-bold text-sidebar-primary hover:underline"
+                    className="btn btn-primary mt-4 h-10 min-h-0 w-full text-xs"
                     data-testid="link-sidebar-sign-in"
                   >
-                    Sign in <ArrowRight size={12} className="ml-1" />
+                    Sign in <ArrowRight size={13} />
                   </Link>
                 </div>
               </Show>
@@ -457,65 +525,94 @@ function HeroSearch() {
 }
 
 function ProviderCard({ provider }: { provider: Provider }) {
+  const [saved, setSaved] = useState(false);
   return (
-    <Link
-      href={`/providers/${provider.id}`}
-      className="provider-card surface-card block"
-      data-testid={`card-provider-${provider.id}`}
-    >
-      {provider.imageUrl ? (
-        <img
-          className="provider-image"
-          src={provider.imageUrl}
-          alt={`${provider.name} storefront`}
-        />
-      ) : (
-        <div
-          className="provider-image grid place-items-center bg-muted text-4xl font-semibold text-muted-foreground"
-          aria-label="No provider image"
-        >
-          {initials(provider.name)}
+    <div className="wavy-shadow">
+      <Link
+        href={`/providers/${provider.id}`}
+        className="provider-card surface-card wavy block"
+        data-testid={`card-provider-${provider.id}`}
+      >
+        <div className="provider-media">
+          {provider.imageUrl ? (
+            <img
+              className="provider-image"
+              src={provider.imageUrl}
+              alt={`${provider.name} storefront`}
+            />
+          ) : (
+            <div
+              className={`provider-image provider-image-fallback tone-${provider.id % 4}`}
+              aria-label="No provider image"
+            >
+              {initials(provider.name)}
+            </div>
+          )}
+          <span
+            role="button"
+            tabIndex={0}
+            aria-pressed={saved}
+            aria-label={
+              saved
+                ? `Remove ${provider.name} from saved`
+                : `Save ${provider.name}`
+            }
+            className={`fav-btn ${saved ? "is-on" : ""}`}
+            data-testid={`button-save-provider-${provider.id}`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setSaved((current) => !current);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+              setSaved((current) => !current);
+            }}
+          >
+            <Heart size={16} fill={saved ? "currentColor" : "none"} />
+          </span>
         </div>
-      )}
-      <div className="provider-card-body">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="font-display text-2xl leading-none">
-              {provider.name}
-            </h3>
-            <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
-              <MapPin size={12} /> {provider.location}
-            </p>
+        <div className="provider-card-body">
+          {/* Name and rating lead, so the card can be scanned in one pass. */}
+          <div className="flex items-start justify-between gap-3">
+            <h3 className="provider-name">{provider.name}</h3>
+            <span className="rating shrink-0 pt-0.5">
+              <Star size={13} fill="currentColor" />{" "}
+              {provider.rating.toFixed(1)}
+            </span>
           </div>
-          {provider.verified ? (
-            <span className="tag tag-accent shrink-0">
-              <ShieldCheck size={12} className="mr-1" /> Verified
+          <p className="provider-meta">
+            <MapPin size={13} /> {provider.location}
+            <span aria-hidden>·</span>
+            <span>{provider.reviewCount} reviews</span>
+          </p>
+          <p className="provider-desc line-clamp-2">{provider.description}</p>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {provider.verified ? (
+              <span className="tag tag-accent">
+                <ShieldCheck size={12} className="mr-1" /> Verified
+              </span>
+            ) : null}
+            {provider.categories.map((category) => (
+              <span className="tag" key={category}>
+                {category}
+              </span>
+            ))}
+          </div>
+          <div className="provider-foot">
+            <span className="provider-price">
+              {money(provider.startingPrice)}
+              <span>starting price</span>
             </span>
-          ) : null}
-        </div>
-        <p className="mt-4 line-clamp-2 text-sm leading-6 text-muted-foreground">
-          {provider.description}
-        </p>
-        <div className="mt-5 flex items-center justify-between gap-3">
-          <span className="rating">
-            <Star size={12} fill="currentColor" /> {provider.rating.toFixed(1)}{" "}
-            <span className="font-sans font-normal text-muted-foreground">
-              ({provider.reviewCount})
+            <span className="btn btn-ghost h-9 min-h-0 px-4 text-xs">
+              View <ArrowRight size={13} />
             </span>
-          </span>
-          <span className="font-mono text-xs text-muted-foreground">
-            from {money(provider.startingPrice)}
-          </span>
+          </div>
         </div>
-        <div className="mt-4 flex flex-wrap gap-1.5">
-          {provider.categories.map((category) => (
-            <span className="tag" key={category}>
-              {category}
-            </span>
-          ))}
-        </div>
-      </div>
-    </Link>
+      </Link>
+    </div>
   );
 }
 
@@ -531,11 +628,13 @@ function Home({ authenticated = true }: { authenticated?: boolean }) {
   });
   const providers = providersQuery.data ?? [];
   const nextBooking = summaryQuery.data?.nextBooking;
+  const petCount = summaryQuery.data?.petCount;
+  const visitCount = summaryQuery.data?.upcomingBookingCount;
   return (
     <div className="animate-in">
-      <section className="hero-panel">
+      <section className="hero-panel wavy wavy-lg">
         <div className="hero-copy">
-          <p className="eyebrow text-secondary">Care, from people who get it</p>
+          <p className="eyebrow eyebrow-indigo">Care, from people who get it</p>
           <h1 className="hero-title mt-4">
             Good care starts
             <br />
@@ -547,125 +646,166 @@ function Home({ authenticated = true }: { authenticated?: boolean }) {
           </p>
           <HeroSearch />
         </div>
-        <div className="absolute bottom-7 right-8 hidden max-w-[210px] text-right text-xs leading-5 text-sidebar-foreground/50 md:block">
-          A calmer way to do the practical stuff. Because they deserve the good
-          stuff, too.
-        </div>
       </section>
 
-      <div className="stat-grid">
-        <div className="stat-card surface-card">
-          <p className="stat-value">{summaryQuery.data?.petCount ?? "—"}</p>
-          <p className="stat-label">pets in your nest</p>
-        </div>
-        <div className="stat-card surface-card">
-          <p className="stat-value">
-            {summaryQuery.data?.upcomingBookingCount ?? "—"}
-          </p>
-          <p className="stat-label">upcoming visits</p>
-        </div>
-        {!presentationMode ? (
-          <div className="stat-card surface-card">
-            <p className="stat-value">
-              {summaryQuery.data?.recordCount ?? "—"}
-            </p>
-            <p className="stat-label">care records kept</p>
-          </div>
-        ) : null}
-      </div>
-
-      <section>
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">Start here</p>
-            <h2 className="section-title mt-2">What does your pet need?</h2>
-          </div>
-          <Link
-            href="/providers"
-            className="btn btn-ghost"
-            data-testid="link-all-providers"
-          >
-            Browse all providers <ArrowRight size={14} />
-          </Link>
-        </div>
-        <div className="category-grid">
-          {visibleCategories.map(([key, meta]) => {
-            const Icon = meta.icon;
-            return (
-              <Link
-                href={`/providers?category=${key}`}
-                className="category-card"
-                key={key}
-                data-testid={`link-category-${key}`}
-              >
-                <span className="category-icon">
-                  <Icon size={20} />
-                </span>
-                <div>
-                  <h3 className="category-name">{meta.label}</h3>
-                  <p className="mt-1 max-w-[190px] text-xs leading-5 text-foreground/65">
-                    {meta.copy}
-                  </p>
-                </div>
-                <ChevronRight className="absolute bottom-5 right-5" size={18} />
-              </Link>
-            );
-          })}
-        </div>
-      </section>
-
-      <section>
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">Around Laguna</p>
-            <h2 className="section-title mt-2">A few good places</h2>
-          </div>
-        </div>
-        {providersQuery.isLoading ? (
-          <LoadingState label="Finding kind people for your pets" />
-        ) : providersQuery.isError ? (
-          <ErrorState onRetry={() => providersQuery.refetch()} />
-        ) : providers.length === 0 ? (
-          <EmptyState
-            icon={MapPin}
-            title="Your neighborhood is quiet"
-            copy="We are adding more local pet-care people every week. Try another search or check back soon."
-          />
-        ) : (
-          <div className="provider-grid">
-            {providers.slice(0, 3).map((provider) => (
-              <ProviderCard provider={provider} key={provider.id} />
-            ))}
-          </div>
-        )}
-      </section>
-
-      {nextBooking ? (
-        <section className="surface-card mt-8 flex flex-col justify-between gap-5 p-5 sm:flex-row sm:items-center">
-          <div className="flex items-start gap-3">
-            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-accent text-accent-foreground">
-              <CalendarDays size={20} />
+      {/* Browsing on the left, everything personal parked in a rail that
+          follows you down the page. */}
+      <div className="discover-layout">
+        <div className="discover-main">
+          <section>
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">Start here</p>
+                <h2 className="section-title mt-2">What does your pet need?</h2>
+              </div>
             </div>
-            <div>
+            <div className="category-grid">
+              {visibleCategories.map(([key, meta]) => {
+                const Icon = meta.icon;
+                return (
+                  <Link
+                    href={`/providers?category=${key}`}
+                    className="category-card wavy"
+                    key={key}
+                    data-testid={`link-category-${key}`}
+                  >
+                    <span className="category-icon">
+                      <Icon size={20} />
+                    </span>
+                    <div>
+                      <h3 className="category-name">{meta.label}</h3>
+                      <p className="category-copy">{meta.copy}</p>
+                    </div>
+                    <ChevronRight className="category-chevron" size={18} />
+                  </Link>
+                );
+              })}
+            </div>
+          </section>
+
+          <section>
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">Around Laguna</p>
+                <h2 className="section-title mt-2">A few good places</h2>
+              </div>
+              <Link
+                href="/providers"
+                className="btn btn-ghost"
+                data-testid="link-all-providers"
+              >
+                See all <ArrowRight size={14} />
+              </Link>
+            </div>
+            {providersQuery.isLoading ? (
+              <LoadingState label="Finding kind people for your pets" />
+            ) : providersQuery.isError ? (
+              <ErrorState onRetry={() => providersQuery.refetch()} />
+            ) : providers.length === 0 ? (
+              <EmptyState
+                icon={MapPin}
+                title="Your neighborhood is quiet"
+                copy="We are adding more local pet-care people every week. Try another search or check back soon."
+              />
+            ) : (
+              <div className="provider-grid">
+                {providers.slice(0, 4).map((provider) => (
+                  <ProviderCard provider={provider} key={provider.id} />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <aside className="discover-rail" aria-label="Your nest">
+          {nextBooking ? (
+            <div className="rail-card rail-next surface-card wavy">
               <p className="eyebrow">Next up</p>
-              <h3 className="mt-1 font-display text-2xl">
-                {nextBooking.serviceName} with {nextBooking.providerName}
-              </h3>
-              <p className="mt-1 text-sm text-muted-foreground">
+              <h3 className="rail-card-title">{nextBooking.serviceName}</h3>
+              <p className="rail-next-meta">
+                {nextBooking.providerName}
+                <br />
                 {formatDate(nextBooking.date)} at {nextBooking.time} ·{" "}
                 {nextBooking.petName}
               </p>
+              <Link
+                href="/bookings"
+                className="btn btn-primary mt-4 h-10 min-h-0 w-full text-xs"
+                data-testid="link-next-booking"
+              >
+                View booking <ArrowRight size={13} />
+              </Link>
             </div>
-          </div>
-          <Link
-            href="/bookings"
-            className="btn btn-secondary shrink-0"
-            data-testid="link-next-booking"
-          >
-            View booking <ArrowRight size={14} />
-          </Link>
-        </section>
-      ) : null}
+          ) : null}
+
+          {authenticated ? (
+            <div className="rail-card surface-card wavy">
+              <p className="eyebrow eyebrow-indigo">Your nest</p>
+              <ul className="rail-stats">
+                <li className="rail-stat">
+                  <span className="rail-stat-icon">
+                    <PawPrint size={17} />
+                  </span>
+                  <span className="rail-stat-value">{petCount ?? "—"}</span>
+                  <span className="rail-stat-label">
+                    {petCount === 1 ? "pet" : "pets"} in your nest
+                  </span>
+                </li>
+                <li className="rail-stat">
+                  <span className="rail-stat-icon">
+                    <CalendarDays size={17} />
+                  </span>
+                  <span className="rail-stat-value">{visitCount ?? "—"}</span>
+                  <span className="rail-stat-label">
+                    upcoming {visitCount === 1 ? "visit" : "visits"}
+                  </span>
+                </li>
+              </ul>
+            </div>
+          ) : (
+            <div className="rail-card rail-promo wavy">
+              <p className="rail-card-title mt-0">
+                Keep your care history close.
+              </p>
+              <p className="rail-next-meta">
+                Sign in to save pets, visits, and orders.
+              </p>
+              <Link
+                href="/sign-in"
+                className="btn btn-primary mt-4 h-10 min-h-0 w-full text-xs"
+                data-testid="link-rail-sign-in"
+              >
+                Sign in <ArrowRight size={13} />
+              </Link>
+            </div>
+          )}
+
+          <nav className="rail-card rail-actions surface-card wavy">
+            <p className="eyebrow eyebrow-sun">Jump to</p>
+            <Link
+              href="/pets"
+              className="rail-link"
+              data-testid="link-rail-pets"
+            >
+              <PawPrint size={16} /> My pets <ChevronRight size={15} />
+            </Link>
+            <Link
+              href="/bookings"
+              className="rail-link"
+              data-testid="link-rail-bookings"
+            >
+              <CalendarDays size={16} /> Bookings <ChevronRight size={15} />
+            </Link>
+            <Link
+              href="/providers"
+              className="rail-link"
+              data-testid="link-rail-providers"
+            >
+              <MapPin size={16} /> All providers <ChevronRight size={15} />
+            </Link>
+          </nav>
+        </aside>
+      </div>
     </div>
   );
 }
@@ -689,28 +829,45 @@ function ProvidersPage() {
   const query = useListProviders(queryParams, {
     query: { queryKey: getListProvidersQueryKey(queryParams) },
   });
+  const results: Provider[] = query.data ?? [];
+  const unfiltered = !category && !submittedSearch;
+  const spotlight =
+    unfiltered && results.length > 2
+      ? results.reduce((best, item) =>
+          item.rating > best.rating ? item : best,
+        )
+      : undefined;
+  const rest = spotlight
+    ? results.filter((item) => item.id !== spotlight.id)
+    : results;
   return (
     <div className="animate-in">
-      <p className="eyebrow">The PetNest directory</p>
-      <h1 className="page-title">
-        Find your kind
-        <br className="sm:hidden" /> of people.
-      </h1>
-      <p className="page-subtitle">
-        Browse providers who make the practical parts of pet care feel a little
-        more personal.
-      </p>
+      <header className="page-head">
+        <div>
+          <p className="eyebrow">The PetNest directory</p>
+          <h1 className="page-title">
+            Find your kind
+            <br className="sm:hidden" /> of people.
+          </h1>
+          <p className="page-subtitle">
+            Browse providers who make the practical parts of pet care feel a
+            little more personal.
+          </p>
+        </div>
+      </header>
+      {/* One sticky toolbar: search, filters, and the result count together,
+          so the controls stay reachable while scrolling a long list. */}
       <div className="surface-card filter-bar">
         <form
-          className="flex min-w-[230px] flex-1 items-center gap-2"
+          className="filter-bar-search"
           onSubmit={(event) => {
             event.preventDefault();
             setSubmittedSearch(search);
           }}
         >
-          <Search size={16} className="ml-1 text-muted-foreground" />
+          <Search size={17} className="shrink-0 text-muted-foreground" />
           <input
-            className="input h-10 border-0 bg-transparent p-0 shadow-none focus:shadow-none"
+            className="input"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search providers or neighborhoods"
@@ -718,7 +875,7 @@ function ProvidersPage() {
             data-testid="input-provider-search"
           />
           <button
-            className="btn btn-primary h-10"
+            className="btn btn-primary h-10 min-h-0"
             type="submit"
             data-testid="button-provider-search"
           >
@@ -744,33 +901,76 @@ function ProvidersPage() {
             </button>
           ))}
         </div>
-      </div>
-      <div className="mb-5 flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          {query.isLoading
-            ? "Looking around…"
-            : `${query.data?.length ?? 0} providers near you`}
-        </p>
-        {category ? (
-          <button
-            className="text-xs font-bold text-primary hover:underline"
-            onClick={() => setCategory("")}
-            data-testid="button-clear-filter"
-          >
-            Clear filter
-          </button>
-        ) : null}
+        <div className="ml-auto flex items-center gap-3">
+          <p className="result-count" aria-live="polite">
+            {query.isLoading
+              ? "Looking around…"
+              : `${results.length} providers`}
+          </p>
+          {category || submittedSearch ? (
+            <button
+              className="text-sm font-bold text-primary hover:underline"
+              onClick={() => {
+                setCategory("");
+                setSearch("");
+                setSubmittedSearch("");
+              }}
+              data-testid="button-clear-filter"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
       </div>
       {query.isLoading ? (
         <LoadingState />
       ) : query.isError ? (
         <ErrorState onRetry={() => query.refetch()} />
-      ) : query.data?.length ? (
-        <div className="provider-grid">
-          {query.data.map((provider) => (
-            <ProviderCard provider={provider} key={provider.id} />
-          ))}
-        </div>
+      ) : results.length ? (
+        <>
+          {/* With no filter applied, lead with the best-rated place as a
+              full-width spotlight, then the rest as a grid. */}
+          {spotlight ? (
+            <Link
+              href={`/providers/${spotlight.id}`}
+              className={`spotlight wavy tone-${spotlight.id % 4}`}
+              data-testid={`card-spotlight-${spotlight.id}`}
+            >
+              <span className="spotlight-mark" aria-hidden>
+                {initials(spotlight.name)}
+              </span>
+              <span className="spotlight-body">
+                <span className="eyebrow eyebrow-sun">Best rated nearby</span>
+                <span className="spotlight-name">{spotlight.name}</span>
+                <span className="spotlight-meta">
+                  <span className="rating">
+                    <Star size={13} fill="currentColor" />{" "}
+                    {spotlight.rating.toFixed(1)}
+                  </span>
+                  <span>
+                    <MapPin size={13} /> {spotlight.location}
+                  </span>
+                  <span>{spotlight.reviewCount} reviews</span>
+                </span>
+                <span className="spotlight-copy">{spotlight.description}</span>
+                <span className="spotlight-foot">
+                  <span className="provider-price">
+                    {money(spotlight.startingPrice)}
+                    <span>starting price</span>
+                  </span>
+                  <span className="btn btn-primary h-10 min-h-0 text-xs">
+                    View provider <ArrowRight size={13} />
+                  </span>
+                </span>
+              </span>
+            </Link>
+          ) : null}
+          <div className="provider-grid">
+            {rest.map((provider) => (
+              <ProviderCard provider={provider} key={provider.id} />
+            ))}
+          </div>
+        </>
       ) : (
         <EmptyState
           icon={MapPin}
@@ -1344,7 +1544,7 @@ function ProviderDetailPage() {
           />
         ) : (
           <div
-            className="detail-image grid place-items-center bg-muted text-6xl font-semibold text-muted-foreground"
+            className={`detail-image provider-image-fallback tone-${provider.id % 4}`}
             aria-label="No provider image"
           >
             {initials(provider.name)}
@@ -1538,20 +1738,105 @@ function BookingsPage() {
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() }),
   });
-  const bookings = query.data ?? [];
+  const bookings: Booking[] = query.data ?? [];
+  const isOver = (status: string) =>
+    ["completed", "cancelled"].includes(status.toLowerCase());
+  const upcoming = bookings.filter((booking) => !isOver(booking.status));
+  const past = bookings.filter((booking) => isOver(booking.status));
+
+  const renderBooking = (booking: Booking) => {
+    const when = new Date(booking.date);
+    const valid = !Number.isNaN(when.getTime());
+    return (
+      <li
+        className={`booking-row status-tone-${booking.status.toLowerCase()}`}
+        key={booking.id}
+        data-testid={`row-booking-${booking.id}`}
+      >
+        <div className="booking-date" aria-hidden>
+          <span className="booking-date-day">
+            {valid ? when.getDate() : "—"}
+          </span>
+          <span className="booking-date-month">
+            {valid
+              ? when.toLocaleDateString(undefined, { month: "short" })
+              : ""}
+          </span>
+        </div>
+        <div className="booking-main">
+          <h3 className="booking-service">{booking.serviceName}</h3>
+          <p className="booking-meta">
+            <Link
+              href={`/providers/${booking.providerId}`}
+              className="booking-provider"
+              data-testid={`link-booking-provider-${booking.id}`}
+            >
+              {booking.providerName}
+            </Link>
+            <span aria-hidden>·</span>
+            <span>
+              <PawPrint size={12} /> {booking.petName}
+            </span>
+            <span aria-hidden>·</span>
+            <span>
+              <Clock3 size={12} /> {booking.time}
+            </span>
+          </p>
+          {booking.status.toLowerCase() === "pending" ? (
+            <p className="booking-note">
+              Waiting for {booking.providerName} to confirm.
+            </p>
+          ) : null}
+        </div>
+        <div className="booking-side">
+          <span className={`status status-${booking.status.toLowerCase()}`}>
+            {statusLabel(booking.status)}
+          </span>
+          <span className="booking-price">{money(booking.price)}</span>
+        </div>
+        {!isOver(booking.status) ? (
+          <button
+            className="btn btn-ghost booking-cancel"
+            disabled={cancel.isPending}
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Cancel this booking? Its history will be preserved.",
+                )
+              )
+                cancel.mutate(booking.id);
+            }}
+            data-testid={`button-cancel-booking-${booking.id}`}
+          >
+            Cancel
+          </button>
+        ) : null}
+      </li>
+    );
+  };
+
   return (
     <div className="animate-in">
-      <p className="eyebrow">Your plans</p>
-      <h1 className="page-title">
-        Bookings,
-        <br />
-        kept simple.
-      </h1>
-      <p className="page-subtitle">
-        Everything you have coming up, plus a clear little trail of where you
-        have been.
-      </p>
-      <div className="mt-8">
+      <header className="page-head">
+        <div>
+          <p className="eyebrow">Your plans</p>
+          <h1 className="page-title">
+            Bookings,
+            <br />
+            kept simple.
+          </h1>
+        </div>
+        <div className="page-head-counts">
+          <span className="head-count">
+            <strong>{upcoming.length}</strong> upcoming
+          </span>
+          <span className="head-count">
+            <strong>{past.length}</strong> in history
+          </span>
+        </div>
+      </header>
+
+      <div className="mt-7">
         {query.isLoading ? (
           <LoadingState label="Finding your upcoming care" />
         ) : query.isError ? (
@@ -1572,91 +1857,32 @@ function BookingsPage() {
             }
           />
         ) : (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>ID / Visit</th>
-                  <th>Pet</th>
-                  <th>When</th>
-                  <th>Status</th>
-                  <th className="text-right">Price</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {bookings.map((booking) => (
-                  <tr
-                    key={booking.id}
-                    data-testid={`row-booking-${booking.id}`}
-                  >
-                    <td>
-                      <p className="font-mono text-xs text-muted-foreground">
-                        #{booking.id}
-                      </p>
-                      <p className="font-semibold">{booking.serviceName}</p>
-                      <Link
-                        href={`/providers/${booking.providerId}`}
-                        className="mt-1 inline-block text-xs text-muted-foreground hover:text-primary"
-                        data-testid={`link-booking-provider-${booking.id}`}
-                      >
-                        {booking.providerName}
-                      </Link>
-                    </td>
-                    <td>{booking.petName}</td>
-                    <td>
-                      <p>{formatDate(booking.date)}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {booking.time}
-                      </p>
-                    </td>
-                    <td>
-                      <span
-                        className={`status status-${booking.status.toLowerCase()}`}
-                      >
-                        {statusLabel(booking.status)}
-                      </span>
-                      {booking.status.toLowerCase() === "pending" ? (
-                        <p className="mt-2 max-w-52 text-xs text-muted-foreground">
-                          Your booking request has been submitted and is waiting
-                          for confirmation.
-                        </p>
-                      ) : null}
-                    </td>
-                    <td className="text-right font-mono">
-                      {money(booking.price)}
-                    </td>
-                    <td>
-                      {!["completed", "cancelled"].includes(
-                        booking.status.toLowerCase(),
-                      ) ? (
-                        <button
-                          className="btn btn-ghost"
-                          disabled={cancel.isPending}
-                          onClick={() => {
-                            if (
-                              window.confirm(
-                                "Cancel this booking? Its history will be preserved.",
-                              )
-                            )
-                              cancel.mutate(booking.id);
-                          }}
-                          data-testid={`button-cancel-booking-${booking.id}`}
-                        >
-                          Cancel Booking
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <>
+            {/* A dated timeline reads far faster than a table of rows. */}
+            {upcoming.length ? (
+              <section className="booking-group">
+                <h2 className="booking-group-title">
+                  <span className="eyebrow eyebrow-indigo">Coming up</span>
+                </h2>
+                <ul className="booking-list">{upcoming.map(renderBooking)}</ul>
+              </section>
+            ) : null}
+            {past.length ? (
+              <section className="booking-group">
+                <h2 className="booking-group-title">
+                  <span className="eyebrow">Already done</span>
+                </h2>
+                <ul className="booking-list is-past">
+                  {past.map(renderBooking)}
+                </ul>
+              </section>
+            ) : null}
             {cancel.isError ? (
-              <p className="p-4 text-sm text-destructive">
+              <p className="mt-4 text-sm font-semibold text-destructive">
                 {cancel.error.message}
               </p>
             ) : null}
-          </div>
+          </>
         )}
       </div>
     </div>
@@ -1804,58 +2030,90 @@ function CustomerProfilePage() {
     setUser(result.user);
     setSaved(true);
   };
+  const displayName =
+    [firstName, lastName].filter(Boolean).join(" ") || user?.email || "You";
   return (
     <div className="animate-in">
-      <p className="eyebrow">Customer profile</p>
-      <h1 className="page-title">Your account.</h1>
-      <p className="page-subtitle">
-        Keep the basic details connected to your PetNest account up to date.
-      </p>
-      <div className="surface-card mt-8 max-w-2xl p-6">
-        <div className="form-grid">
-          <div className="form-field">
-            <label className="form-label" htmlFor="profile-first-name">
-              First name
-            </label>
-            <input
-              className="input"
-              id="profile-first-name"
-              value={firstName}
-              onChange={(event) => {
-                setFirstName(event.target.value);
-                setSaved(false);
-              }}
-            />
+      <header className="page-head">
+        <div>
+          <p className="eyebrow">Customer profile</p>
+          <h1 className="page-title">Your account.</h1>
+          <p className="page-subtitle">
+            Keep the basic details connected to your PetNest account up to date.
+          </p>
+        </div>
+      </header>
+
+      {/* Identity on the left, editing on the right. */}
+      <div className="account-layout">
+        <aside className="identity-card wavy">
+          <span className="identity-avatar">{initials(displayName)}</span>
+          <h2 className="identity-name">{displayName}</h2>
+          <p className="identity-email">{user?.email}</p>
+          <span className="tag identity-role">
+            {user?.role === "provider"
+              ? "Provider"
+              : user?.role === "admin"
+                ? "Admin"
+                : "Pet parent"}
+          </span>
+        </aside>
+
+        <div className="account-form surface-card">
+          <p className="eyebrow eyebrow-indigo">Details</p>
+          <div className="form-grid mt-5">
+            <div className="form-field">
+              <label className="form-label" htmlFor="profile-first-name">
+                First name
+              </label>
+              <input
+                className="input"
+                id="profile-first-name"
+                value={firstName}
+                onChange={(event) => {
+                  setFirstName(event.target.value);
+                  setSaved(false);
+                }}
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label" htmlFor="profile-last-name">
+                Last name
+              </label>
+              <input
+                className="input"
+                id="profile-last-name"
+                value={lastName}
+                onChange={(event) => {
+                  setLastName(event.target.value);
+                  setSaved(false);
+                }}
+              />
+            </div>
+            <div className="form-field full">
+              <label className="form-label">Email</label>
+              <input className="input" value={user?.email ?? ""} disabled />
+              <p className="field-hint">
+                Your email is how providers recognise your bookings, so it
+                cannot be changed here.
+              </p>
+            </div>
           </div>
-          <div className="form-field">
-            <label className="form-label" htmlFor="profile-last-name">
-              Last name
-            </label>
-            <input
-              className="input"
-              id="profile-last-name"
-              value={lastName}
-              onChange={(event) => {
-                setLastName(event.target.value);
-                setSaved(false);
-              }}
-            />
-          </div>
-          <div className="form-field full">
-            <label className="form-label">Email</label>
-            <input className="input" value={user?.email ?? ""} disabled />
+          <div className="account-actions">
+            <button
+              className="btn btn-primary"
+              onClick={save}
+              disabled={!firstName}
+            >
+              Save profile
+            </button>
+            {saved ? (
+              <span className="save-flag">
+                <Check size={14} /> Profile saved
+              </span>
+            ) : null}
           </div>
         </div>
-        <button
-          className="btn btn-primary mt-6"
-          onClick={save}
-          disabled={!firstName}
-        >
-          Save profile
-        </button>
-        {saved ? (
-          <p className="mt-3 text-sm text-primary">Profile saved.</p>
-        ) : null}
       </div>
     </div>
   );
@@ -2170,157 +2428,172 @@ function PetForm({
   const pending =
     createPet.isPending || updatePet.isPending || deletePet.isPending;
   return (
-    <div className="modal-backdrop">
-      <div className="modal animate-in" role="dialog" aria-modal="true">
-        <div className="flex items-start justify-between">
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="modal modal-split animate-in"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pet-form-title"
+      >
+        <header className="modal-head">
           <div>
             <p className="eyebrow">
               {pet ? "Update their profile" : "Welcome to the nest"}
             </p>
-            <h2 className="mt-2 font-display text-3xl">
+            <h2 id="pet-form-title" className="modal-title">
               {pet ? `Edit ${pet.name}` : "Add a pet"}
             </h2>
           </div>
           <button
-            className="btn btn-ghost btn-icon"
+            className="modal-close"
             onClick={onClose}
             aria-label="Close pet form"
             data-testid="button-close-pet-form"
           >
             <X size={17} />
           </button>
-        </div>
-        <div className="form-grid mt-7">
-          <div className="form-field">
-            <label className="form-label" htmlFor="pet-name">
-              Name
-            </label>
-            <input
-              className="input"
-              id="pet-name"
-              value={form.name}
-              onChange={(event) => change("name", event.target.value)}
-              placeholder="Their everyday name"
-              data-testid="input-pet-name"
-            />
+        </header>
+        <div className="modal-body">
+          <div className="form-grid">
+            <div className="form-field">
+              <label className="form-label" htmlFor="pet-name">
+                Name
+              </label>
+              <input
+                className="input"
+                id="pet-name"
+                value={form.name}
+                onChange={(event) => change("name", event.target.value)}
+                placeholder="Their everyday name"
+                data-testid="input-pet-name"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label" htmlFor="pet-species">
+                Species
+              </label>
+              <select
+                className="input select"
+                id="pet-species"
+                value={form.species}
+                onChange={(event) => change("species", event.target.value)}
+                data-testid="select-pet-species"
+              >
+                <option>Dog</option>
+                <option>Cat</option>
+                <option>Rabbit</option>
+                <option>Other</option>
+              </select>
+            </div>
+            <div className="form-field">
+              <label className="form-label" htmlFor="pet-breed">
+                Breed
+              </label>
+              <input
+                className="input"
+                id="pet-breed"
+                value={form.breed}
+                onChange={(event) => change("breed", event.target.value)}
+                placeholder="e.g. Corgi mix"
+                data-testid="input-pet-breed"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label" htmlFor="pet-age">
+                Age
+              </label>
+              <input
+                className="input"
+                id="pet-age"
+                value={form.age}
+                onChange={(event) => change("age", event.target.value)}
+                placeholder="e.g. 3 years"
+                data-testid="input-pet-age"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label" htmlFor="pet-gender">
+                Gender
+              </label>
+              <select
+                className="input select"
+                id="pet-gender"
+                value={form.gender}
+                onChange={(event) => change("gender", event.target.value)}
+                data-testid="select-pet-gender"
+              >
+                <option value="">Select</option>
+                <option>Female</option>
+                <option>Male</option>
+                <option>Unknown</option>
+              </select>
+            </div>
+            <div className="form-field">
+              <label className="form-label" htmlFor="pet-weight">
+                Weight
+              </label>
+              <input
+                className="input"
+                id="pet-weight"
+                value={form.weight}
+                onChange={(event) => change("weight", event.target.value)}
+                placeholder="e.g. 28 lb"
+                data-testid="input-pet-weight"
+              />
+            </div>
+            <div className="form-field full">
+              <label className="form-label" htmlFor="pet-notes">
+                Notes for providers
+              </label>
+              <textarea
+                className="input h-24 resize-none py-3"
+                id="pet-notes"
+                value={form.notes}
+                onChange={(event) => change("notes", event.target.value)}
+                placeholder="Sensitivities, favorite treats, things worth knowing"
+                data-testid="textarea-pet-notes"
+              />
+            </div>
           </div>
-          <div className="form-field">
-            <label className="form-label" htmlFor="pet-species">
-              Species
-            </label>
-            <select
-              className="input select"
-              id="pet-species"
-              value={form.species}
-              onChange={(event) => change("species", event.target.value)}
-              data-testid="select-pet-species"
+          {createPet.isError || updatePet.isError || deletePet.isError ? (
+            <p
+              className="mt-4 text-sm font-semibold text-destructive"
+              data-testid="text-pet-form-error"
             >
-              <option>Dog</option>
-              <option>Cat</option>
-              <option>Rabbit</option>
-              <option>Other</option>
-            </select>
-          </div>
-          <div className="form-field">
-            <label className="form-label" htmlFor="pet-breed">
-              Breed
-            </label>
-            <input
-              className="input"
-              id="pet-breed"
-              value={form.breed}
-              onChange={(event) => change("breed", event.target.value)}
-              placeholder="e.g. Corgi mix"
-              data-testid="input-pet-breed"
-            />
-          </div>
-          <div className="form-field">
-            <label className="form-label" htmlFor="pet-age">
-              Age
-            </label>
-            <input
-              className="input"
-              id="pet-age"
-              value={form.age}
-              onChange={(event) => change("age", event.target.value)}
-              placeholder="e.g. 3 years"
-              data-testid="input-pet-age"
-            />
-          </div>
-          <div className="form-field">
-            <label className="form-label" htmlFor="pet-gender">
-              Gender
-            </label>
-            <select
-              className="input select"
-              id="pet-gender"
-              value={form.gender}
-              onChange={(event) => change("gender", event.target.value)}
-              data-testid="select-pet-gender"
-            >
-              <option value="">Select</option>
-              <option>Female</option>
-              <option>Male</option>
-              <option>Unknown</option>
-            </select>
-          </div>
-          <div className="form-field">
-            <label className="form-label" htmlFor="pet-weight">
-              Weight
-            </label>
-            <input
-              className="input"
-              id="pet-weight"
-              value={form.weight}
-              onChange={(event) => change("weight", event.target.value)}
-              placeholder="e.g. 28 lb"
-              data-testid="input-pet-weight"
-            />
-          </div>
-          <div className="form-field full">
-            <label className="form-label" htmlFor="pet-notes">
-              Notes for providers
-            </label>
-            <textarea
-              className="input h-24 resize-none py-3"
-              id="pet-notes"
-              value={form.notes}
-              onChange={(event) => change("notes", event.target.value)}
-              placeholder="Sensitivities, favorite treats, things worth knowing"
-              data-testid="textarea-pet-notes"
-            />
-          </div>
+              We could not save this profile. Please try again.
+            </p>
+          ) : null}
         </div>
-        {createPet.isError || updatePet.isError || deletePet.isError ? (
-          <p
-            className="mt-4 text-sm text-destructive"
-            data-testid="text-pet-form-error"
-          >
-            We could not save this profile. Please try again.
-          </p>
-        ) : null}
-        {pet ? (
+        <footer className="modal-foot">
+          {pet ? (
+            <button
+              className="btn btn-ghost text-destructive"
+              onClick={remove}
+              disabled={pending}
+              data-testid="button-remove-pet"
+            >
+              <Trash2 size={15} /> Remove
+            </button>
+          ) : null}
           <button
-            className="btn btn-ghost mt-6 w-full text-destructive"
-            onClick={remove}
-            disabled={pending}
-            data-testid="button-remove-pet"
+            className="btn btn-primary"
+            onClick={submit}
+            disabled={pending || !form.name || !form.breed || !form.age}
+            data-testid="button-save-pet"
           >
-            <Trash2 size={15} /> Remove Pet
+            {pending
+              ? "Saving profile…"
+              : pet
+                ? "Save changes"
+                : "Add to my nest"}
           </button>
-        ) : null}
-        <button
-          className="btn btn-primary mt-3 w-full"
-          onClick={submit}
-          disabled={pending || !form.name || !form.breed || !form.age}
-          data-testid="button-save-pet"
-        >
-          {pending
-            ? "Saving profile…"
-            : pet
-              ? "Save changes"
-              : "Add to my nest"}
-        </button>
+        </footer>
       </div>
     </div>
   );
@@ -2339,51 +2612,52 @@ function PetCard({
 }) {
   return (
     <button
-      className={`pet-card surface-card block w-full text-left ${selected ? "border-primary ring-2 ring-primary/15" : ""}`}
+      className={`pet-card wavy tone-${pet.id % 4} ${selected ? "is-selected" : ""}`}
       onClick={onSelect}
       data-testid={`card-pet-${pet.id}`}
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="pet-avatar">
-            {pet.avatarUrl ? (
-              <img
-                className="h-full w-full rounded-[inherit] object-cover"
-                src={pet.avatarUrl}
-                alt=""
-              />
-            ) : (
-              initials(pet.name)
-            )}
-          </div>
-          <div>
-            <h3 className="font-display text-2xl">{pet.name}</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {pet.breed} · {pet.age}
-            </p>
-          </div>
-        </div>
-        <span className="tag">{pet.species}</span>
-      </div>
-      <div className="mt-5 grid grid-cols-2 gap-3 border-t border-border pt-4 text-xs">
-        <div>
-          <p className="text-muted-foreground">Weight</p>
-          <p className="mt-1 font-semibold">{pet.weight || "Not added"}</p>
-        </div>
-        <div>
-          <p className="text-muted-foreground">Next vaccine</p>
-          <p className="mt-1 font-semibold">{formatDate(pet.nextVaccine)}</p>
-        </div>
-      </div>
-      <span
-        className="mt-4 inline-flex items-center gap-1 text-xs font-bold text-primary"
-        onClick={(event) => {
-          event.stopPropagation();
-          onEdit();
-        }}
-        data-testid={`button-edit-pet-${pet.id}`}
-      >
-        <Pencil size={13} /> Edit profile
+      {/* A tinted crown carries the pet's portrait; the body holds the facts. */}
+      <span className="pet-crown">
+        <span className="pet-avatar">
+          {pet.avatarUrl ? (
+            <img
+              className="h-full w-full rounded-[inherit] object-cover"
+              src={pet.avatarUrl}
+              alt=""
+            />
+          ) : (
+            initials(pet.name)
+          )}
+        </span>
+        <span className="tag pet-species">{pet.species}</span>
+      </span>
+      <span className="pet-body">
+        <span className="pet-name">{pet.name}</span>
+        <span className="pet-sub">
+          {pet.breed} · {pet.age}
+        </span>
+        <span className="pet-facts">
+          <span className="pet-fact">
+            <span className="pet-fact-label">Weight</span>
+            <span className="pet-fact-value">{pet.weight || "Not added"}</span>
+          </span>
+          <span className="pet-fact">
+            <span className="pet-fact-label">Next vaccine</span>
+            <span className="pet-fact-value">
+              {formatDate(pet.nextVaccine)}
+            </span>
+          </span>
+        </span>
+        <span
+          className="pet-edit"
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit();
+          }}
+          data-testid={`button-edit-pet-${pet.id}`}
+        >
+          <Pencil size={13} /> Edit profile
+        </span>
       </span>
     </button>
   );
@@ -2481,7 +2755,7 @@ function PetsPage() {
   };
   return (
     <div className="animate-in">
-      <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+      <header className="page-head">
         <div>
           <p className="eyebrow">The nest</p>
           <h1 className="page-title">
@@ -2494,14 +2768,12 @@ function PetsPage() {
             them like you do.
           </p>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={() => setModal("create")}
-          data-testid="button-add-pet"
-        >
-          <Plus size={16} /> Add a pet
-        </button>
-      </div>
+        <div className="page-head-counts">
+          <span className="head-count">
+            <strong>{pets.length}</strong> in the nest
+          </span>
+        </div>
+      </header>
       <div className="mt-8">
         {query.isLoading ? (
           <LoadingState label="Loading your pet profiles" />
@@ -2519,6 +2791,20 @@ function PetsPage() {
                   onEdit={() => setModal(pet)}
                 />
               ))}
+              {/* The add action lives in the grid, where the pets are. */}
+              <button
+                className="pet-add"
+                onClick={() => setModal("create")}
+                data-testid="button-add-pet"
+              >
+                <span className="pet-add-icon">
+                  <Plus size={22} />
+                </span>
+                <span className="pet-add-label">Add a pet</span>
+                <span className="pet-add-copy">
+                  Name, breed, and the small things worth knowing.
+                </span>
+              </button>
             </div>
             {selectedPet ? <RecordsPanel pet={selectedPet} /> : null}
           </>
@@ -2660,17 +2946,17 @@ function AccountPage() {
       ) : (
         <>
           <div className="stat-grid mt-8">
-            <div className="stat-card surface-card">
+            <div className="stat-card surface-card wavy">
               <p className="stat-value">{summary.data?.petCount ?? 0}</p>
               <p className="stat-label">pet profiles</p>
             </div>
-            <div className="stat-card surface-card">
+            <div className="stat-card surface-card wavy">
               <p className="stat-value">
                 {summary.data?.upcomingBookingCount ?? 0}
               </p>
               <p className="stat-label">upcoming bookings</p>
             </div>
-            <div className="stat-card surface-card">
+            <div className="stat-card surface-card wavy">
               <p className="stat-value">{summary.data?.recordCount ?? 0}</p>
               <p className="stat-label">care records</p>
             </div>
@@ -2908,11 +3194,11 @@ function SignInPage() {
   return (
     <div className="auth-page">
       <form className="auth-card surface-card" onSubmit={submit}>
-        <div className="text-center">
-          <p className="eyebrow">PetNest</p>
-          <h1 className="mt-2 font-display text-4xl">Welcome back</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Sign in with your email and password.
+        <div className="auth-brand text-center">
+          <BrandLockup size={48} />
+          <h1 className="auth-title mt-1">Welcome back</h1>
+          <p className="text-sm font-semibold text-muted-foreground">
+            Sign in to look after your nest.
           </p>
         </div>
         <div className="mt-7 space-y-4">
@@ -2961,15 +3247,11 @@ function SignInPage() {
         >
           {submitting ? "Signing in…" : "Sign in"}
         </button>
-        <p className="mt-5 text-center text-sm text-muted-foreground">
-          Need an account?{" "}
-          <Link
-            href="/sign-up"
-            className="font-semibold text-primary hover:underline"
-          >
-            Sign up
-          </Link>
-        </p>
+        <Link href="/sign-up" className="btn btn-ghost mt-3 w-full">
+          Create account
+        </Link>
+        <p className="auth-divider">Or sign in with</p>
+        <SocialRow />
       </form>
     </div>
   );
@@ -3032,10 +3314,10 @@ function SignUpPage() {
   return (
     <div className="auth-page">
       <form className="auth-card surface-card" onSubmit={submit}>
-        <div className="text-center">
-          <p className="eyebrow">Welcome to PetNest</p>
-          <h1 className="mt-2 font-display text-4xl">Create your account</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
+        <div className="auth-brand text-center">
+          <BrandLockup size={48} />
+          <h1 className="auth-title mt-1">Create account</h1>
+          <p className="text-sm font-semibold text-muted-foreground">
             Start as a pet parent. No verification required.
           </p>
         </div>
@@ -3138,11 +3420,13 @@ function SignUpPage() {
         >
           {submitting ? "Creating account…" : "Create account"}
         </button>
-        <p className="mt-5 text-center text-sm text-muted-foreground">
+        <p className="auth-divider">Or sign up with</p>
+        <SocialRow />
+        <p className="mt-6 text-center text-sm font-semibold text-muted-foreground">
           Already have an account?{" "}
           <Link
             href="/sign-in"
-            className="font-semibold text-primary hover:underline"
+            className="font-bold text-primary hover:underline"
           >
             Sign in
           </Link>
