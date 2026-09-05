@@ -10,6 +10,8 @@ export interface BookingInput {
   providerId: number;
   serviceId: number;
   petId: number;
+  /** @nullable */
+  recordId: number | null;
   date: string;
   time: string;
   notes?: string;

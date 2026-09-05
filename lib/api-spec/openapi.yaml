@@ -347,24 +347,27 @@ components:
           items: { $ref: "#/components/schemas/CareRecord" }
     BookingInput:
       type: object
-      required: [providerId, serviceId, petId, date, time]
+      required: [providerId, serviceId, petId, recordId, date, time]
       properties:
         providerId: { type: number }
         serviceId: { type: number }
         petId: { type: number }
+        recordId: { type: ["number", "null"] }
         date: { type: string }
         time: { type: string }
         notes: { type: string }
     Booking:
       type: object
-      required: [id, providerId, providerName, serviceName, petId, petName, date, time, status, price]
+      required: [id, providerId, providerName, serviceName, serviceCategory, petId, petName, recordId, date, time, status, price]
       properties:
         id: { type: number }
         providerId: { type: number }
         providerName: { type: string }
         serviceName: { type: string }
+        serviceCategory: { type: string, enum: [grooming, vaccination] }
         petId: { type: number }
         petName: { type: string }
+        recordId: { type: ["number", "null"] }
         date: { type: string }
         time: { type: string }
         status: { type: string }

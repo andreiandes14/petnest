@@ -1,9 +1,14 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Space+Mono:wght@400;700&display=swap');
 @layer theme, base, clerk, components, utilities;
 @import 'tailwindcss';
-@import '@clerk/themes/shadcn.css';
 @import 'tw-animate-css';
 @plugin "@tailwindcss/typography";
+
+/* Keep later-stage modules implemented but out of the 30% presentation build. */
+.presentation-mode .detail-panels > section:nth-child(2),
+.presentation-mode .record-layout {
+  display: none;
+}
 
 @custom-variant dark (&:is(.dark *));
 
@@ -386,6 +391,8 @@
 }
 
 .petnest-app { min-height: 100dvh; background: hsl(var(--background)); }
+.auth-page { min-height:100dvh; display:grid; place-items:center; padding:24px; background:hsl(var(--background)); }
+.auth-card { width:min(100%,440px); padding:30px; }
 .font-display { font-family: var(--app-font-serif); }
 .font-mono { font-family: var(--app-font-mono); }
 .app-shell { display: grid; grid-template-columns: 252px minmax(0, 1fr); min-height: 100dvh; }

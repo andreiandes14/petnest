@@ -5,14 +5,18 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { BookingServiceCategory } from './bookingServiceCategory';
 
 export interface Booking {
   id: number;
   providerId: number;
   providerName: string;
   serviceName: string;
+  serviceCategory: BookingServiceCategory;
   petId: number;
   petName: string;
+  /** @nullable */
+  recordId: number | null;
   date: string;
   time: string;
   status: string;

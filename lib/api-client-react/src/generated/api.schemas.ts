@@ -110,18 +110,31 @@ export interface BookingInput {
   providerId: number;
   serviceId: number;
   petId: number;
+  /** @nullable */
+  recordId: number | null;
   date: string;
   time: string;
   notes?: string;
 }
+
+export type BookingServiceCategory = typeof BookingServiceCategory[keyof typeof BookingServiceCategory];
+
+
+export const BookingServiceCategory = {
+  grooming: 'grooming',
+  vaccination: 'vaccination',
+} as const;
 
 export interface Booking {
   id: number;
   providerId: number;
   providerName: string;
   serviceName: string;
+  serviceCategory: BookingServiceCategory;
   petId: number;
   petName: string;
+  /** @nullable */
+  recordId: number | null;
   date: string;
   time: string;
   status: string;

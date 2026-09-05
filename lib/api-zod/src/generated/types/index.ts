@@ -8,6 +8,7 @@
 
 export * from './booking';
 export * from './bookingInput';
+export * from './bookingServiceCategory';
 export * from './careRecord';
 export * from './careRecordType';
 export * from './dashboardSummary';
