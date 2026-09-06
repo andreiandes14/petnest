@@ -4,13 +4,13 @@ import process from "node:process";
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const processes = [
   spawn(npmCommand, ["run", "dev"], {
-    cwd: "artifacts/petnest",
+    cwd: "apps/web",
     env: { ...process.env, PORT: "5173" },
     stdio: "inherit",
     shell: process.platform === "win32",
   }),
   spawn(npmCommand, ["run", "dev"], {
-    cwd: "artifacts/api-server",
+    cwd: "apps/api",
     env: { ...process.env, PORT: "5000" },
     stdio: "inherit",
     shell: process.platform === "win32",

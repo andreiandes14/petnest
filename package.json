@@ -1,13 +1,14 @@
 {
   "name": "workspace",
   "version": "0.0.0",
+  "packageManager": "pnpm@11.25.0",
   "license": "MIT",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "preinstall": "node -e \"if (!process.env.npm_config_user_agent?.startsWith('pnpm/')) { console.error('Use pnpm instead'); process.exit(1) }\"",
     "build": "corepack pnpm run typecheck && corepack pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
-    "typecheck": "corepack pnpm run typecheck:libs && corepack pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "corepack pnpm run typecheck:libs && corepack pnpm -r --filter \"./apps/**\" --filter \"./scripts\" --if-present run typecheck"
   },
   "private": true,
   "dependencies": {
