@@ -174,7 +174,14 @@ function initials(value: string) {
 }
 
 function statusLabel(value: string) {
-  return value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : value;
+  const labels: Record<string, string> = {
+    pending: "Pending",
+    confirmed: "Confirmed",
+    cancellation_pending: "Cancellation Pending",
+    cancelled: "Cancelled",
+    completed: "Completed",
+  };
+  return labels[value.toLowerCase()] ?? (value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : value);
 }
 
 /** Two-tone wordmark. Colour is swapped by CSS when it sits on the sidebar. */
@@ -334,9 +341,7 @@ const navItems = [
 const visibleNavItems = presentationMode
   ? navItems.filter(({ href }) => href !== "/orders" && href !== "/account")
   : navItems;
-const visibleCategories = presentationMode
-  ? Object.entries(categoryMeta).filter(([key]) => key !== "supplies")
-  : Object.entries(categoryMeta);
+const visibleCategories = Object.entries(categoryMeta);
 
 function AppShell({ children }: { children: ReactNode }) {
   const { isSignedIn, user } = useAuth();
@@ -344,7 +349,10 @@ function AppShell({ children }: { children: ReactNode }) {
   const shellNavItems = !isSignedIn
     ? visibleNavItems.filter(({ href }) => href === "/")
     : role === "admin"
-      ? [{ href: "/admin/bookings", label: "Bookings", icon: ShieldCheck }]
+      ? [
+        { href: "/admin/providers", label: "Providers", icon: ShieldCheck },
+        { href: "/admin/bookings", label: "Bookings", icon: CalendarDays },
+      ]
       : role === "provider"
         ? [{ href: "/provider", label: "Provider", icon: Pencil }]
         : [
@@ -529,7 +537,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
   return (
     <div className="wavy-shadow">
       <Link
-        href={`/providers/${provider.id}`}
+          href={`/providers/${provider.id}`}
         className="provider-card surface-card wavy block"
         data-testid={`card-provider-${provider.id}`}
       >
@@ -834,7 +842,7 @@ function ProvidersPage() {
   const spotlight =
     unfiltered && results.length > 2
       ? results.reduce((best, item) =>
-          item.rating > best.rating ? item : best,
+        item.rating > best.rating ? item : best,
         )
       : undefined;
   const rest = spotlight
@@ -1110,6 +1118,7 @@ function LegacyBookingModal({
                   className="input"
                   id="booking-date"
                   type="date"
+                  min={new Date().toISOString().slice(0, 10)}
                   value={date}
                   onChange={(event) => setDate(event.target.value)}
                   data-testid="input-booking-date"
@@ -1153,7 +1162,9 @@ function LegacyBookingModal({
                 className="text-sm text-destructive"
                 data-testid="text-booking-error"
               >
-                We could not send that booking. Please try again.
+                {createBooking.error instanceof Error
+                  ? createBooking.error.message
+                  : "We could not send that booking. Please try again."}
               </p>
             ) : null}
             <button
@@ -1207,6 +1218,7 @@ function BookingModal({
   const [notes, setNotes] = useState("");
   const [reviewing, setReviewing] = useState(false);
   const [complete, setComplete] = useState(false);
+  const [savedBooking, setSavedBooking] = useState<Booking | null>(null);
   const recordsQuery = useGetPetRecords(Number(petId), {
     query: {
       enabled: Boolean(petId),
@@ -1238,13 +1250,14 @@ function BookingModal({
         },
       },
       {
-        onSuccess: () => {
+        onSuccess: (booking) => {
           queryClient.invalidateQueries({
             queryKey: getListBookingsQueryKey(),
           });
           queryClient.invalidateQueries({
             queryKey: getGetDashboardSummaryQueryKey(),
           });
+          setSavedBooking(booking);
           setComplete(true);
         },
       },
@@ -1296,6 +1309,14 @@ function BookingModal({
               Your {service.category} booking is saved for {pet?.name} and is
               waiting for confirmation.
             </p>
+            {savedBooking ? (
+              <div className="surface-card mx-auto mt-5 max-w-sm bg-muted p-4 text-left text-sm">
+                <p><strong>Provider:</strong> {savedBooking.providerName}</p>
+                <p className="mt-2"><strong>Service:</strong> {savedBooking.serviceName}</p>
+                <p className="mt-2"><strong>When:</strong> {formatDate(savedBooking.date)} at {savedBooking.time}</p>
+                <p className="mt-2"><strong>Status:</strong> {statusLabel(savedBooking.status)}</p>
+              </div>
+            ) : null}
             <button className="btn btn-primary mt-6" onClick={onClose}>
               Done
             </button>
@@ -1327,7 +1348,9 @@ function BookingModal({
             </div>
             {createBooking.isError ? (
               <p className="text-sm text-destructive">
-                We could not confirm that booking.
+                {createBooking.error instanceof Error
+                  ? createBooking.error.message
+                  : "We could not confirm that booking."}
               </p>
             ) : null}
             <div className="flex gap-3">
@@ -1401,6 +1424,7 @@ function BookingModal({
                   className="input"
                   id="booking-date"
                   type="date"
+                  min={new Date().toISOString().slice(0, 10)}
                   value={date}
                   onChange={(event) => setDate(event.target.value)}
                 />
@@ -1611,6 +1635,7 @@ function ProviderDetailPage() {
                 key={service.id}
                 data-testid={`row-service-${service.id}`}
               >
+                {service.imageUrl ? <img className="product-thumb mb-3" src={service.imageUrl} alt="" /> : null}
                 <div className="min-w-0">
                   <h3 className="font-semibold">{service.name}</h3>
                   <p className="mt-1 text-xs leading-5 text-muted-foreground">
@@ -1732,15 +1757,16 @@ function BookingsPage() {
   const query = useListBookings({
     query: { queryKey: getListBookingsQueryKey() },
   });
+  const [cancellationBooking, setCancellationBooking] = useState<Booking | null>(null);
+  const [cancellationReason, setCancellationReason] = useState("");
   const cancel = useMutation({
-    mutationFn: (id: number) =>
-      adminRequest<Booking>(`/api/bookings/${id}`, { method: "DELETE" }),
+    mutationFn: ({ id, reason }: { id: number; reason: string }) =>
+      adminRequest<Booking>(`/api/bookings/${id}/cancellation-request`, { method: "POST", body: JSON.stringify({ reason }) }),
     onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() }),
+      { setCancellationBooking(null); setCancellationReason(""); queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() }); },
   });
   const bookings: Booking[] = query.data ?? [];
-  const isOver = (status: string) =>
-    ["completed", "cancelled"].includes(status.toLowerCase());
+  const isOver = (status: string) => ["completed", "cancelled"].includes(status.toLowerCase());
   const upcoming = bookings.filter((booking) => !isOver(booking.status));
   const past = bookings.filter((booking) => isOver(booking.status));
 
@@ -1787,6 +1813,8 @@ function BookingsPage() {
               Waiting for {booking.providerName} to confirm.
             </p>
           ) : null}
+          {booking.status.toLowerCase() === "cancellation_pending" ? <p className="booking-note">Cancellation request is waiting for provider review.</p> : null}
+          {booking.cancellationDecision === "rejected" ? <p className="booking-note">Cancellation request rejected. Your booking remains active.</p> : null}
         </div>
         <div className="booking-side">
           <span className={`status status-${booking.status.toLowerCase()}`}>
@@ -1794,17 +1822,13 @@ function BookingsPage() {
           </span>
           <span className="booking-price">{money(booking.price)}</span>
         </div>
-        {!isOver(booking.status) ? (
+        {!isOver(booking.status) && booking.status.toLowerCase() !== "cancellation_pending" ? (
           <button
             className="btn btn-ghost booking-cancel"
             disabled={cancel.isPending}
             onClick={() => {
-              if (
-                window.confirm(
-                  "Cancel this booking? Its history will be preserved.",
-                )
-              )
-                cancel.mutate(booking.id);
+              setCancellationBooking(booking);
+              setCancellationReason("");
             }}
             data-testid={`button-cancel-booking-${booking.id}`}
           >
@@ -1885,11 +1909,18 @@ function BookingsPage() {
           </>
         )}
       </div>
+      {cancellationBooking ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="cancel-booking-title"><h2 id="cancel-booking-title" className="modal-title">Request cancellation</h2><p className="mt-2 text-sm text-muted-foreground">Your provider must review this request before the booking is cancelled.</p><textarea className="input mt-5 h-28 py-3" placeholder="Cancellation reason" value={cancellationReason} onChange={(event) => setCancellationReason(event.target.value)} /><div className="mt-2 text-sm text-destructive">{cancel.isError ? cancel.error.message : !cancellationReason.trim() && cancel.isIdle ? "Cancellation reason is required." : ""}</div><div className="mt-5 flex gap-2"><button className="btn btn-ghost" onClick={() => setCancellationBooking(null)}>Cancel</button><button className="btn btn-primary" disabled={cancel.isPending || !cancellationReason.trim()} onClick={() => cancel.mutate({ id: cancellationBooking.id, reason: cancellationReason })}>Send request</button></div></div></div> : null}
     </div>
   );
 }
 
 type AdminBooking = Booking & { customerId: string };
+type ProviderRecord = CareRecord & {
+  petId: number;
+  ownerId: string;
+  nextDue?: string | null;
+};
+type ProviderPet = Pet & { ownerName: string; ownerEmail: string };
 
 async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -1916,16 +1947,6 @@ function AdminBookingsPage() {
     queryFn: () => adminRequest<AdminBooking[]>("/api/admin/bookings"),
     enabled: isAdmin,
   });
-  const updateStatus = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: string }) =>
-      adminRequest<AdminBooking>(`/api/admin/bookings/${id}/status`, {
-        method: "PATCH",
-        body: JSON.stringify({ status }),
-      }),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["admin", "bookings"] }),
-  });
-
   if (!isAdmin) return <NotFound />;
   if (query.isLoading) return <LoadingState label="Loading ongoing bookings" />;
   if (query.isError)
@@ -1940,9 +1961,9 @@ function AdminBookingsPage() {
   return (
     <div className="animate-in">
       <p className="eyebrow">Admin workspace</p>
-      <h1 className="page-title">Booking management.</h1>
+      <h1 className="page-title">Booking visibility.</h1>
       <p className="page-subtitle">
-        Review customer services and keep every booking status up to date.
+        Review system bookings. Status decisions belong to the assigned provider.
       </p>
       <div className="mt-8">
         {bookings.length ? (
@@ -1970,7 +1991,7 @@ function AdminBookingsPage() {
                       </p>
                     </td>
                     <td className="font-mono text-xs">{booking.customerId}</td>
-                    <td>{booking.petName}</td>
+                    <td>{booking.petName}{booking.cancellationReason ? <p className="mt-1 text-xs text-destructive">Reason: {booking.cancellationReason}</p> : null}</td>
                     <td>
                       <p>{formatDate(booking.date)}</p>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -1978,23 +1999,9 @@ function AdminBookingsPage() {
                       </p>
                     </td>
                     <td>
-                      <select
-                        className="input select h-10 min-w-36"
-                        value={booking.status}
-                        disabled={updateStatus.isPending}
-                        onChange={(event) =>
-                          updateStatus.mutate({
-                            id: booking.id,
-                            status: event.target.value,
-                          })
-                        }
-                        data-testid={`select-admin-booking-status-${booking.id}`}
-                      >
-                        <option value="pending">Pending</option>
-                        <option value="confirmed">Confirmed</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
-                      </select>
+                      <span className={`status status-${booking.status.toLowerCase()}`}>
+                        {statusLabel(booking.status)}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -2009,6 +2016,133 @@ function AdminBookingsPage() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+type AdminProvider = ProviderDetail & { active?: boolean };
+const emptyProviderForm = {
+  name: "",
+  email: "",
+  password: "",
+  location: "",
+  description: "",
+  contact: "",
+  hours: "",
+  categories: ["grooming"] as string[],
+};
+
+function AdminProvidersPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [form, setForm] = useState(emptyProviderForm);
+  const [editing, setEditing] = useState<AdminProvider | null>(null);
+  const [statusTarget, setStatusTarget] = useState<AdminProvider | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<AdminProvider | null>(null);
+  const query = useQuery({
+    queryKey: ["admin", "providers"],
+    queryFn: () => adminRequest<AdminProvider[]>("/api/admin/providers"),
+    enabled: isAdmin,
+  });
+  const save = useMutation({
+    mutationFn: () =>
+      adminRequest<AdminProvider>(
+        editing ? `/api/admin/providers/${editing.id}` : "/api/admin/providers",
+        {
+          method: editing ? "PATCH" : "POST",
+          body: JSON.stringify(
+            editing
+              ? { ...form, active: editing.active !== false }
+              : form,
+          ),
+        },
+      ),
+    onSuccess: () => {
+      setForm(emptyProviderForm);
+      setEditing(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
+    },
+  });
+  const deactivate = useMutation({
+    mutationFn: ({ id, active }: { id: number; active: boolean }) =>
+      adminRequest<AdminProvider>(`/api/admin/providers/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ active }),
+      }),
+    onSuccess: () => { setStatusTarget(null); queryClient.invalidateQueries({ queryKey: ["admin", "providers"] }); },
+  });
+  const removeProvider = useMutation({
+    mutationFn: (id: number) =>
+      adminRequest<AdminProvider>(`/api/admin/providers/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      setRemoveTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
+    },
+  });
+  if (!isAdmin) return <NotFound />;
+  if (query.isLoading) return <LoadingState label="Loading providers" />;
+  if (query.isError) return <ErrorState onRetry={() => query.refetch()} message="Providers could not be loaded." />;
+  const toggleCategory = (category: string) =>
+    setForm((current) => ({
+      ...current,
+      categories: current.categories.includes(category)
+        ? current.categories.filter((item) => item !== category)
+        : [...current.categories, category],
+    }));
+  const editProvider = (provider: AdminProvider) => {
+    setEditing(provider);
+    setForm({
+      name: provider.name,
+      email: "",
+      password: "",
+      location: provider.location,
+      description: provider.description,
+      contact: provider.contact,
+      hours: provider.hours,
+      categories: provider.categories,
+    });
+  };
+  return (
+    <div className="animate-in">
+      <p className="eyebrow">Admin workspace</p>
+      <h1 className="page-title">Provider directory.</h1>
+      <p className="page-subtitle">Create and maintain the providers customers can discover.</p>
+      <section className="surface-card mt-8 p-6">
+        <h2 className="section-title">{editing ? "Edit provider" : "Add provider"}</h2>
+        <div className="form-grid mt-5">
+          {(["name", "location", "contact", "hours"] as const).map((field) => (
+            <div className="form-field" key={field}>
+              <label className="form-label">{field[0].toUpperCase() + field.slice(1)}</label>
+              <input className="input" value={form[field]} onChange={(event) => setForm({ ...form, [field]: event.target.value })} />
+            </div>
+          ))}
+          {!editing ? (
+            <>
+              <div className="form-field"><label className="form-label">Provider login email</label><input className="input" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></div>
+              <div className="form-field"><label className="form-label">Temporary password</label><input className="input" type="password" minLength={8} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></div>
+            </>
+          ) : null}
+          <div className="form-field full"><label className="form-label">Description</label><textarea className="input h-24 py-3" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></div>
+        </div>
+        <div className="mt-5 flex flex-wrap gap-3">
+          {(["grooming", "vaccination", "supplies"] as const).map((category) => <label className="flex items-center gap-2 text-sm" key={category}><input type="checkbox" checked={form.categories.includes(category)} onChange={() => toggleCategory(category)} /> {category}</label>)}
+        </div>
+        <div className="mt-6 flex gap-3">
+          <button className="btn btn-primary" onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : editing ? "Save provider" : "Create provider"}</button>
+          {editing ? <button className="btn btn-ghost" onClick={() => { setEditing(null); setForm(emptyProviderForm); }}>Cancel</button> : null}
+        </div>
+        {save.isError ? <p className="mt-3 text-sm text-destructive">{save.error.message}</p> : null}
+      </section>
+      <section className="surface-card mt-6 p-6">
+        <h2 className="section-title">Registered providers</h2>
+        <div className="list-stack mt-5">
+          {(query.data ?? []).map((provider) => <div className="service-row" key={provider.id}><div className="min-w-0 flex-1"><p className="font-semibold">{provider.name}</p><p className="text-xs text-muted-foreground">{provider.categories.join(" · ")} · {provider.active === false ? "Inactive" : "Active"}</p></div><button className="btn btn-ghost" onClick={() => editProvider(provider)}>Edit</button><button className="btn btn-ghost" disabled={deactivate.isPending} onClick={() => setStatusTarget(provider)}>{provider.active === false ? "Reactivate provider" : "Deactivate provider"}</button><button className="btn btn-ghost text-destructive" disabled={removeProvider.isPending || provider.active !== false} onClick={() => setRemoveTarget(provider)}>Remove provider</button></div>)}
+        </div>
+      </section>
+      {statusTarget ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="provider-status-title"><h2 id="provider-status-title" className="modal-title">{statusTarget.active === false ? "Reactivate provider?" : "Deactivate provider?"}</h2><p className="mt-3 text-sm text-muted-foreground">{statusTarget.name} will be {statusTarget.active === false ? "visible and bookable" : "hidden from new customer bookings"}. Historical bookings and pet records remain unchanged.</p><div className="mt-6 flex gap-2"><button className="btn btn-ghost" onClick={() => setStatusTarget(null)}>Cancel</button><button className="btn btn-primary" disabled={deactivate.isPending} onClick={() => deactivate.mutate({ id: statusTarget.id, active: statusTarget.active === false })}>{statusTarget.active === false ? "Reactivate provider" : "Activate provider"}</button></div></div></div> : null}
+      {removeTarget ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="remove-provider-title"><h2 id="remove-provider-title" className="modal-title">Remove provider?</h2><p className="mt-3 text-sm text-muted-foreground">Remove {removeTarget.name} from the provider directory? Historical bookings, pet records, and service history will remain intact.</p><div className="mt-6 flex gap-2"><button className="btn btn-ghost" onClick={() => setRemoveTarget(null)}>Cancel</button><button className="btn btn-primary" disabled={removeProvider.isPending} onClick={() => removeProvider.mutate(removeTarget.id)}>Remove provider</button></div></div></div> : null}
     </div>
   );
 }
@@ -2128,6 +2262,18 @@ function ProviderManagementPage() {
     enabled: isProvider,
   });
   const [draft, setDraft] = useState<ProviderDetail | null>(null);
+  const [serviceForm, setServiceForm] = useState({ name: "", description: "", price: "", durationMinutes: "60", category: "grooming", imageUrl: "" });
+  const [productForm, setProductForm] = useState({ name: "", description: "", price: "", category: "pet supplies", imageUrl: "" });
+  const [recordForm, setRecordForm] = useState({ type: "grooming", petId: "", title: "", date: "", nextDue: "", notes: "" });
+  const [showServiceForm, setShowServiceForm] = useState(false);
+  const [editingServiceId, setEditingServiceId] = useState<number | null>(null);
+  const [editingProductId, setEditingProductId] = useState<number | null>(null);
+  const [showProductForm, setShowProductForm] = useState(false);
+  const [showRecordForm, setShowRecordForm] = useState<"grooming" | "vaccination" | null>(null);
+  const [showBackgroundForm, setShowBackgroundForm] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [providerTab, setProviderTab] = useState<"workspace" | "records">("workspace");
+  const [selectedProviderPet, setSelectedProviderPet] = useState<ProviderPet | null>(null);
   useEffect(() => {
     if (query.data) setDraft(query.data);
   }, [query.data]);
@@ -2157,20 +2303,79 @@ function ProviderManagementPage() {
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ["provider", "bookings"] }),
   });
+  const addService = useMutation({
+    mutationFn: () => adminRequest<ProviderService>("/api/provider/services", { method: "POST", body: JSON.stringify({ ...serviceForm, price: Number(serviceForm.price), durationMinutes: Number(serviceForm.durationMinutes) }) }),
+    onSuccess: () => { setServiceForm({ name: "", description: "", price: "", durationMinutes: "60", category: "grooming", imageUrl: "" }); setShowServiceForm(false); query.refetch(); setNotice("Service added."); },
+  });
+  const deleteService = useMutation({
+    mutationFn: (id: number) => adminRequest<void>(`/api/provider/services/${id}`, { method: "DELETE" }),
+    onSuccess: () => { query.refetch(); setNotice("Service removed."); },
+  });
+  const updateService = useMutation({
+    mutationFn: ({ id, service }: { id: number; service: ProviderService }) => adminRequest<ProviderService>(`/api/provider/services/${id}`, { method: "PATCH", body: JSON.stringify(service) }),
+    onSuccess: () => { setEditingServiceId(null); query.refetch(); setNotice("Service updated."); },
+  });
+  const addProduct = useMutation({
+    mutationFn: () => adminRequest<ProviderProduct>("/api/provider/products", { method: "POST", body: JSON.stringify({ ...productForm, price: Number(productForm.price) }) }),
+    onSuccess: () => { setProductForm({ name: "", description: "", price: "", category: "pet supplies", imageUrl: "" }); setShowProductForm(false); query.refetch(); setNotice("Product added."); },
+  });
+  const deleteProduct = useMutation({
+    mutationFn: (id: number) => adminRequest<void>(`/api/provider/products/${id}`, { method: "DELETE" }),
+    onSuccess: () => query.refetch(),
+  });
+  const recordsQuery = useQuery({
+    queryKey: ["provider", "records"],
+    queryFn: () => adminRequest<ProviderRecord[]>("/api/provider/records"),
+    enabled: isProvider,
+  });
+  const providerPetsQuery = useQuery({
+    queryKey: ["provider", "pets"],
+    queryFn: () => adminRequest<ProviderPet[]>("/api/provider/pets"),
+    enabled: isProvider && providerTab === "records",
+  });
+  const selectedProviderPetQuery = useQuery({
+    queryKey: ["provider", "pet-records", selectedProviderPet?.id],
+    queryFn: () => adminRequest<{ pet: Pet; owner: { name: string; email: string }; records: ProviderRecord[] }>(`/api/provider/pets/${selectedProviderPet?.id}/records`),
+    enabled: Boolean(selectedProviderPet),
+  });
+  const addRecord = useMutation({
+    mutationFn: () => adminRequest<ProviderRecord>("/api/provider/records", { method: "POST", body: JSON.stringify({ ...recordForm, petId: Number(recordForm.petId), nextDue: recordForm.nextDue || null }) }),
+    onSuccess: () => { setRecordForm({ type: "grooming", petId: "", title: "", date: "", nextDue: "", notes: "" }); setShowRecordForm(null); recordsQuery.refetch(); setNotice("History record added."); },
+  });
+  const updateRecord = useMutation({
+    mutationFn: ({ id, notes }: { id: number; notes: string }) => adminRequest<ProviderRecord>(`/api/provider/records/${id}`, { method: "PATCH", body: JSON.stringify({ notes }) }),
+    onSuccess: () => recordsQuery.refetch(),
+  });
   if (!isProvider) return <NotFound />;
-  if (query.isLoading || !draft)
-    return <LoadingState label="Loading provider information" />;
   if (query.isError)
     return (
       <ErrorState
         onRetry={() => query.refetch()}
-        message="Provider information could not be loaded."
+        message={query.error instanceof Error ? query.error.message : "Provider information could not be loaded."}
       />
     );
+  if (query.isLoading || !draft)
+    return <LoadingState label="Loading provider information" />;
   const change = (
     key: "name" | "location" | "description" | "contact" | "hours",
     value: string,
   ) => setDraft({ ...draft, [key]: value });
+  const changeBackground = (file: File | undefined) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setDraft({ ...draft, imageUrl: typeof reader.result === "string" ? reader.result : "" });
+    reader.readAsDataURL(file);
+  };
+  const readImage = (file: File | undefined, onRead: (value: string) => void) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") onRead(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+  const editingService = draft.services.find((item) => item.id === editingServiceId);
+  const editingProduct = draft.products.find((item) => item.id === editingProductId);
   return (
     <div className="animate-in">
       <p className="eyebrow">Provider workspace</p>
@@ -2179,6 +2384,15 @@ function ProviderManagementPage() {
         Update the provider information, services, and products customers can
         view.
       </p>
+      {notice ? <p className="mt-4 text-sm font-semibold text-primary" role="status">{notice}</p> : null}
+      <div className="mt-6 flex gap-2"><button className={`filter-chip ${providerTab === "workspace" ? "active" : ""}`} onClick={() => setProviderTab("workspace")}>Workspace</button><button className={`filter-chip ${providerTab === "records" ? "active" : ""}`} onClick={() => setProviderTab("records")}>Pet Records</button></div>
+      {providerTab === "records" ? <section className="surface-card mt-6 p-6"><p className="eyebrow">Provider records</p><h2 className="section-title mt-1">Pets connected to your bookings</h2>{providerPetsQuery.isLoading ? <LoadingState label="Loading connected pets" /> : providerPetsQuery.isError ? <ErrorState onRetry={() => providerPetsQuery.refetch()} message={providerPetsQuery.error.message} /> : <div className="list-stack mt-5">{(providerPetsQuery.data ?? []).map((pet) => <button className="service-row text-left" key={pet.id} onClick={() => setSelectedProviderPet(pet)}><div><p className="font-semibold">{pet.name}</p><p className="text-xs text-muted-foreground">{pet.species} · {pet.breed} · Owner: {pet.ownerName}</p></div><ArrowRight size={16} /></button>)}</div>}{selectedProviderPet && selectedProviderPetQuery.data ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="provider-pet-title"><div className="flex items-start justify-between gap-3"><div><p className="eyebrow">Pet Records</p><h2 id="provider-pet-title" className="modal-title">{selectedProviderPetQuery.data.pet.name}</h2><p className="mt-1 text-sm text-muted-foreground">Owner: {selectedProviderPetQuery.data.owner.name}</p></div><button className="modal-close" onClick={() => setSelectedProviderPet(null)} aria-label="Close pet records"><X size={17} /></button></div><div className="list-stack mt-5">{selectedProviderPetQuery.data.records.length ? selectedProviderPetQuery.data.records.map((record) => <div className="record-item" key={record.id}><p className="eyebrow">{record.serviceCategory ?? record.type}</p><p className="font-semibold">{record.title}</p><p className="text-xs text-muted-foreground">{record.providerName} · {formatDate(record.date)} · {statusLabel(record.status)}</p><p className="mt-2 text-sm text-muted-foreground">{record.notes}</p></div>) : <p className="text-sm text-muted-foreground">No completed records for this pet yet.</p>}</div></div></div> : null}</section> : null}
+      {providerTab === "records" ? null : <>
+      <section className="surface-card mt-6 p-6">
+        <div className="flex items-center justify-between gap-3"><div><p className="eyebrow">Store background</p><h2 className="section-title mt-1">{draft.imageUrl ? "Background uploaded" : "No background uploaded"}</h2></div><button className="btn btn-secondary" onClick={() => setShowBackgroundForm((open) => !open)}>{draft.imageUrl ? "Change background" : "+ Add store background"}</button></div>
+        {draft.imageUrl ? <img className="mt-4 h-32 w-full object-cover" src={draft.imageUrl} alt="Store background preview" /> : null}
+        {showBackgroundForm ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="background-title"><h2 id="background-title" className="modal-title mb-5">Store background</h2><input type="file" accept="image/*" onChange={(event) => changeBackground(event.target.files?.[0])} /><div className="mt-5 flex gap-2"><button className="btn btn-primary" onClick={() => { save.mutate(draft); setShowBackgroundForm(false); }}>Upload</button>{draft.imageUrl ? <button className="btn btn-ghost" onClick={() => setDraft({ ...draft, imageUrl: "" })}>Remove</button> : null}<button className="btn btn-ghost" onClick={() => setShowBackgroundForm(false)}>Cancel</button></div></div></div> : null}
+      </section>
       <div className="surface-card mt-8 p-6">
         <div className="form-grid">
           <div className="form-field">
@@ -2222,96 +2436,31 @@ function ProviderManagementPage() {
             />
           </div>
         </div>
-        <h2 className="section-title mt-8">Grooming & vaccination services</h2>
-        <div className="list-stack mt-4">
-          {draft.services.map((service, index) => (
-            <div className="service-row" key={service.id}>
-              <div className="flex-1">
-                <p className="font-semibold">{service.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {service.category}
-                </p>
-              </div>
-              <input
-                className="input w-28"
-                type="number"
-                value={service.price}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    services: draft.services.map((item, itemIndex) =>
-                      itemIndex === index
-                        ? { ...item, price: Number(event.target.value) }
-                        : item,
-                    ),
-                  })
-                }
-              />
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={service.available !== false}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      services: draft.services.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? { ...item, available: event.target.checked }
-                          : item,
-                      ),
-                    })
-                  }
-                />{" "}
-                Available
-              </label>
-            </div>
-          ))}
-        </div>
-        <h2 className="section-title mt-8">Pet supply products</h2>
-        <div className="list-stack mt-4">
-          {draft.products.map((product, index) => (
-            <div className="service-row" key={product.id}>
-              <div className="flex-1">
-                <p className="font-semibold">{product.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {product.category}
-                </p>
-              </div>
-              <input
-                className="input w-28"
-                type="number"
-                value={product.price}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    products: draft.products.map((item, itemIndex) =>
-                      itemIndex === index
-                        ? { ...item, price: Number(event.target.value) }
-                        : item,
-                    ),
-                  })
-                }
-              />
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={product.inStock}
-                  onChange={(event) =>
-                    setDraft({
-                      ...draft,
-                      products: draft.products.map((item, itemIndex) =>
-                        itemIndex === index
-                          ? { ...item, inStock: event.target.checked }
-                          : item,
-                      ),
-                    })
-                  }
-                />{" "}
-                In stock
-              </label>
-            </div>
-          ))}
-        </div>
+        <div className="mt-8 flex items-center justify-between gap-3"><h2 className="section-title">My services</h2><button className="btn btn-secondary" onClick={() => setShowServiceForm((open) => !open)}>+ Add a service</button></div>
+        {showServiceForm ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setShowServiceForm(false)}><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="add-service-title"><div className="flex items-start justify-between gap-3"><div><p className="eyebrow">Provider services</p><h2 id="add-service-title" className="modal-title">Add new service</h2></div><button className="modal-close" onClick={() => setShowServiceForm(false)} aria-label="Close add service"><X size={17} /></button></div><div className="form-grid mt-5">
+          <input className="input" placeholder="Service name" value={serviceForm.name} onChange={(event) => setServiceForm({ ...serviceForm, name: event.target.value })} />
+          <input className="input" placeholder="Description" value={serviceForm.description} onChange={(event) => setServiceForm({ ...serviceForm, description: event.target.value })} />
+          <input className="input" type="number" placeholder="Price" value={serviceForm.price} onChange={(event) => setServiceForm({ ...serviceForm, price: event.target.value })} />
+          <input className="input" type="number" placeholder="Duration minutes" value={serviceForm.durationMinutes} onChange={(event) => setServiceForm({ ...serviceForm, durationMinutes: event.target.value })} />
+          <select className="input select" value={serviceForm.category} onChange={(event) => setServiceForm({ ...serviceForm, category: event.target.value })}><option value="grooming">Grooming</option><option value="vaccination">Vaccination</option></select>
+          <input className="input" type="file" accept="image/*" onChange={(event) => readImage(event.target.files?.[0], (imageUrl) => setServiceForm({ ...serviceForm, imageUrl }))} />
+          <div className="flex gap-2"><button className="btn btn-primary" onClick={() => addService.mutate()} disabled={addService.isPending}>Save service</button><button className="btn btn-ghost" onClick={() => setShowServiceForm(false)}>Cancel</button></div>
+        </div></div></div> : null}
+        <div className="list-stack mt-4">{draft.services.map((service) => <div key={service.id}>
+          <div className="service-row"><div className="flex-1"><p className="font-semibold">{service.name}</p><p className="text-xs text-muted-foreground">{service.category} · {money(service.price)} · {service.available === false ? "Unavailable" : "Available"}</p></div><button className="btn btn-ghost" onClick={() => setEditingServiceId(editingServiceId === service.id ? null : service.id)}>Edit</button><button className="btn btn-ghost" onClick={() => window.confirm(`Remove ${service.name}?`) && deleteService.mutate(service.id)} disabled={deleteService.isPending}>Remove</button></div>
+          {false && editingServiceId === service.id ? <div /> : null}
+        </div>)}</div>
+        <div className="mt-8 flex items-center justify-between gap-3"><h2 className="section-title">Pet supply products</h2><button className="btn btn-secondary" onClick={() => setShowProductForm((open) => !open)}>+ Add a product</button></div>
+        <div className="list-stack mt-4">{draft.products.map((product) => <div className="service-row" key={product.id}><div className="flex-1"><p className="font-semibold">{product.name}</p><p className="text-xs text-muted-foreground">{product.category} · {money(product.price)} · {product.inStock ? "Available" : "Unavailable"}</p></div><button className="btn btn-ghost" onClick={() => setEditingProductId(product.id)}>Edit</button><button className="btn btn-ghost" onClick={() => window.confirm(`Remove ${product.name}?`) && deleteProduct.mutate(product.id)} disabled={deleteProduct.isPending}>Remove</button></div>)}</div>
+        {showProductForm ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setShowProductForm(false)}><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="add-product-title"><div className="flex items-start justify-between gap-3"><div><p className="eyebrow">Pet supplies</p><h2 id="add-product-title" className="modal-title">Add new product</h2></div><button className="modal-close" onClick={() => setShowProductForm(false)} aria-label="Close add product"><X size={17} /></button></div><div className="form-grid mt-5">
+          <input className="input" placeholder="Product name" value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} />
+          <input className="input" placeholder="Description" value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} />
+          <input className="input" type="number" placeholder="Price" value={productForm.price} onChange={(event) => setProductForm({ ...productForm, price: event.target.value })} />
+          <input className="input" placeholder="Product category" value={productForm.category} onChange={(event) => setProductForm({ ...productForm, category: event.target.value })} />
+          <input className="input" type="file" accept="image/*" onChange={(event) => readImage(event.target.files?.[0], (imageUrl) => setProductForm({ ...productForm, imageUrl }))} />
+          <button className="btn btn-primary" onClick={() => addProduct.mutate()} disabled={addProduct.isPending}>Save product</button><button className="btn btn-ghost" onClick={() => setShowProductForm(false)}>Cancel</button>
+        </div></div></div> : null}
+        {editingProduct ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="edit-product-title"><h2 id="edit-product-title" className="modal-title mb-5">Edit product</h2><div className="form-grid"><input className="input" value={editingProduct.name} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, name: event.target.value } : item) })} /><input className="input" value={editingProduct.description} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, description: event.target.value } : item) })} /><input className="input" type="number" value={editingProduct.price} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, price: Number(event.target.value) } : item) })} /><input className="input" value={editingProduct.category} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, category: event.target.value } : item) })} /><input className="input" type="file" accept="image/*" onChange={(event) => readImage(event.target.files?.[0], (imageUrl) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, imageUrl } : item) }))} /><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editingProduct.inStock} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, inStock: event.target.checked } : item) })} /> Available</label></div><div className="mt-5 flex gap-2"><button className="btn btn-primary" onClick={() => { save.mutate(draft); setEditingProductId(null); }}>Save changes</button><button className="btn btn-ghost" onClick={() => { query.refetch(); setEditingProductId(null); }}>Cancel</button></div></div></div> : null}
         <button
           className="btn btn-primary mt-8"
           onClick={() => save.mutate(draft)}
@@ -2356,24 +2505,7 @@ function ProviderManagementPage() {
                     <td>
                       {formatDate(booking.date)} at {booking.time}
                     </td>
-                    <td>
-                      <select
-                        className="input select h-10 min-w-36"
-                        value={booking.status}
-                        disabled={updateBooking.isPending}
-                        onChange={(event) =>
-                          updateBooking.mutate({
-                            id: booking.id,
-                            status: event.target.value,
-                          })
-                        }
-                      >
-                        <option value="pending">Pending</option>
-                        <option value="confirmed">Confirmed</option>
-                        <option value="completed">Completed</option>
-                        <option value="cancelled">Cancelled</option>
-                      </select>
-                    </td>
+                    <td><span className={`status status-${booking.status}`}>{statusLabel(booking.status)}</span>{booking.status === "cancellation_pending" ? <div className="mt-2 flex gap-2"><button className="btn btn-primary h-9 min-h-0 text-xs" disabled={updateBooking.isPending} onClick={() => { if (window.confirm("Approve this cancellation request?")) updateBooking.mutate({ id: booking.id, status: "approve_cancellation" }); }}>Approve cancellation</button><button className="btn btn-ghost h-9 min-h-0 text-xs" disabled={updateBooking.isPending} onClick={() => { if (window.confirm("Reject this cancellation request?")) updateBooking.mutate({ id: booking.id, status: "reject_cancellation" }); }}>Reject</button></div> : null}{["pending", "confirmed"].includes(booking.status) ? <button className="btn btn-secondary mt-2 h-9 min-h-0 text-xs" disabled={updateBooking.isPending} onClick={() => updateBooking.mutate({ id: booking.id, status: "completed" })}>Completed</button> : null}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2385,6 +2517,25 @@ function ProviderManagementPage() {
           </p>
         )}
       </section>
+      </>}
+      <section className="surface-card mt-6 p-6">
+        <p className="eyebrow">Provider records</p>
+        <h2 className="section-title mt-1">Grooming and vaccination history</h2>
+        <div className="mt-4 flex flex-wrap gap-3"><button className="btn btn-secondary" onClick={() => { setRecordForm({ ...recordForm, type: "vaccination" }); setShowRecordForm(showRecordForm === "vaccination" ? null : "vaccination"); }}>+ Add vaccination record</button><button className="btn btn-secondary" onClick={() => { setRecordForm({ ...recordForm, type: "grooming" }); setShowRecordForm(showRecordForm === "grooming" ? null : "grooming"); }}>+ Add grooming record</button></div>
+        {showRecordForm ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="record-title"><h2 id="record-title" className="modal-title mb-5">Add {showRecordForm} record</h2><div className="form-grid">
+          <select className="input select" value={recordForm.type} onChange={(event) => setRecordForm({ ...recordForm, type: event.target.value })}><option value="grooming">Grooming</option><option value="vaccination">Vaccination</option></select>
+          <select className="input select" value={recordForm.petId} onChange={(event) => setRecordForm({ ...recordForm, petId: event.target.value })}><option value="">Pet from a booking</option>{(bookingsQuery.data ?? []).map((booking) => <option key={`${booking.id}-${booking.petId}`} value={booking.petId}>{booking.petName}</option>)}</select>
+          <input className="input" placeholder="Title or vaccine/service" value={recordForm.title} onChange={(event) => setRecordForm({ ...recordForm, title: event.target.value })} />
+          <input className="input" type="date" value={recordForm.date} onChange={(event) => setRecordForm({ ...recordForm, date: event.target.value })} />
+          {recordForm.type === "vaccination" ? <input className="input" type="date" placeholder="Next due" value={recordForm.nextDue} onChange={(event) => setRecordForm({ ...recordForm, nextDue: event.target.value })} /> : null}
+          <textarea className="input h-20 py-3" placeholder="Notes" value={recordForm.notes} onChange={(event) => setRecordForm({ ...recordForm, notes: event.target.value })} />
+          <button className="btn btn-secondary" onClick={() => addRecord.mutate()} disabled={addRecord.isPending}>Add history record</button>
+          <button className="btn btn-ghost" onClick={() => setShowRecordForm(null)}>Cancel</button>
+        </div></div></div> : null}
+        <div className="list-stack mt-5">{(recordsQuery.data ?? []).map((record) => <div className="service-row" key={record.id}><div className="flex-1"><p className="font-semibold">{record.title}</p><p className="text-xs text-muted-foreground">{record.type} · {formatDate(record.date)} · pet {record.petId}</p><p className="mt-1 text-sm text-muted-foreground">{record.notes}</p></div><button className="btn btn-ghost" onClick={() => { const notes = window.prompt("Update notes", record.notes); if (notes !== null) updateRecord.mutate({ id: record.id, notes }); }}>Edit notes</button></div>)}</div>
+        {addRecord.isError ? <p className="mt-3 text-sm text-destructive">{addRecord.error.message}</p> : null}
+      </section>
+      {editingService ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="edit-service-title"><h2 id="edit-service-title" className="modal-title mb-5">Edit service</h2><div className="form-grid"><input className="input" value={editingService.name} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, name: event.target.value } : item) })} /><input className="input" value={editingService.description} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, description: event.target.value } : item) })} /><input className="input" type="number" value={editingService.price} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, price: Number(event.target.value) } : item) })} /><select className="input select" value={editingService.category} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, category: event.target.value } : item) })}><option value="grooming">Grooming</option><option value="vaccination">Vaccination</option></select><input className="input" type="file" accept="image/*" onChange={(event) => readImage(event.target.files?.[0], (imageUrl) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, imageUrl } : item) }))} /><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editingService.available !== false} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, available: event.target.checked } : item) })} /> Available</label></div><div className="mt-5 flex gap-2"><button className="btn btn-primary" onClick={() => updateService.mutate({ id: editingService.id, service: editingService })}>Save changes</button><button className="btn btn-ghost" onClick={() => { query.refetch(); setEditingServiceId(null); }}>Cancel</button></div></div></div> : null}
     </div>
   );
 }
@@ -2671,6 +2822,13 @@ function RecordsPanel({ pet }: { pet: Pet }) {
   const records = query.data?.[tab] ?? [];
   return (
     <div className="record-layout">
+      <div className="surface-card p-5">
+        <p className="eyebrow">Selected pet</p>
+        <h2 className="section-title mt-1">{pet.name}'s Pet Records</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {pet.species} · {pet.breed} · {pet.age}
+        </p>
+      </div>
       <div className="record-tabs surface-card">
         <p className="eyebrow px-3 pb-2">Care record</p>
         <button
@@ -2716,6 +2874,7 @@ function RecordsPanel({ pet }: { pet: Pet }) {
                     <p className="mt-1 text-xs text-muted-foreground">
                       {record.providerName} · {formatDate(record.date)}
                     </p>
+                    {record.bookingId ? <p className="mt-1 text-xs text-muted-foreground">Booking #{record.bookingId}</p> : null}
                   </div>
                   <span
                     className={`status status-${record.status.toLowerCase()}`}
@@ -3137,7 +3296,7 @@ function Router() {
 
 function LandingPage() {
   const { isSignedIn, user } = useAuth();
-  if (user?.role === "admin") return <Redirect to="/admin/bookings" />;
+  if (user?.role === "admin") return <Redirect to="/admin/providers" />;
   if (user?.role === "provider") return <Redirect to="/provider" />;
   return (
     <AppShell>
@@ -3265,7 +3424,6 @@ function SignUpPage() {
     email: "",
     password: "",
     confirmPassword: "",
-    role: "customer" as UserRole,
   });
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -3291,7 +3449,6 @@ function SignUpPage() {
           name: form.name,
           email: form.email,
           password: form.password,
-          role: form.role,
         }),
       });
       const body = (await response.json()) as {
@@ -3390,23 +3547,6 @@ function SignUpPage() {
               }
             />
           </div>
-          <div className="form-field">
-            <label className="form-label" htmlFor="signup-role">
-              Role
-            </label>
-            <select
-              className="input select"
-              id="signup-role"
-              value={form.role}
-              onChange={(event) =>
-                setForm({ ...form, role: event.target.value as UserRole })
-              }
-            >
-              <option value="customer">Customer</option>
-              <option value="provider">Provider</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
         </div>
         {error ? (
           <p className="mt-4 text-sm text-destructive" role="alert">
@@ -3443,9 +3583,10 @@ function MainRouter() {
     return (
       <AppShell>
         <Switch>
+          <Route path="/admin/providers" component={AdminProvidersPage} />
           <Route path="/admin/bookings" component={AdminBookingsPage} />
           <Route>
-            <Redirect to="/admin/bookings" />
+            <Redirect to="/admin/providers" />
           </Route>
         </Switch>
       </AppShell>

@@ -263,6 +263,7 @@ components:
         price: { type: number }
         durationMinutes: { type: number }
         category: { type: string }
+        imageUrl: { type: string }
         available: { type: boolean }
     ProviderProduct:
       type: object
@@ -372,6 +373,10 @@ components:
         time: { type: string }
         status: { type: string }
         price: { type: number }
+        cancellationReason: { type: string, nullable: true }
+        cancellationPreviousStatus: { type: string, nullable: true }
+        cancellationDecision: { type: string, enum: [pending, approved, rejected], nullable: true }
+        cancellationDecidedAt: { type: string, nullable: true }
     OrderInput:
       type: object
       required: [providerId, items]

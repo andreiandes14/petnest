@@ -68,6 +68,7 @@ export const GetProviderResponse = zod.object({
   "price": zod.number(),
   "durationMinutes": zod.number(),
   "category": zod.string(),
+  "imageUrl": zod.string().optional(),
   "available": zod.boolean().optional()
 })),
   "products": zod.array(zod.object({
@@ -173,7 +174,9 @@ export const GetPetRecordsResponse = zod.object({
   "providerName": zod.string(),
   "date": zod.string(),
   "status": zod.string(),
-  "notes": zod.string().optional()
+  "notes": zod.string().optional(),
+  "bookingId": zod.number().optional(),
+  "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 })),
   "vaccinations": zod.array(zod.object({
   "id": zod.number(),
@@ -182,7 +185,9 @@ export const GetPetRecordsResponse = zod.object({
   "providerName": zod.string(),
   "date": zod.string(),
   "status": zod.string(),
-  "notes": zod.string().optional()
+  "notes": zod.string().optional(),
+  "bookingId": zod.number().optional(),
+  "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))
 })
 
@@ -202,7 +207,11 @@ export const ListBookingsResponseItem = zod.object({
   "date": zod.string(),
   "time": zod.string(),
   "status": zod.string(),
-  "price": zod.number()
+  "price": zod.number(),
+  "cancellationReason": zod.string().nullish(),
+  "cancellationPreviousStatus": zod.string().nullish(),
+  "cancellationDecision": zod.enum(['pending', 'approved', 'rejected']).nullish(),
+  "cancellationDecidedAt": zod.string().nullish()
 })
 export const ListBookingsResponse = zod.array(ListBookingsResponseItem)
 
@@ -232,7 +241,11 @@ export const CreateBookingResponse = zod.object({
   "date": zod.string(),
   "time": zod.string(),
   "status": zod.string(),
-  "price": zod.number()
+  "price": zod.number(),
+  "cancellationReason": zod.string().nullish(),
+  "cancellationPreviousStatus": zod.string().nullish(),
+  "cancellationDecision": zod.enum(['pending', 'approved', 'rejected']).nullish(),
+  "cancellationDecidedAt": zod.string().nullish()
 })
 
 

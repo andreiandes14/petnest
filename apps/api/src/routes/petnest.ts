@@ -42,6 +42,7 @@ type ProviderService = {
   durationMinutes: number;
   category: string;
   available: boolean;
+  imageUrl?: string;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -71,6 +72,7 @@ type Provider = {
   hours: string;
   services: ProviderService[];
   products: ProviderProduct[];
+  active?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -96,6 +98,9 @@ type CareRecord = {
   date: string;
   status: string;
   notes: string;
+  nextDue?: string | null;
+  bookingId?: number;
+  serviceCategory?: "grooming" | "vaccination";
 };
 
 type Booking = {
@@ -111,6 +116,10 @@ type Booking = {
   time: string;
   status: string;
   price: number;
+  cancellationReason?: string | null;
+  cancellationPreviousStatus?: string | null;
+  cancellationDecision?: "pending" | "approved" | "rejected" | null;
+  cancellationDecidedAt?: string | null;
 };
 
 type Order = {
@@ -388,7 +397,15 @@ type OwnedPet = Pet & {
   createdAt?: string;
   updatedAt?: string;
 };
-type StoredCareRecord = CareRecord & { petId: number; ownerId: string };
+type StoredCareRecord = CareRecord & {
+  petId: number;
+  ownerId: string;
+  providerId?: number;
+  providerName?: string;
+  serviceId?: number;
+  createdAt?: string;
+  updatedAt?: string;
+};
 type StoredBooking = Booking & {
   ownerId: string;
   createdAt?: string;
@@ -413,6 +430,24 @@ type UserProfile = {
 type StoredSession = { _id: string; userId: string; expiresAt: Date };
 
 const legacyOwnerId = "legacy-seed-data";
+
+function isValidBookingDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+    return false;
+  }
+  return value >= new Date().toISOString().slice(0, 10);
+}
+
+function timeToMinutes(value: string): number | null {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
 
 const mongoUri = process.env.MONGODB_URI;
 if (!mongoUri) {
@@ -676,6 +711,7 @@ export function initializePetnestData(): Promise<void> {
         { expiresAt: 1 },
         { expireAfterSeconds: 0 },
       ),
+      recordCollection.createIndex({ bookingId: 1 }, { unique: true, sparse: true }),
       setInitialCounter("pets", petCollection),
       setInitialCounter("providers", providerCollection),
       setInitialCounter("bookings", bookingCollection),
@@ -696,6 +732,66 @@ async function nextId(name: string): Promise<number> {
   return counter.value;
 }
 
+async function ensureCompletedBookingRecord(booking: StoredBooking): Promise<void> {
+  if (booking.status !== "completed") return;
+  const existing = await recordCollection.findOne({ bookingId: booking.id });
+  if (existing) return;
+  await recordCollection.insertOne({
+    id: await nextId("records"),
+    bookingId: booking.id,
+    petId: booking.petId,
+    ownerId: booking.ownerId,
+    providerId: booking.providerId,
+    providerName: booking.providerName,
+    title: booking.serviceName,
+    serviceCategory: booking.serviceCategory,
+    type: booking.serviceCategory,
+    date: booking.date,
+    status: "completed",
+    notes: "Completed service",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+const providerCategories = ["grooming", "vaccination", "supplies"] as const;
+type ProviderCategory = (typeof providerCategories)[number];
+
+function validCategories(value: unknown): value is ProviderCategory[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((item) => providerCategories.includes(item as ProviderCategory))
+  );
+}
+
+function validText(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function providerInput(body: Record<string, unknown>, existing?: Provider) {
+  const categories = body.categories ?? existing?.categories;
+  if (
+    !validText(body.name ?? existing?.name) ||
+    !validText(body.location ?? existing?.location) ||
+    !validText(body.description ?? existing?.description) ||
+    !validText(body.contact ?? existing?.contact) ||
+    !validText(body.hours ?? existing?.hours) ||
+    !validCategories(categories)
+  ) {
+    return null;
+  }
+  return {
+    name: String(body.name ?? existing?.name).trim(),
+    location: String(body.location ?? existing?.location).trim(),
+    description: String(body.description ?? existing?.description).trim(),
+    contact: String(body.contact ?? existing?.contact).trim(),
+    hours: String(body.hours ?? existing?.hours).trim(),
+    categories,
+    imageUrl: typeof body.imageUrl === "string" ? body.imageUrl.trim() : existing?.imageUrl ?? "",
+  };
+}
+
 const router: IRouter = Router();
 
 async function register(req: Request, res: Response) {
@@ -706,10 +802,7 @@ async function register(req: Request, res: Response) {
       : "";
   const password =
     typeof req.body?.password === "string" ? req.body.password : "";
-  const role: Role =
-    req.body?.role === "provider" || req.body?.role === "admin"
-      ? req.body.role
-      : "customer";
+  const role: Role = "customer";
 
   if (!name || !/^\S+@\S+\.\S+$/.test(email)) {
     res.status(400).json({ error: "Enter a valid name and email address." });
@@ -723,7 +816,6 @@ async function register(req: Request, res: Response) {
   }
 
   let pendingUserId: string | undefined;
-  let pendingProviderId: number | undefined;
   try {
     await initializePetnestData();
     if (await userCollection.findOne({ email })) {
@@ -745,54 +837,6 @@ async function register(req: Request, res: Response) {
       updatedAt: now,
     };
     pendingUserId = user.id;
-    if (role === "provider") {
-      const providerId = await nextId("providers");
-      pendingProviderId = providerId;
-      const createdAt = new Date().toISOString();
-      const provider: Provider = {
-        id: providerId,
-        name,
-        location: "Location not added",
-        description: "New PetNest provider",
-        categories: ["grooming", "vaccination"],
-        rating: 0,
-        reviewCount: 0,
-        startingPrice: 500,
-        imageUrl: "",
-        verified: false,
-        contact: "Contact not added",
-        hours: "Hours not added",
-        services: [
-          {
-            id: providerId * 1000 + 1,
-            name: "Bath",
-            description: "A gentle bath and dry.",
-            price: 500,
-            durationMinutes: 45,
-            category: "grooming",
-            available: true,
-            createdAt,
-            updatedAt: createdAt,
-          },
-          {
-            id: providerId * 1000 + 2,
-            name: "Anti-rabies",
-            description: "A basic anti-rabies vaccination visit.",
-            price: 750,
-            durationMinutes: 30,
-            category: "vaccination",
-            available: true,
-            createdAt,
-            updatedAt: createdAt,
-          },
-        ],
-        products: [],
-        createdAt,
-        updatedAt: createdAt,
-      };
-      await providerCollection.insertOne(provider);
-      user.providerId = providerId;
-    }
     await userCollection.insertOne(user);
     await startSession(res, user.id);
     res.status(201).json({ user: publicUser(user) });
@@ -803,9 +847,6 @@ async function register(req: Request, res: Response) {
         : Promise.resolve(),
       pendingUserId
         ? sessionCollection.deleteMany({ userId: pendingUserId })
-        : Promise.resolve(),
-      pendingProviderId
-        ? providerCollection.deleteOne({ id: pendingProviderId })
         : Promise.resolve(),
     ]);
     if ((error as { code?: number }).code === 11000) {
@@ -898,6 +939,7 @@ router.get("/providers", async (req, res) => {
   await initializePetnestData();
   const { category, search } = parsed.data;
   const filter: Record<string, unknown> = {};
+  filter.active = { $ne: false };
   if (category) filter.categories = category;
   if (search) {
     filter.$or = ["name", "location", "description"].map((field) => ({
@@ -922,14 +964,20 @@ router.get("/providers/:providerId", async (req, res) => {
   }
   await initializePetnestData();
   const provider = await providerCollection.findOne(
-    { id: parsed.data.providerId },
+    { id: parsed.data.providerId, active: { $ne: false } },
     { projection: { _id: 0 } },
   );
   if (!provider) {
     res.status(404).json({ error: "Provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse(provider));
+  res.json(
+    GetProviderResponse.parse({
+      ...provider,
+      services: provider.services.filter((service) => service.available !== false),
+      products: provider.products.filter((product) => product.inStock),
+    }),
+  );
 });
 
 router.get("/services", async (req, res) => {
@@ -1009,7 +1057,7 @@ router.patch("/provider/profile", async (req, res) => {
   const { id: _id, ...providerInput } = parsed.data;
   const changes: Omit<Provider, "id"> = {
     ...providerInput,
-    imageUrl: existing.imageUrl,
+    imageUrl: providerInput.imageUrl ?? existing.imageUrl,
     verified: existing.verified,
     services: providerInput.services.map((service) => ({
       ...service,
@@ -1018,9 +1066,8 @@ router.patch("/provider/profile", async (req, res) => {
     })),
     products: providerInput.products.map((product) => ({
       ...product,
-      imageUrl:
-        existing.products.find((item) => item.id === product.id)?.imageUrl ??
-        "",
+      imageUrl: product.imageUrl ??
+        existing.products.find((item) => item.id === product.id)?.imageUrl ?? "",
     })),
     updatedAt: new Date().toISOString(),
   };
@@ -1034,6 +1081,203 @@ router.patch("/provider/profile", async (req, res) => {
     return;
   }
   res.json(GetProviderResponse.parse(provider));
+});
+
+router.get("/admin/providers", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  await initializePetnestData();
+  res.json(await providerCollection.find({}, { projection: { _id: 0 } }).sort({ id: 1 }).toArray());
+});
+
+router.post("/admin/providers", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const input = providerInput(body);
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!input || !/^\S+@\S+\.\S+$/.test(email) || password.length < 8) {
+    res.status(400).json({ error: "Provider details, a valid email, and an 8-character password are required." });
+    return;
+  }
+  await initializePetnestData();
+  if (await userCollection.findOne({ email })) {
+    res.status(409).json({ error: "That email address is taken." });
+    return;
+  }
+  const providerId = await nextId("providers");
+  const now = new Date().toISOString();
+  const provider: Provider = {
+    id: providerId,
+    ...input,
+    rating: 0,
+    reviewCount: 0,
+    startingPrice: 0,
+    verified: false,
+    services: [],
+    products: [],
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const [firstName, ...lastNameParts] = String(body.name).trim().split(/\s+/);
+  const user: UserProfile = {
+    id: randomUUID(),
+    name: String(body.name).trim(),
+    firstName,
+    lastName: lastNameParts.join(" "),
+    email,
+    role: "provider",
+    providerId,
+    passwordHash: await hashPassword(password),
+    createdAt: now,
+    updatedAt: now,
+  };
+  try {
+    await providerCollection.insertOne(provider);
+    await userCollection.insertOne(user);
+  } catch (error) {
+    await providerCollection.deleteOne({ id: providerId });
+    if ((error as { code?: number }).code === 11000) {
+      res.status(409).json({ error: "That provider account already exists." });
+      return;
+    }
+    throw error;
+  }
+  res.status(201).json(GetProviderResponse.parse(provider));
+});
+
+router.patch("/admin/providers/:providerId", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  const providerId = Number(req.params.providerId);
+  await initializePetnestData();
+  const existing = await providerCollection.findOne({ id: providerId });
+  if (!existing) {
+    res.status(404).json({ error: "Provider not found" });
+    return;
+  }
+  const input = providerInput((req.body ?? {}) as Record<string, unknown>, existing);
+  if (!input) {
+    res.status(400).json({ error: "Valid provider details and categories are required." });
+    return;
+  }
+  const provider = await providerCollection.findOneAndUpdate(
+    { id: providerId },
+    { $set: { ...input, active: req.body.active !== false, updatedAt: new Date().toISOString() } },
+    { returnDocument: "after", projection: { _id: 0 } },
+  );
+  res.json(provider);
+});
+
+router.delete("/admin/providers/:providerId", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  const providerId = Number(req.params.providerId);
+  await initializePetnestData();
+  const existing = await providerCollection.findOne({ id: providerId });
+  if (!existing) {
+    res.status(404).json({ error: "Provider not found" });
+    return;
+  }
+  if (existing.active !== false) {
+    res.status(409).json({ error: "Deactivate the provider before removing it." });
+    return;
+  }
+  const provider = await providerCollection.findOneAndUpdate(
+    { id: providerId },
+    { $set: { active: false, updatedAt: new Date().toISOString() } },
+    { returnDocument: "after", projection: { _id: 0 } },
+  );
+  if (!provider) {
+    res.status(404).json({ error: "Provider not found" });
+    return;
+  }
+  res.json(provider);
+});
+
+router.post("/provider/services", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const category = body.category;
+  if (!validText(body.name) || !validText(body.description) || !providerCategories.slice(0, 2).includes(category as ProviderCategory) || typeof body.price !== "number" || body.price < 0 || typeof body.durationMinutes !== "number" || body.durationMinutes <= 0) {
+    res.status(400).json({ error: "Name, description, grooming/vaccination category, price, and duration are required." });
+    return;
+  }
+  await initializePetnestData();
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider || !provider.categories.includes(category as string)) {
+    res.status(400).json({ error: "The provider is not assigned to that category." });
+    return;
+  }
+  const service: ProviderService = { id: await nextId("services"), name: body.name.trim(), description: body.description.trim(), price: body.price, durationMinutes: body.durationMinutes, category: category as string, available: body.available !== false, imageUrl: typeof body.imageUrl === "string" ? body.imageUrl.trim() : "", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await providerCollection.updateOne({ id: provider.id }, { $push: { services: service }, $set: { updatedAt: new Date().toISOString() } });
+  res.status(201).json(service);
+});
+
+router.patch("/provider/services/:serviceId", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  await initializePetnestData();
+  const serviceId = Number(req.params.serviceId);
+  const provider = await providerCollection.findOne({ id: access.providerId, "services.id": serviceId });
+  if (!provider) { res.status(404).json({ error: "Service not found" }); return; }
+  const existing = provider.services.find((item) => item.id === serviceId)!;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const category = body.category ?? existing.category;
+  if (!validText(body.name ?? existing.name) || !validText(body.description ?? existing.description) || !provider.categories.includes(category as string) || typeof (body.price ?? existing.price) !== "number" || typeof (body.durationMinutes ?? existing.durationMinutes) !== "number") { res.status(400).json({ error: "Valid service details are required." }); return; }
+  const updated = { ...existing, name: String(body.name ?? existing.name).trim(), description: String(body.description ?? existing.description).trim(), price: Number(body.price ?? existing.price), durationMinutes: Number(body.durationMinutes ?? existing.durationMinutes), category: String(category), available: body.available !== false, imageUrl: typeof body.imageUrl === "string" ? body.imageUrl.trim() : existing.imageUrl ?? "", updatedAt: new Date().toISOString() };
+  await providerCollection.updateOne({ id: provider.id, "services.id": serviceId }, { $set: { "services.$": updated, updatedAt: new Date().toISOString() } });
+  res.json(updated);
+});
+
+router.delete("/provider/services/:serviceId", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const serviceId = Number(req.params.serviceId);
+  await initializePetnestData();
+  const result = await providerCollection.updateOne({ id: access.providerId, "services.id": serviceId }, { $set: { "services.$.available": false, "services.$.updatedAt": new Date().toISOString(), updatedAt: new Date().toISOString() } });
+  if (!result.modifiedCount) { res.status(404).json({ error: "Service not found" }); return; }
+  res.status(204).end();
+});
+
+router.post("/provider/products", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (!validText(body.name) || !validText(body.description) || !validText(body.category) || typeof body.price !== "number" || body.price < 0) { res.status(400).json({ error: "Name, description, category, and price are required." }); return; }
+  await initializePetnestData();
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider || !provider.categories.includes("supplies")) { res.status(400).json({ error: "The provider is not assigned to Pet Supplies." }); return; }
+  const product: ProviderProduct = { id: await nextId("products"), name: body.name.trim(), description: body.description.trim(), price: body.price, imageUrl: typeof body.imageUrl === "string" ? body.imageUrl.trim() : "", category: body.category.trim(), inStock: body.inStock !== false };
+  await providerCollection.updateOne({ id: provider.id }, { $push: { products: product }, $set: { updatedAt: new Date().toISOString() } });
+  res.status(201).json(product);
+});
+
+router.patch("/provider/products/:productId", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  await initializePetnestData();
+  const productId = Number(req.params.productId);
+  const provider = await providerCollection.findOne({ id: access.providerId, "products.id": productId });
+  if (!provider) { res.status(404).json({ error: "Product not found" }); return; }
+  const existing = provider.products.find((item) => item.id === productId)!;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const updated = { ...existing, name: validText(body.name) ? body.name.trim() : existing.name, description: validText(body.description) ? body.description.trim() : existing.description, price: typeof body.price === "number" && body.price >= 0 ? body.price : existing.price, category: validText(body.category) ? body.category.trim() : existing.category, inStock: body.inStock !== false, imageUrl: typeof body.imageUrl === "string" ? body.imageUrl.trim() : existing.imageUrl };
+  await providerCollection.updateOne({ id: provider.id, "products.id": productId }, { $set: { "products.$": updated, updatedAt: new Date().toISOString() } });
+  res.json(updated);
+});
+
+router.delete("/provider/products/:productId", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const productId = Number(req.params.productId);
+  await initializePetnestData();
+  const result = await providerCollection.updateOne({ id: access.providerId, "products.id": productId }, { $set: { "products.$.inStock": false, updatedAt: new Date().toISOString() } });
+  if (!result.modifiedCount) { res.status(404).json({ error: "Product not found" }); return; }
+  res.status(204).end();
 });
 
 router.get("/pets", async (req, res) => {
@@ -1185,40 +1429,132 @@ router.get("/pets/:petId/records", async (req, res) => {
     res.status(404).json({ error: "Pet not found" });
     return;
   }
-  const [petRecords, vaccinationBookings] = await Promise.all([
-    recordCollection
-      .find(
-        { petId: parsed.data.petId, ownerId: access.userId, type: "grooming" },
-        { projection: { _id: 0, petId: 0, ownerId: 0 } },
-      )
-      .sort({ date: -1 })
-      .toArray(),
-    bookingCollection
-      .find(
-        {
-          petId: parsed.data.petId,
-          ownerId: access.userId,
-          serviceCategory: "vaccination",
-        },
-        { projection: { _id: 0, ownerId: 0 } },
-      )
-      .sort({ date: -1 })
-      .toArray(),
-  ]);
+  const completedBookings = await bookingCollection.find({ petId: parsed.data.petId, ownerId: access.userId, status: "completed" }).toArray();
+  await Promise.all(completedBookings.map(ensureCompletedBookingRecord));
+  const petRecords = await recordCollection
+    .find(
+      { petId: parsed.data.petId, ownerId: access.userId },
+      { projection: { _id: 0, petId: 0, ownerId: 0, providerId: 0 } },
+    )
+    .sort({ date: -1 })
+    .toArray();
   res.json(
     GetPetRecordsResponse.parse({
       grooming: petRecords.filter((record) => record.type === "grooming"),
-      vaccinations: vaccinationBookings.map((booking) => ({
-        id: booking.id,
-        type: "vaccination" as const,
-        title: booking.serviceName,
-        providerName: booking.providerName,
-        date: booking.date,
-        status: booking.status,
-        notes: `Scheduled at ${booking.time}`,
-      })),
+      vaccinations: petRecords.filter((record) => record.type === "vaccination"),
     }),
   );
+});
+
+router.get("/provider/records", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const type = req.query.type === "vaccination" || req.query.type === "grooming" ? req.query.type : undefined;
+  await initializePetnestData();
+  const completedBookings = await bookingCollection.find({ providerId: access.providerId, status: "completed" }).toArray();
+  await Promise.all(completedBookings.map(ensureCompletedBookingRecord));
+  const records = await recordCollection.find({ providerId: access.providerId, ...(type ? { type } : {}) }, { projection: { _id: 0 } }).sort({ date: -1 }).toArray();
+  res.json(records);
+});
+
+router.get("/provider/pets", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  await initializePetnestData();
+  const bookings = await bookingCollection
+    .find({ providerId: access.providerId }, { projection: { petId: 1, ownerId: 1 } })
+    .toArray();
+  const petIds = [...new Set(bookings.map((booking) => booking.petId))];
+  const pets = await petCollection.find({ id: { $in: petIds } }, { projection: { _id: 0, ownerId: 0 } }).toArray();
+  const owners = await userCollection.find({ id: { $in: bookings.map((booking) => booking.ownerId) } }, { projection: { _id: 0, id: 1, name: 1, email: 1 } }).toArray();
+  res.json(pets.map((pet) => {
+    const ownerId = bookings.find((booking) => booking.petId === pet.id)?.ownerId;
+    const owner = owners.find((candidate) => candidate.id === ownerId);
+    return { ...pet, ownerName: owner?.name ?? "Customer", ownerEmail: owner?.email ?? "" };
+  }));
+});
+
+router.get("/provider/pets/:petId/records", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const petId = Number(req.params.petId);
+  await initializePetnestData();
+  const relationship = await bookingCollection.findOne({ providerId: access.providerId, petId });
+  if (!relationship) {
+    res.status(404).json({ error: "Pet is not associated with this provider." });
+    return;
+  }
+  const completedBookings = await bookingCollection.find({ providerId: access.providerId, petId, status: "completed" }).toArray();
+  await Promise.all(completedBookings.map(ensureCompletedBookingRecord));
+  const [pet, records] = await Promise.all([
+    petCollection.findOne({ id: petId }, { projection: { _id: 0, ownerId: 0 } }),
+    recordCollection.find({ petId, providerId: access.providerId }, { projection: { _id: 0 } }).sort({ date: -1 }).toArray(),
+  ]);
+  if (!pet) {
+    res.status(404).json({ error: "Pet not found" });
+    return;
+  }
+  const owner = await userCollection.findOne({ id: relationship.ownerId }, { projection: { _id: 0, name: 1, email: 1 } });
+  res.json({ pet, owner: { name: owner?.name ?? "Customer", email: owner?.email ?? "" }, records });
+});
+
+router.post("/provider/records", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const type = body.type === "vaccination" || body.type === "grooming" ? body.type : null;
+  const petId = Number(body.petId);
+  const serviceId = body.serviceId === undefined ? undefined : Number(body.serviceId);
+  if (!type || !Number.isInteger(petId) || petId <= 0 || !validText(body.date) || !validText(body.notes)) {
+    res.status(400).json({ error: "Record type, pet, date, and notes are required." });
+    return;
+  }
+  await initializePetnestData();
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const booking = await bookingCollection.findOne({ providerId: access.providerId, petId, serviceCategory: type, status: { $nin: ["cancelled"] } });
+  if (!provider || !booking) {
+    res.status(400).json({ error: "The pet must have a booking with this provider before a history record can be added." });
+    return;
+  }
+  const service = serviceId ? provider.services.find((item) => item.id === serviceId && item.category === type) : provider.services.find((item) => item.name === booking.serviceName && item.category === type);
+  if (serviceId && !service) {
+    res.status(400).json({ error: "Choose a service owned by this provider." });
+    return;
+  }
+  const record: StoredCareRecord = {
+    id: await nextId("records"),
+    type,
+    title: validText(body.title) ? body.title.trim() : service?.name ?? booking.serviceName,
+    providerName: provider.name,
+    providerId: provider.id,
+    serviceId: service?.id,
+    petId,
+    ownerId: booking.ownerId,
+    date: body.date.trim(),
+    status: "completed",
+    notes: body.notes.trim(),
+    nextDue: type === "vaccination" && typeof body.nextDue === "string" ? body.nextDue : null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await recordCollection.insertOne(record);
+  res.status(201).json(record);
+});
+
+router.patch("/provider/records/:recordId", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const recordId = Number(req.params.recordId);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const changes: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+  if (validText(body.title)) changes.title = body.title.trim();
+  if (validText(body.date)) changes.date = body.date.trim();
+  if (validText(body.notes)) changes.notes = body.notes.trim();
+  if (body.nextDue === null || typeof body.nextDue === "string") changes.nextDue = body.nextDue;
+  await initializePetnestData();
+  const record = await recordCollection.findOneAndUpdate({ id: recordId, providerId: access.providerId }, { $set: changes }, { returnDocument: "after", projection: { _id: 0 } });
+  if (!record) { res.status(404).json({ error: "History record not found" }); return; }
+  res.json(record);
 });
 
 router.get("/bookings", async (req, res) => {
@@ -1255,6 +1591,26 @@ router.post("/bookings", async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  if (
+    !Number.isInteger(parsed.data.providerId) ||
+    parsed.data.providerId <= 0 ||
+    !Number.isInteger(parsed.data.serviceId) ||
+    parsed.data.serviceId <= 0 ||
+    !Number.isInteger(parsed.data.petId) ||
+    parsed.data.petId <= 0
+  ) {
+    res.status(400).json({ error: "Choose a valid provider, service, and pet." });
+    return;
+  }
+  if (!isValidBookingDate(parsed.data.date)) {
+    res.status(400).json({ error: "Choose a valid booking date that is today or later." });
+    return;
+  }
+  const requestedStart = timeToMinutes(parsed.data.time);
+  if (requestedStart === null) {
+    res.status(400).json({ error: "Choose a valid booking time." });
+    return;
+  }
   await initializePetnestData();
   const provider = await providerCollection.findOne({
     id: parsed.data.providerId,
@@ -1282,6 +1638,10 @@ router.post("/bookings", async (req, res) => {
       .json({ error: "Choose a grooming or vaccination service." });
     return;
   }
+  if (!provider.categories.includes(service.category)) {
+    res.status(400).json({ error: "This service is not offered by the provider." });
+    return;
+  }
   if (parsed.data.recordId !== null) {
     const record = await recordCollection.findOne({
       id: parsed.data.recordId,
@@ -1298,11 +1658,23 @@ router.post("/bookings", async (req, res) => {
       return;
     }
   }
-  const conflict = await bookingCollection.findOne({
-    providerId: provider.id,
-    date: parsed.data.date,
-    time: parsed.data.time,
-    status: { $nin: ["cancelled"] },
+  const providerBookings = await bookingCollection
+    .find({
+      providerId: provider.id,
+      date: parsed.data.date,
+      status: { $nin: ["cancelled"] },
+    })
+    .project({ time: 1, serviceName: 1, serviceCategory: 1 })
+    .toArray();
+  const conflict = providerBookings.find((existing) => {
+    const existingService = provider.services.find(
+      (item) => item.name === existing.serviceName && item.category === existing.serviceCategory,
+    );
+    const existingStart = timeToMinutes(existing.time);
+    if (existingStart === null) return false;
+    const existingEnd = existingStart + (existingService?.durationMinutes ?? 30);
+    const requestedEnd = requestedStart + service.durationMinutes;
+    return requestedStart < existingEnd && existingStart < requestedEnd;
   });
   if (conflict) {
     res
@@ -1337,21 +1709,43 @@ router.post("/bookings", async (req, res) => {
 router.delete("/bookings/:bookingId", async (req, res) => {
   const access = await requireCustomer(req, res);
   if (!access) return;
+  res.status(405).json({ error: "Use a cancellation request with a reason." });
+});
+
+router.post("/bookings/:bookingId/cancellation-request", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
   const bookingId = Number(req.params.bookingId);
-  const booking = await bookingCollection.findOneAndUpdate(
-    {
-      id: bookingId,
-      ownerId: access.userId,
-      status: { $nin: ["completed", "cancelled"] },
-    },
-    { $set: { status: "cancelled", updatedAt: new Date().toISOString() } },
-    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
-  );
-  if (!booking) {
-    res.status(404).json({ error: "Active booking not found" });
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (!reason) {
+    res.status(400).json({ error: "Cancellation reason is required." });
     return;
   }
-  res.json(booking);
+  await initializePetnestData();
+  const booking = await bookingCollection.findOne({ id: bookingId, ownerId: access.userId });
+  if (!booking) {
+    res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  if (["completed", "cancelled", "cancellation_pending"].includes(booking.status)) {
+    res.status(409).json({ error: "This booking cannot accept another cancellation request." });
+    return;
+  }
+  const updated = await bookingCollection.findOneAndUpdate(
+    { id: bookingId, ownerId: access.userId, status: booking.status },
+    {
+      $set: {
+        status: "cancellation_pending",
+        cancellationReason: reason,
+        cancellationPreviousStatus: booking.status,
+        cancellationDecision: "pending",
+        cancellationDecidedAt: null,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  res.status(200).json(updated);
 });
 
 router.get("/provider/bookings", async (req, res) => {
@@ -1375,7 +1769,7 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
   const bookingId = Number(req.params.bookingId);
   const status =
     typeof req.body?.status === "string" ? req.body.status.toLowerCase() : "";
-  const allowedStatuses = ["pending", "confirmed", "cancelled", "completed"];
+  const allowedStatuses = ["pending", "confirmed", "cancelled", "completed", "approve_cancellation", "reject_cancellation"];
   if (
     !Number.isInteger(bookingId) ||
     bookingId <= 0 ||
@@ -1384,14 +1778,65 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
     res.status(400).json({ error: "A valid booking and status are required" });
     return;
   }
+  await initializePetnestData();
+  const current = await bookingCollection.findOne({ id: bookingId, providerId: access.providerId });
+  if (!current) {
+    res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  let update: Record<string, unknown>;
+  if (status === "approve_cancellation" || status === "reject_cancellation") {
+    if (current.status !== "cancellation_pending") {
+      res.status(409).json({ error: "This booking has no pending cancellation request." });
+      return;
+    }
+    const approved = status === "approve_cancellation";
+    update = {
+      status: approved ? "cancelled" : current.cancellationPreviousStatus ?? "confirmed",
+      cancellationDecision: approved ? "approved" : "rejected",
+      cancellationDecidedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  } else {
+    if (status === "completed" && current.status !== "confirmed") {
+      res.status(409).json({ error: "Only confirmed bookings can be completed." });
+      return;
+    }
+    if (status === "cancelled") {
+      res.status(400).json({ error: "Use cancellation approval for customer cancellation requests." });
+      return;
+    }
+    update = { status, updatedAt: new Date().toISOString() };
+  }
   const booking = await bookingCollection.findOneAndUpdate(
     { id: bookingId, providerId: access.providerId },
-    { $set: { status, updatedAt: new Date().toISOString() } },
+    { $set: update },
     { returnDocument: "after", projection: { _id: 0 } },
   );
   if (!booking) {
     res.status(404).json({ error: "Booking not found" });
     return;
+  }
+  if (status === "completed") {
+    const existingRecord = await recordCollection.findOne({ bookingId: booking.id });
+    if (!existingRecord) {
+      await recordCollection.insertOne({
+        id: await nextId("records"),
+        bookingId: booking.id,
+        petId: booking.petId,
+        ownerId: booking.ownerId,
+        providerId: booking.providerId,
+        providerName: booking.providerName,
+        title: booking.serviceName,
+        serviceCategory: booking.serviceCategory,
+        type: booking.serviceCategory,
+        date: booking.date,
+        status: "completed",
+        notes: "Completed service",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
   }
   const { ownerId, ...publicBooking } = booking;
   res.json({ ...publicBooking, customerId: ownerId });
@@ -1416,30 +1861,7 @@ router.get("/admin/bookings", async (req, res) => {
 router.patch("/admin/bookings/:bookingId/status", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
-  const bookingId = Number(req.params.bookingId);
-  const allowedStatuses = ["pending", "confirmed", "completed", "cancelled"];
-  const status =
-    typeof req.body?.status === "string" ? req.body.status.toLowerCase() : "";
-  if (
-    !Number.isInteger(bookingId) ||
-    bookingId <= 0 ||
-    !allowedStatuses.includes(status)
-  ) {
-    res.status(400).json({ error: "A valid booking and status are required" });
-    return;
-  }
-  await initializePetnestData();
-  const booking = await bookingCollection.findOneAndUpdate(
-    { id: bookingId },
-    { $set: { status, updatedAt: new Date().toISOString() } },
-    { returnDocument: "after", projection: { _id: 0 } },
-  );
-  if (!booking) {
-    res.status(404).json({ error: "Booking not found" });
-    return;
-  }
-  const { ownerId, ...publicBooking } = booking;
-  res.json({ ...publicBooking, customerId: ownerId });
+  res.status(403).json({ error: "Booking status is managed by the assigned provider." });
 });
 
 router.get("/orders", async (req, res) => {

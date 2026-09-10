@@ -29,6 +29,7 @@ export interface ProviderService {
   price: number;
   durationMinutes: number;
   category: string;
+  imageUrl?: string;
   available?: boolean;
 }
 
@@ -99,6 +100,8 @@ export interface CareRecord {
   date: string;
   status: string;
   notes?: string;
+  bookingId?: number;
+  serviceCategory?: BookingServiceCategory;
 }
 
 export interface PetRecords {
@@ -139,6 +142,10 @@ export interface Booking {
   time: string;
   status: string;
   price: number;
+  cancellationReason?: string | null;
+  cancellationPreviousStatus?: string | null;
+  cancellationDecision?: 'pending' | 'approved' | 'rejected' | null;
+  cancellationDecidedAt?: string | null;
 }
 
 export type OrderInputItemsItem = {
