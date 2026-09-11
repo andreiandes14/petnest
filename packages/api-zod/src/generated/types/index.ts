@@ -7,9 +7,11 @@
  */
 
 export * from './booking';
+export * from './bookingCancellationDecision';
 export * from './bookingInput';
 export * from './bookingServiceCategory';
 export * from './careRecord';
+export * from './careRecordServiceCategory';
 export * from './careRecordType';
 export * from './dashboardSummary';
 export * from './healthStatus';
@@ -18,6 +20,7 @@ export * from './listProvidersParams';
 export * from './order';
 export * from './orderInput';
 export * from './orderInputItemsItem';
+export * from './orderItemsItem';
 export * from './pet';
 export * from './petInput';
 export * from './petRecords';

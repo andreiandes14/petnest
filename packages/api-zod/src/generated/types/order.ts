@@ -5,13 +5,17 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { OrderItemsItem } from './orderItemsItem';
 
 export interface Order {
   id: number;
   providerId: number;
   providerName: string;
+  customerName: string;
+  customerId: string;
   total: number;
   status: string;
   itemCount: number;
-  createdAt: string;
+  items: OrderItemsItem[];
+  createdAt: Date;
 }

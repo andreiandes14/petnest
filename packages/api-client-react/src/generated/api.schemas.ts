@@ -35,12 +35,17 @@ export interface ProviderService {
 
 export interface ProviderProduct {
   id: number;
+  providerId: number;
   name: string;
   description: string;
   price: number;
   imageUrl: string;
   category: string;
-  inStock: boolean;
+  /** @minimum 0 */
+  stock: number;
+  active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export type ProviderDetail = Provider & {
@@ -92,6 +97,14 @@ export const CareRecordType = {
   vaccination: 'vaccination',
 } as const;
 
+export type CareRecordServiceCategory = typeof CareRecordServiceCategory[keyof typeof CareRecordServiceCategory];
+
+
+export const CareRecordServiceCategory = {
+  grooming: 'grooming',
+  vaccination: 'vaccination',
+} as const;
+
 export interface CareRecord {
   id: number;
   type: CareRecordType;
@@ -101,7 +114,7 @@ export interface CareRecord {
   status: string;
   notes?: string;
   bookingId?: number;
-  serviceCategory?: BookingServiceCategory;
+  serviceCategory?: CareRecordServiceCategory;
 }
 
 export interface PetRecords {
@@ -128,6 +141,15 @@ export const BookingServiceCategory = {
   vaccination: 'vaccination',
 } as const;
 
+export type BookingCancellationDecision = typeof BookingCancellationDecision[keyof typeof BookingCancellationDecision] | null;
+
+
+export const BookingCancellationDecision = {
+  pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
+} as const;
+
 export interface Booking {
   id: number;
   providerId: number;
@@ -144,7 +166,7 @@ export interface Booking {
   price: number;
   cancellationReason?: string | null;
   cancellationPreviousStatus?: string | null;
-  cancellationDecision?: 'pending' | 'approved' | 'rejected' | null;
+  cancellationDecision?: BookingCancellationDecision;
   cancellationDecidedAt?: string | null;
 }
 
@@ -158,13 +180,24 @@ export interface OrderInput {
   items: OrderInputItemsItem[];
 }
 
+export type OrderItemsItem = {
+  productId: number;
+  productName: string;
+  price: number;
+  quantity: number;
+  imageUrl: string;
+};
+
 export interface Order {
   id: number;
   providerId: number;
   providerName: string;
+  customerName: string;
+  customerId: string;
   total: number;
   status: string;
   itemCount: number;
+  items: OrderItemsItem[];
   createdAt: string;
 }
 
@@ -187,6 +220,6 @@ export type ListProvidersCategory = typeof ListProvidersCategory[keyof typeof Li
 export const ListProvidersCategory = {
   grooming: 'grooming',
   vaccination: 'vaccination',
-  supplies: 'supplies',
+  'pet-supplies': 'pet-supplies',
 } as const;
 

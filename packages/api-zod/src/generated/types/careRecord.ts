@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { CareRecordServiceCategory } from './careRecordServiceCategory';
 import type { CareRecordType } from './careRecordType';
 
 export interface CareRecord {
@@ -15,4 +16,6 @@ export interface CareRecord {
   date: string;
   status: string;
   notes?: string;
+  bookingId?: number;
+  serviceCategory?: CareRecordServiceCategory;
 }

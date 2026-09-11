@@ -6,11 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type ListProvidersCategory = typeof ListProvidersCategory[keyof typeof ListProvidersCategory];
+export type CareRecordServiceCategory = typeof CareRecordServiceCategory[keyof typeof CareRecordServiceCategory];
 
 
-export const ListProvidersCategory = {
+export const CareRecordServiceCategory = {
   grooming: 'grooming',
   vaccination: 'vaccination',
-  'pet-supplies': 'pet-supplies',
 } as const;

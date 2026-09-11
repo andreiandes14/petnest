@@ -8,10 +8,15 @@
 
 export interface ProviderProduct {
   id: number;
+  providerId: number;
   name: string;
   description: string;
   price: number;
   imageUrl: string;
   category: string;
-  inStock: boolean;
+  /** @minimum 0 */
+  stock: number;
+  active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }

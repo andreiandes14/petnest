@@ -13,5 +13,6 @@ export interface ProviderService {
   price: number;
   durationMinutes: number;
   category: string;
+  imageUrl?: string;
   available?: boolean;
 }

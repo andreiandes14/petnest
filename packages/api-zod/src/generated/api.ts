@@ -21,7 +21,7 @@ export const HealthCheckResponse = zod.object({
  * @summary List pet care providers
  */
 export const ListProvidersQueryParams = zod.object({
-  "category": zod.enum(['grooming', 'vaccination', 'supplies']).optional(),
+  "category": zod.enum(['grooming', 'vaccination', 'pet-supplies']).optional(),
   "search": zod.coerce.string().optional()
 })
 
@@ -46,6 +46,10 @@ export const ListProvidersResponse = zod.array(ListProvidersResponseItem)
 export const GetProviderParams = zod.object({
   "providerId": zod.coerce.number()
 })
+
+export const getProviderResponseTwoProductsItemStockMin = 0;
+
+
 
 export const GetProviderResponse = zod.object({
   "id": zod.number(),
@@ -73,12 +77,16 @@ export const GetProviderResponse = zod.object({
 })),
   "products": zod.array(zod.object({
   "id": zod.number(),
+  "providerId": zod.number(),
   "name": zod.string(),
   "description": zod.string(),
   "price": zod.number(),
   "imageUrl": zod.string(),
   "category": zod.string(),
-  "inStock": zod.boolean()
+  "stock": zod.number().min(getProviderResponseTwoProductsItemStockMin),
+  "active": zod.boolean(),
+  "createdAt": zod.string().optional(),
+  "updatedAt": zod.string().optional()
 }))
 }))
 
@@ -256,10 +264,19 @@ export const ListOrdersResponseItem = zod.object({
   "id": zod.number(),
   "providerId": zod.number(),
   "providerName": zod.string(),
+  "customerName": zod.string(),
+  "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
   "itemCount": zod.number(),
-  "createdAt": zod.string()
+  "items": zod.array(zod.object({
+  "productId": zod.number(),
+  "productName": zod.string(),
+  "price": zod.number(),
+  "quantity": zod.number(),
+  "imageUrl": zod.string()
+})),
+  "createdAt": zod.coerce.date()
 })
 export const ListOrdersResponse = zod.array(ListOrdersResponseItem)
 
@@ -279,10 +296,19 @@ export const CreateOrderResponse = zod.object({
   "id": zod.number(),
   "providerId": zod.number(),
   "providerName": zod.string(),
+  "customerName": zod.string(),
+  "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
   "itemCount": zod.number(),
-  "createdAt": zod.string()
+  "items": zod.array(zod.object({
+  "productId": zod.number(),
+  "productName": zod.string(),
+  "price": zod.number(),
+  "quantity": zod.number(),
+  "imageUrl": zod.string()
+})),
+  "createdAt": zod.coerce.date()
 })
 
 
@@ -305,7 +331,11 @@ export const GetDashboardSummaryResponse = zod.object({
   "date": zod.string(),
   "time": zod.string(),
   "status": zod.string(),
-  "price": zod.number()
+  "price": zod.number(),
+  "cancellationReason": zod.string().nullish(),
+  "cancellationPreviousStatus": zod.string().nullish(),
+  "cancellationDecision": zod.enum(['pending', 'approved', 'rejected']).nullish(),
+  "cancellationDecidedAt": zod.string().nullish()
 }),zod.null()]),
   "recentActivity": zod.array(zod.object({
   "id": zod.number(),
@@ -314,7 +344,9 @@ export const GetDashboardSummaryResponse = zod.object({
   "providerName": zod.string(),
   "date": zod.string(),
   "status": zod.string(),
-  "notes": zod.string().optional()
+  "notes": zod.string().optional(),
+  "bookingId": zod.number().optional(),
+  "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))
 })
 

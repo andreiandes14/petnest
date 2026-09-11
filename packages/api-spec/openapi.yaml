@@ -45,7 +45,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [grooming, vaccination, supplies]
+            enum: [grooming, vaccination, pet-supplies]
         - name: search
           in: query
           required: false
@@ -239,7 +239,18 @@ components:
         - status
     Provider:
       type: object
-      required: [id, name, location, description, categories, rating, reviewCount, startingPrice, imageUrl]
+      required:
+        [
+          id,
+          name,
+          location,
+          description,
+          categories,
+          rating,
+          reviewCount,
+          startingPrice,
+          imageUrl,
+        ]
       properties:
         id: { type: number }
         name: { type: string }
@@ -267,15 +278,30 @@ components:
         available: { type: boolean }
     ProviderProduct:
       type: object
-      required: [id, name, description, price, imageUrl, category, inStock]
+      required:
+        [
+          id,
+          providerId,
+          name,
+          description,
+          price,
+          imageUrl,
+          category,
+          stock,
+          active,
+        ]
       properties:
         id: { type: number }
+        providerId: { type: number }
         name: { type: string }
         description: { type: string }
         price: { type: number }
         imageUrl: { type: string }
         category: { type: string }
-        inStock: { type: boolean }
+        stock: { type: number, minimum: 0 }
+        active: { type: boolean }
+        createdAt: { type: string }
+        updatedAt: { type: string }
     ProviderDetail:
       allOf:
         - $ref: "#/components/schemas/Provider"
@@ -336,6 +362,8 @@ components:
         date: { type: string }
         status: { type: string }
         notes: { type: string }
+        bookingId: { type: number }
+        serviceCategory: { type: string, enum: [grooming, vaccination] }
     PetRecords:
       type: object
       required: [grooming, vaccinations]
@@ -359,7 +387,21 @@ components:
         notes: { type: string }
     Booking:
       type: object
-      required: [id, providerId, providerName, serviceName, serviceCategory, petId, petName, recordId, date, time, status, price]
+      required:
+        [
+          id,
+          providerId,
+          providerName,
+          serviceName,
+          serviceCategory,
+          petId,
+          petName,
+          recordId,
+          date,
+          time,
+          status,
+          price,
+        ]
       properties:
         id: { type: number }
         providerId: { type: number }
@@ -375,7 +417,8 @@ components:
         price: { type: number }
         cancellationReason: { type: string, nullable: true }
         cancellationPreviousStatus: { type: string, nullable: true }
-        cancellationDecision: { type: string, enum: [pending, approved, rejected], nullable: true }
+        cancellationDecision:
+          { type: string, enum: [pending, approved, rejected], nullable: true }
         cancellationDecidedAt: { type: string, nullable: true }
     OrderInput:
       type: object
@@ -392,18 +435,50 @@ components:
               quantity: { type: number }
     Order:
       type: object
-      required: [id, providerId, providerName, total, status, itemCount, createdAt]
+      required:
+        [
+          id,
+          providerId,
+          providerName,
+          customerName,
+          customerId,
+          total,
+          status,
+          itemCount,
+          items,
+          createdAt,
+        ]
       properties:
         id: { type: number }
         providerId: { type: number }
         providerName: { type: string }
+        customerName: { type: string }
+        customerId: { type: string }
         total: { type: number }
         status: { type: string }
         itemCount: { type: number }
-        createdAt: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            required: [productId, productName, price, quantity, imageUrl]
+            properties:
+              productId: { type: number }
+              productName: { type: string }
+              price: { type: number }
+              quantity: { type: number }
+              imageUrl: { type: string }
+        createdAt: { type: string, format: date-time }
     DashboardSummary:
       type: object
-      required: [petCount, upcomingBookingCount, recordCount, nextBooking, recentActivity]
+      required:
+        [
+          petCount,
+          upcomingBookingCount,
+          recordCount,
+          nextBooking,
+          recentActivity,
+        ]
       properties:
         petCount: { type: number }
         upcomingBookingCount: { type: number }
@@ -415,4 +490,3 @@ components:
         recentActivity:
           type: array
           items: { $ref: "#/components/schemas/CareRecord" }
-

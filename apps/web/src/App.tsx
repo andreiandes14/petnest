@@ -82,11 +82,12 @@ import {
   Switch,
   useLocation,
   useParams,
+  useSearch,
   Router as WouterRouter,
 } from "wouter";
 
 const queryClient = new QueryClient();
-const presentationMode = true;
+const presentationMode = false;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 type UserRole = "customer" | "provider" | "admin";
 type AuthUser = {
@@ -142,7 +143,7 @@ const categoryMeta = {
     icon: Syringe,
     copy: "Keep their care plan on track.",
   },
-  supplies: {
+  "pet-supplies": {
     label: "Pet supplies",
     icon: ShoppingBag,
     copy: "Good essentials from people who know pets.",
@@ -181,7 +182,10 @@ function statusLabel(value: string) {
     cancelled: "Cancelled",
     completed: "Completed",
   };
-  return labels[value.toLowerCase()] ?? (value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : value);
+  return (
+    labels[value.toLowerCase()] ??
+    (value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : value)
+  );
 }
 
 /** Two-tone wordmark. Colour is swapped by CSS when it sits on the sidebar. */
@@ -350,9 +354,9 @@ function AppShell({ children }: { children: ReactNode }) {
     ? visibleNavItems.filter(({ href }) => href === "/")
     : role === "admin"
       ? [
-        { href: "/admin/providers", label: "Providers", icon: ShieldCheck },
-        { href: "/admin/bookings", label: "Bookings", icon: CalendarDays },
-      ]
+          { href: "/admin/providers", label: "Providers", icon: ShieldCheck },
+          { href: "/admin/bookings", label: "Bookings", icon: CalendarDays },
+        ]
       : role === "provider"
         ? [{ href: "/provider", label: "Provider", icon: Pencil }]
         : [
@@ -396,22 +400,18 @@ function AppShell({ children }: { children: ReactNode }) {
             <div className="sidebar-footer">
               <Show when="signed-in">
                 <div className="mb-4 flex items-center gap-3">
-                  <div className="sidebar-user-avatar">AR</div>
+                  <div className="sidebar-user-avatar">
+                    {initials(user?.name ?? "Pet parent")}
+                  </div>
                   <div>
-                    <p className="text-sm font-semibold">Alex Rivera</p>
+                    <p className="text-sm font-semibold">
+                      {user?.name ?? "Pet parent"}
+                    </p>
                     <p className="text-xs font-semibold text-muted-foreground">
                       Pet parent
                     </p>
                   </div>
                 </div>
-                <Link
-                  href="/account"
-                  className="text-xs font-bold text-primary hover:underline"
-                  data-testid="link-sidebar-account"
-                >
-                  Manage account{" "}
-                  <ArrowRight size={12} className="ml-1 inline" />
-                </Link>
               </Show>
               <Show when="signed-out">
                 <div className="sidebar-promo">
@@ -534,10 +534,12 @@ function HeroSearch() {
 
 function ProviderCard({ provider }: { provider: Provider }) {
   const [saved, setSaved] = useState(false);
+  const queryString = useSearch();
+  const selectedCategory = new URLSearchParams(queryString).get("category");
   return (
     <div className="wavy-shadow">
       <Link
-          href={`/providers/${provider.id}`}
+        href={`/providers/${provider.id}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`}
         className="provider-card surface-card wavy block"
         data-testid={`card-provider-${provider.id}`}
       >
@@ -819,16 +821,19 @@ function Home({ authenticated = true }: { authenticated?: boolean }) {
 }
 
 function ProvidersPage() {
-  const params = new URLSearchParams(window.location.search);
-  const initialCategory = params.get("category") ?? "";
-  const initialSearch = params.get("search") ?? "";
-  const [category, setCategory] = useState(initialCategory);
-  const [search, setSearch] = useState(initialSearch);
-  const [submittedSearch, setSubmittedSearch] = useState(initialSearch);
+  const [, setLocation] = useLocation();
+  const queryString = useSearch();
+  const params = new URLSearchParams(queryString);
+  const category = params.get("category") ?? "";
+  const submittedSearch = params.get("search") ?? "";
+  const [search, setSearch] = useState(submittedSearch);
+  useEffect(() => {
+    setSearch(submittedSearch);
+  }, [submittedSearch]);
   const queryParams = useMemo(
     () => ({
       ...(category
-        ? { category: category as "grooming" | "vaccination" | "supplies" }
+        ? { category: category as "grooming" | "vaccination" | "pet-supplies" }
         : {}),
       ...(submittedSearch ? { search: submittedSearch } : {}),
     }),
@@ -837,12 +842,12 @@ function ProvidersPage() {
   const query = useListProviders(queryParams, {
     query: { queryKey: getListProvidersQueryKey(queryParams) },
   });
-  const results: Provider[] = query.data ?? [];
+  const results: Provider[] = query.isFetching ? [] : (query.data ?? []);
   const unfiltered = !category && !submittedSearch;
   const spotlight =
     unfiltered && results.length > 2
       ? results.reduce((best, item) =>
-        item.rating > best.rating ? item : best,
+          item.rating > best.rating ? item : best,
         )
       : undefined;
   const rest = spotlight
@@ -870,7 +875,10 @@ function ProvidersPage() {
           className="filter-bar-search"
           onSubmit={(event) => {
             event.preventDefault();
-            setSubmittedSearch(search);
+            const next = new URLSearchParams();
+            if (category) next.set("category", category);
+            if (search) next.set("search", search);
+            setLocation(`/providers${next.size ? `?${next}` : ""}`);
           }}
         >
           <Search size={17} className="shrink-0 text-muted-foreground" />
@@ -893,7 +901,9 @@ function ProvidersPage() {
         <div className="flex flex-wrap gap-2">
           <button
             className={`filter-chip ${!category ? "active" : ""}`}
-            onClick={() => setCategory("")}
+            onClick={() => {
+              setLocation("/providers");
+            }}
             data-testid="button-filter-all"
           >
             All providers
@@ -902,7 +912,9 @@ function ProvidersPage() {
             <button
               className={`filter-chip ${category === key ? "active" : ""}`}
               key={key}
-              onClick={() => setCategory(key)}
+              onClick={() => {
+                setLocation(`/providers?category=${encodeURIComponent(key)}`);
+              }}
               data-testid={`button-filter-${key}`}
             >
               {meta.label}
@@ -919,9 +931,8 @@ function ProvidersPage() {
             <button
               className="text-sm font-bold text-primary hover:underline"
               onClick={() => {
-                setCategory("");
-                setSearch("");
-                setSubmittedSearch("");
+                  setSearch("");
+                setLocation("/providers");
               }}
               data-testid="button-clear-filter"
             >
@@ -940,7 +951,7 @@ function ProvidersPage() {
               full-width spotlight, then the rest as a grid. */}
           {spotlight ? (
             <Link
-              href={`/providers/${spotlight.id}`}
+              href={`/providers/${spotlight.id}${category ? `?category=${encodeURIComponent(category)}` : ""}`}
               className={`spotlight wavy tone-${spotlight.id % 4}`}
               data-testid={`card-spotlight-${spotlight.id}`}
             >
@@ -1311,10 +1322,19 @@ function BookingModal({
             </p>
             {savedBooking ? (
               <div className="surface-card mx-auto mt-5 max-w-sm bg-muted p-4 text-left text-sm">
-                <p><strong>Provider:</strong> {savedBooking.providerName}</p>
-                <p className="mt-2"><strong>Service:</strong> {savedBooking.serviceName}</p>
-                <p className="mt-2"><strong>When:</strong> {formatDate(savedBooking.date)} at {savedBooking.time}</p>
-                <p className="mt-2"><strong>Status:</strong> {statusLabel(savedBooking.status)}</p>
+                <p>
+                  <strong>Provider:</strong> {savedBooking.providerName}
+                </p>
+                <p className="mt-2">
+                  <strong>Service:</strong> {savedBooking.serviceName}
+                </p>
+                <p className="mt-2">
+                  <strong>When:</strong> {formatDate(savedBooking.date)} at{" "}
+                  {savedBooking.time}
+                </p>
+                <p className="mt-2">
+                  <strong>Status:</strong> {statusLabel(savedBooking.status)}
+                </p>
               </div>
             ) : null}
             <button className="btn btn-primary mt-6" onClick={onClose}>
@@ -1485,22 +1505,46 @@ function BookingModal({
 }
 
 function ProviderDetailPage() {
+  const { user } = useAuth();
+  const queryString = useSearch();
+  const selectedCategory = new URLSearchParams(queryString).get("category");
+  const suppliesOnly = selectedCategory === "pet-supplies";
   const params = useParams<{ providerId?: string }>();
   const providerId = Number(params.providerId);
-  const query = useGetProvider(providerId, {
-    query: {
-      enabled: !!providerId,
-      queryKey: getGetProviderQueryKey(providerId),
-    },
+  const query = useQuery({
+    queryKey: [...getGetProviderQueryKey(providerId), selectedCategory],
+    enabled: !!providerId,
+    queryFn: ({ signal }) =>
+      adminRequest<ProviderDetail>(
+        `/api/providers/${providerId}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`,
+        { signal },
+      ),
   });
   const [bookingService, setBookingService] = useState<ProviderService | null>(
     null,
   );
   const [cart, setCart] = useState<
     { product: ProviderProduct; quantity: number }[]
-  >([]);
+  >(() => {
+    try {
+      return JSON.parse(
+        localStorage.getItem(
+          `petnest-cart-${user?.id ?? "guest"}-${providerId}`,
+        ) ?? "[]",
+      );
+    } catch {
+      return [];
+    }
+  });
+  const [checkingOut, setCheckingOut] = useState(false);
   const createOrder = useCreateOrder();
   const [notice, setNotice] = useState("");
+  useEffect(() => {
+    localStorage.setItem(
+      `petnest-cart-${user?.id ?? "guest"}-${providerId}`,
+      JSON.stringify(cart),
+    );
+  }, [cart, providerId, user?.id]);
   if (query.isLoading)
     return <LoadingState label="Opening this provider's nest" />;
   if (query.isError || !query.data)
@@ -1511,9 +1555,26 @@ function ProviderDetailPage() {
       />
     );
   const provider = query.data;
+  const visibleServices =
+    selectedCategory === "grooming" || selectedCategory === "vaccination"
+      ? provider.services.filter(
+          (service) => service.category === selectedCategory,
+        )
+      : selectedCategory
+        ? []
+        : provider.services;
+  const visibleProducts =
+    selectedCategory === "pet-supplies"
+      ? provider.products.filter(
+          (product) => product.category === "pet-supplies" && product.active,
+        )
+      : selectedCategory
+        ? []
+        : provider.products;
   const addProduct = (product: ProviderProduct) => {
     setCart((current) => {
       const existing = current.find((item) => item.product.id === product.id);
+      if (existing?.quantity === product.stock) return current;
       return existing
         ? current.map((item) =>
             item.product.id === product.id
@@ -1523,8 +1584,19 @@ function ProviderDetailPage() {
         : [...current, { product, quantity: 1 }];
     });
     setNotice(`${product.name} added to your basket`);
+    queryClient.invalidateQueries({ queryKey: ["shopping-cart"] });
     window.setTimeout(() => setNotice(""), 2500);
   };
+  const changeQuantity = (productId: number, quantity: number) =>
+    setCart((current) =>
+      current.flatMap((item) =>
+        item.product.id !== productId
+          ? [item]
+          : quantity < 1
+            ? []
+            : [{ ...item, quantity: Math.min(quantity, item.product.stock) }],
+      ),
+    );
   const total = cart.reduce(
     (sum, item) => sum + item.product.price * item.quantity,
     0,
@@ -1544,6 +1616,9 @@ function ProviderDetailPage() {
       {
         onSuccess: () => {
           setCart([]);
+          setCheckingOut(false);
+          query.refetch();
+          queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
           setNotice("Order placed — we will keep an eye on it.");
           window.setTimeout(() => setNotice(""), 3500);
         },
@@ -1553,7 +1628,11 @@ function ProviderDetailPage() {
   return (
     <div className="animate-in">
       <Link
-        href="/providers"
+        href={
+          selectedCategory
+            ? `/providers?category=${encodeURIComponent(selectedCategory)}`
+            : "/providers"
+        }
         className="mb-6 inline-flex items-center gap-1 text-xs font-bold text-muted-foreground hover:text-primary"
         data-testid="link-back-providers"
       >
@@ -1620,128 +1699,266 @@ function ProviderDetailPage() {
         </div>
       ) : null}
       <div className="detail-panels">
-        <section className="surface-card p-5">
-          <div className="mb-4 flex items-end justify-between">
-            <div>
-              <p className="eyebrow">Care menu</p>
-              <h2 className="section-title mt-1">Services</h2>
-            </div>
-            <span className="tag">{provider.services.length} options</span>
-          </div>
-          <div className="list-stack">
-            {provider.services.map((service) => (
-              <div
-                className="service-row"
-                key={service.id}
-                data-testid={`row-service-${service.id}`}
-              >
-                {service.imageUrl ? <img className="product-thumb mb-3" src={service.imageUrl} alt="" /> : null}
-                <div className="min-w-0">
-                  <h3 className="font-semibold">{service.name}</h3>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    {service.description}
-                  </p>
-                  <p className="mt-2 font-mono text-xs text-muted-foreground">
-                    {service.durationMinutes} min · {money(service.price)}
-                  </p>
-                </div>
-                <button
-                  className="btn btn-primary shrink-0"
-                  onClick={() => setBookingService(service)}
-                  disabled={service.available === false}
-                  data-testid={`button-book-service-${service.id}`}
-                >
-                  {service.available === false ? "Unavailable" : "Book"}
-                </button>
+        {!suppliesOnly ? (
+          <section className="surface-card p-5">
+            <div className="mb-4 flex items-end justify-between">
+              <div>
+                <p className="eyebrow">Care menu</p>
+                <h2 className="section-title mt-1">Services</h2>
               </div>
-            ))}
-          </div>
-        </section>
-        <section className="surface-card p-5">
-          <div className="mb-4 flex items-end justify-between">
-            <div>
-              <p className="eyebrow">From their shelves</p>
-              <h2 className="section-title mt-1">Pet supplies</h2>
+              <span className="tag">{visibleServices.length} options</span>
             </div>
-            {cart.length ? (
-              <span className="tag tag-accent">
-                {cart.reduce((sum, item) => sum + item.quantity, 0)} in basket
-              </span>
-            ) : null}
-          </div>
-          <div className="list-stack">
-            {provider.products.map((product) => (
-              <div
-                className="product-row"
-                key={product.id}
-                data-testid={`row-product-${product.id}`}
-              >
-                {product.imageUrl ? (
-                  <img
-                    className="product-thumb"
-                    src={product.imageUrl}
-                    alt=""
-                  />
-                ) : (
-                  <div
-                    className="product-thumb grid place-items-center bg-muted text-muted-foreground"
-                    aria-label="No product image"
-                  >
-                    <Package size={18} />
+            <div className="list-stack">
+              {visibleServices.map((service) => (
+                <div
+                  className="service-row"
+                  key={service.id}
+                  data-testid={`row-service-${service.id}`}
+                >
+                  {service.imageUrl ? (
+                    <img
+                      className="product-thumb mb-3"
+                      src={service.imageUrl}
+                      alt=""
+                    />
+                  ) : null}
+                  <div className="min-w-0">
+                    <h3 className="font-semibold">{service.name}</h3>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {service.description}
+                    </p>
+                    <p className="mt-2 font-mono text-xs text-muted-foreground">
+                      {service.durationMinutes} min · {money(service.price)}
+                    </p>
                   </div>
-                )}
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-semibold">{product.name}</h3>
-                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
-                    {product.description}
-                  </p>
-                  <p className="mt-2 font-mono text-xs">
-                    {money(product.price)}
-                  </p>
+                  <button
+                    className="btn btn-primary shrink-0"
+                    onClick={() => setBookingService(service)}
+                    disabled={service.available === false}
+                    data-testid={`button-book-service-${service.id}`}
+                  >
+                    {service.available === false ? "Unavailable" : "Book"}
+                  </button>
                 </div>
-                <button
-                  className="btn btn-ghost shrink-0"
-                  onClick={() => addProduct(product)}
-                  disabled={!product.inStock}
-                  data-testid={`button-add-product-${product.id}`}
-                >
-                  {product.inStock ? (
-                    <>
-                      <Plus size={14} /> Add
-                    </>
-                  ) : (
-                    "Out"
-                  )}
-                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+        {suppliesOnly || !selectedCategory ? (
+          <section className="surface-card p-5">
+            <div className="mb-4 flex items-end justify-between">
+              <div>
+                <p className="eyebrow">From their shelves</p>
+                <h2 className="section-title mt-1">Pet supplies</h2>
               </div>
-            ))}
-          </div>
-          {cart.length ? (
-            <div className="mt-5 rounded-2xl bg-muted p-4">
-              <div className="flex items-center justify-between text-sm font-semibold">
-                <span>Basket total</span>
-                <span className="font-mono">{money(total)}</span>
-              </div>
-              <button
-                className="btn btn-secondary mt-3 w-full"
-                onClick={placeOrder}
-                disabled={createOrder.isPending}
-                data-testid="button-place-order"
-              >
-                {createOrder.isPending
-                  ? "Placing order…"
-                  : "Place supply order"}{" "}
-                <ArrowRight size={14} />
-              </button>
-              {createOrder.isError ? (
-                <p className="mt-2 text-xs text-destructive">
-                  We could not place that order. Please try again.
-                </p>
+              {cart.length ? (
+                <span className="tag tag-accent">
+                  {cart.reduce((sum, item) => sum + item.quantity, 0)} in basket
+                </span>
               ) : null}
             </div>
-          ) : null}
-        </section>
+            <div className="list-stack">
+              {visibleProducts.map((product) => (
+                <div
+                  className="product-row"
+                  key={product.id}
+                  data-testid={`row-product-${product.id}`}
+                >
+                  {product.imageUrl ? (
+                    <img
+                      className="product-thumb"
+                      src={product.imageUrl}
+                      alt=""
+                    />
+                  ) : (
+                    <div
+                      className="product-thumb grid place-items-center bg-muted text-muted-foreground"
+                      aria-label="No product image"
+                    >
+                      <Package size={18} />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-semibold">{product.name}</h3>
+                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                      {product.description}
+                    </p>
+                    <p className="mt-2 font-mono text-xs">
+                      {money(product.price)}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {product.stock > 0
+                        ? `${product.stock} in stock`
+                        : "Out of stock"}
+                    </p>
+                  </div>
+                  <input
+                    className="input w-16"
+                    type="number"
+                    min="1"
+                    max={product.stock}
+                    defaultValue="1"
+                    aria-label={`Quantity for ${product.name}`}
+                    id={`quantity-${product.id}`}
+                  />
+                  <button
+                    className="btn btn-ghost shrink-0"
+                    onClick={() => {
+                      const input = document.getElementById(
+                        `quantity-${product.id}`,
+                      ) as HTMLInputElement | null;
+                      const amount = Math.max(
+                        1,
+                        Math.min(product.stock, Number(input?.value) || 1),
+                      );
+                      for (let count = 0; count < amount; count += 1)
+                        addProduct(product);
+                    }}
+                    disabled={product.stock < 1}
+                    data-testid={`button-add-product-${product.id}`}
+                  >
+                    {product.stock > 0 ? (
+                      <>
+                        <Plus size={14} /> Add
+                      </>
+                    ) : (
+                      "Out of Stock"
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+            {cart.length ? (
+              <div className="mt-5 rounded-2xl bg-muted p-4">
+                <div className="mb-3 space-y-2">
+                  {cart.map((item) => (
+                    <div
+                      className="flex items-center gap-2 text-sm"
+                      key={item.product.id}
+                    >
+                      <span className="flex-1 font-semibold">
+                        {item.product.name}
+                      </span>
+                      <button
+                        className="btn btn-ghost h-8 min-h-0 px-2"
+                        onClick={() =>
+                          changeQuantity(item.product.id, item.quantity - 1)
+                        }
+                      >
+                        −
+                      </button>
+                      <span>{item.quantity}</span>
+                      <button
+                        className="btn btn-ghost h-8 min-h-0 px-2"
+                        disabled={item.quantity >= item.product.stock}
+                        onClick={() =>
+                          changeQuantity(item.product.id, item.quantity + 1)
+                        }
+                      >
+                        +
+                      </button>
+                      <button
+                        className="btn btn-ghost h-8 min-h-0 px-2"
+                        onClick={() => changeQuantity(item.product.id, 0)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between text-sm font-semibold">
+                  <span>Basket total</span>
+                  <span className="font-mono">{money(total)}</span>
+                </div>
+                <Link
+                  href="/orders"
+                  className="btn btn-secondary mt-3 w-full"
+                  data-testid="button-open-cart"
+                >
+                  Open cart and checkout <ArrowRight size={14} />
+                </Link>
+                {createOrder.isError ? (
+                  <p className="mt-2 text-xs text-destructive">
+                    We could not place that order. Please try again.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
       </div>
+      {checkingOut ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="checkout-title"
+          >
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="eyebrow">Pet Supplies</p>
+                <h2 id="checkout-title" className="modal-title">
+                  Review your order
+                </h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  From {provider.name}
+                </p>
+              </div>
+              <button
+                className="modal-close"
+                onClick={() => setCheckingOut(false)}
+              >
+                <X size={17} />
+              </button>
+            </div>
+            <div className="list-stack mt-5">
+              {cart.map((item) => (
+                <div className="product-row" key={item.product.id}>
+                  {item.product.imageUrl ? (
+                    <img
+                      className="product-thumb"
+                      src={item.product.imageUrl}
+                      alt=""
+                    />
+                  ) : (
+                    <div className="product-thumb grid place-items-center bg-muted">
+                      <Package size={18} />
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <p className="font-semibold">{item.product.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {item.quantity} × {money(item.product.price)}
+                    </p>
+                  </div>
+                  <span className="font-mono text-sm">
+                    {money(item.quantity * item.product.price)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-5 flex items-center justify-between border-t pt-4 font-semibold">
+              <span>Subtotal / Total</span>
+              <span className="font-mono">{money(total)}</span>
+            </div>
+            <button
+              className="btn btn-primary mt-5 w-full"
+              onClick={placeOrder}
+              disabled={createOrder.isPending}
+            >
+              {createOrder.isPending ? "Placing order…" : "Place Order"}
+            </button>
+            {createOrder.isError ? (
+              <p className="mt-3 text-sm text-destructive">
+                {createOrder.error instanceof Error
+                  ? createOrder.error.message
+                  : "Order could not be placed."}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {bookingService ? (
         <BookingModal
           provider={provider}
@@ -1757,16 +1974,24 @@ function BookingsPage() {
   const query = useListBookings({
     query: { queryKey: getListBookingsQueryKey() },
   });
-  const [cancellationBooking, setCancellationBooking] = useState<Booking | null>(null);
+  const [cancellationBooking, setCancellationBooking] =
+    useState<Booking | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
   const cancel = useMutation({
     mutationFn: ({ id, reason }: { id: number; reason: string }) =>
-      adminRequest<Booking>(`/api/bookings/${id}/cancellation-request`, { method: "POST", body: JSON.stringify({ reason }) }),
-    onSuccess: () =>
-      { setCancellationBooking(null); setCancellationReason(""); queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() }); },
+      adminRequest<Booking>(`/api/bookings/${id}/cancellation-request`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: () => {
+      setCancellationBooking(null);
+      setCancellationReason("");
+      queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() });
+    },
   });
   const bookings: Booking[] = query.data ?? [];
-  const isOver = (status: string) => ["completed", "cancelled"].includes(status.toLowerCase());
+  const isOver = (status: string) =>
+    ["completed", "cancelled"].includes(status.toLowerCase());
   const upcoming = bookings.filter((booking) => !isOver(booking.status));
   const past = bookings.filter((booking) => isOver(booking.status));
 
@@ -1813,8 +2038,16 @@ function BookingsPage() {
               Waiting for {booking.providerName} to confirm.
             </p>
           ) : null}
-          {booking.status.toLowerCase() === "cancellation_pending" ? <p className="booking-note">Cancellation request is waiting for provider review.</p> : null}
-          {booking.cancellationDecision === "rejected" ? <p className="booking-note">Cancellation request rejected. Your booking remains active.</p> : null}
+          {booking.status.toLowerCase() === "cancellation_pending" ? (
+            <p className="booking-note">
+              Cancellation request is waiting for provider review.
+            </p>
+          ) : null}
+          {booking.cancellationDecision === "rejected" ? (
+            <p className="booking-note">
+              Cancellation request rejected. Your booking remains active.
+            </p>
+          ) : null}
         </div>
         <div className="booking-side">
           <span className={`status status-${booking.status.toLowerCase()}`}>
@@ -1822,7 +2055,8 @@ function BookingsPage() {
           </span>
           <span className="booking-price">{money(booking.price)}</span>
         </div>
-        {!isOver(booking.status) && booking.status.toLowerCase() !== "cancellation_pending" ? (
+        {!isOver(booking.status) &&
+        booking.status.toLowerCase() !== "cancellation_pending" ? (
           <button
             className="btn btn-ghost booking-cancel"
             disabled={cancel.isPending}
@@ -1909,7 +2143,57 @@ function BookingsPage() {
           </>
         )}
       </div>
-      {cancellationBooking ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="cancel-booking-title"><h2 id="cancel-booking-title" className="modal-title">Request cancellation</h2><p className="mt-2 text-sm text-muted-foreground">Your provider must review this request before the booking is cancelled.</p><textarea className="input mt-5 h-28 py-3" placeholder="Cancellation reason" value={cancellationReason} onChange={(event) => setCancellationReason(event.target.value)} /><div className="mt-2 text-sm text-destructive">{cancel.isError ? cancel.error.message : !cancellationReason.trim() && cancel.isIdle ? "Cancellation reason is required." : ""}</div><div className="mt-5 flex gap-2"><button className="btn btn-ghost" onClick={() => setCancellationBooking(null)}>Cancel</button><button className="btn btn-primary" disabled={cancel.isPending || !cancellationReason.trim()} onClick={() => cancel.mutate({ id: cancellationBooking.id, reason: cancellationReason })}>Send request</button></div></div></div> : null}
+      {cancellationBooking ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cancel-booking-title"
+          >
+            <h2 id="cancel-booking-title" className="modal-title">
+              Request cancellation
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Your provider must review this request before the booking is
+              cancelled.
+            </p>
+            <textarea
+              className="input mt-5 h-28 py-3"
+              placeholder="Cancellation reason"
+              value={cancellationReason}
+              onChange={(event) => setCancellationReason(event.target.value)}
+            />
+            <div className="mt-2 text-sm text-destructive">
+              {cancel.isError
+                ? cancel.error.message
+                : !cancellationReason.trim() && cancel.isIdle
+                  ? "Cancellation reason is required."
+                  : ""}
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                className="btn btn-ghost"
+                onClick={() => setCancellationBooking(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={cancel.isPending || !cancellationReason.trim()}
+                onClick={() =>
+                  cancel.mutate({
+                    id: cancellationBooking.id,
+                    reason: cancellationReason,
+                  })
+                }
+              >
+                Send request
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1963,7 +2247,8 @@ function AdminBookingsPage() {
       <p className="eyebrow">Admin workspace</p>
       <h1 className="page-title">Booking visibility.</h1>
       <p className="page-subtitle">
-        Review system bookings. Status decisions belong to the assigned provider.
+        Review system bookings. Status decisions belong to the assigned
+        provider.
       </p>
       <div className="mt-8">
         {bookings.length ? (
@@ -1991,7 +2276,14 @@ function AdminBookingsPage() {
                       </p>
                     </td>
                     <td className="font-mono text-xs">{booking.customerId}</td>
-                    <td>{booking.petName}{booking.cancellationReason ? <p className="mt-1 text-xs text-destructive">Reason: {booking.cancellationReason}</p> : null}</td>
+                    <td>
+                      {booking.petName}
+                      {booking.cancellationReason ? (
+                        <p className="mt-1 text-xs text-destructive">
+                          Reason: {booking.cancellationReason}
+                        </p>
+                      ) : null}
+                    </td>
                     <td>
                       <p>{formatDate(booking.date)}</p>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -1999,7 +2291,9 @@ function AdminBookingsPage() {
                       </p>
                     </td>
                     <td>
-                      <span className={`status status-${booking.status.toLowerCase()}`}>
+                      <span
+                        className={`status status-${booking.status.toLowerCase()}`}
+                      >
                         {statusLabel(booking.status)}
                       </span>
                     </td>
@@ -2051,9 +2345,7 @@ function AdminProvidersPage() {
         {
           method: editing ? "PATCH" : "POST",
           body: JSON.stringify(
-            editing
-              ? { ...form, active: editing.active !== false }
-              : form,
+            editing ? { ...form, active: editing.active !== false } : form,
           ),
         },
       ),
@@ -2069,7 +2361,11 @@ function AdminProvidersPage() {
         method: "PATCH",
         body: JSON.stringify({ active }),
       }),
-    onSuccess: () => { setStatusTarget(null); queryClient.invalidateQueries({ queryKey: ["admin", "providers"] }); },
+    onSuccess: () => {
+      setStatusTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+    },
   });
   const removeProvider = useMutation({
     mutationFn: (id: number) =>
@@ -2079,11 +2375,18 @@ function AdminProvidersPage() {
     onSuccess: () => {
       setRemoveTarget(null);
       queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
     },
   });
   if (!isAdmin) return <NotFound />;
   if (query.isLoading) return <LoadingState label="Loading providers" />;
-  if (query.isError) return <ErrorState onRetry={() => query.refetch()} message="Providers could not be loaded." />;
+  if (query.isError)
+    return (
+      <ErrorState
+        onRetry={() => query.refetch()}
+        message="Providers could not be loaded."
+      />
+    );
   const toggleCategory = (category: string) =>
     setForm((current) => ({
       ...current,
@@ -2108,41 +2411,224 @@ function AdminProvidersPage() {
     <div className="animate-in">
       <p className="eyebrow">Admin workspace</p>
       <h1 className="page-title">Provider directory.</h1>
-      <p className="page-subtitle">Create and maintain the providers customers can discover.</p>
+      <p className="page-subtitle">
+        Create and maintain the providers customers can discover.
+      </p>
       <section className="surface-card mt-8 p-6">
-        <h2 className="section-title">{editing ? "Edit provider" : "Add provider"}</h2>
+        <h2 className="section-title">
+          {editing ? "Edit provider" : "Add provider"}
+        </h2>
         <div className="form-grid mt-5">
           {(["name", "location", "contact", "hours"] as const).map((field) => (
             <div className="form-field" key={field}>
-              <label className="form-label">{field[0].toUpperCase() + field.slice(1)}</label>
-              <input className="input" value={form[field]} onChange={(event) => setForm({ ...form, [field]: event.target.value })} />
+              <label className="form-label">
+                {field[0].toUpperCase() + field.slice(1)}
+              </label>
+              <input
+                className="input"
+                value={form[field]}
+                onChange={(event) =>
+                  setForm({ ...form, [field]: event.target.value })
+                }
+              />
             </div>
           ))}
           {!editing ? (
             <>
-              <div className="form-field"><label className="form-label">Provider login email</label><input className="input" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></div>
-              <div className="form-field"><label className="form-label">Temporary password</label><input className="input" type="password" minLength={8} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></div>
+              <div className="form-field">
+                <label className="form-label">Provider login email</label>
+                <input
+                  className="input"
+                  type="email"
+                  value={form.email}
+                  onChange={(event) =>
+                    setForm({ ...form, email: event.target.value })
+                  }
+                />
+              </div>
+              <div className="form-field">
+                <label className="form-label">Temporary password</label>
+                <input
+                  className="input"
+                  type="password"
+                  minLength={8}
+                  value={form.password}
+                  onChange={(event) =>
+                    setForm({ ...form, password: event.target.value })
+                  }
+                />
+              </div>
             </>
           ) : null}
-          <div className="form-field full"><label className="form-label">Description</label><textarea className="input h-24 py-3" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></div>
+          <div className="form-field full">
+            <label className="form-label">Description</label>
+            <textarea
+              className="input h-24 py-3"
+              value={form.description}
+              onChange={(event) =>
+                setForm({ ...form, description: event.target.value })
+              }
+            />
+          </div>
         </div>
         <div className="mt-5 flex flex-wrap gap-3">
-          {(["grooming", "vaccination", "supplies"] as const).map((category) => <label className="flex items-center gap-2 text-sm" key={category}><input type="checkbox" checked={form.categories.includes(category)} onChange={() => toggleCategory(category)} /> {category}</label>)}
+          {(["grooming", "vaccination", "pet-supplies"] as const).map(
+            (category) => (
+              <label className="flex items-center gap-2 text-sm" key={category}>
+                <input
+                  type="checkbox"
+                  checked={form.categories.includes(category)}
+                  onChange={() => toggleCategory(category)}
+                />{" "}
+                {category}
+              </label>
+            ),
+          )}
         </div>
         <div className="mt-6 flex gap-3">
-          <button className="btn btn-primary" onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? "Saving…" : editing ? "Save provider" : "Create provider"}</button>
-          {editing ? <button className="btn btn-ghost" onClick={() => { setEditing(null); setForm(emptyProviderForm); }}>Cancel</button> : null}
+          <button
+            className="btn btn-primary"
+            onClick={() => save.mutate()}
+            disabled={save.isPending}
+          >
+            {save.isPending
+              ? "Saving…"
+              : editing
+                ? "Save provider"
+                : "Create provider"}
+          </button>
+          {editing ? (
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setEditing(null);
+                setForm(emptyProviderForm);
+              }}
+            >
+              Cancel
+            </button>
+          ) : null}
         </div>
-        {save.isError ? <p className="mt-3 text-sm text-destructive">{save.error.message}</p> : null}
+        {save.isError ? (
+          <p className="mt-3 text-sm text-destructive">{save.error.message}</p>
+        ) : null}
       </section>
       <section className="surface-card mt-6 p-6">
         <h2 className="section-title">Registered providers</h2>
         <div className="list-stack mt-5">
-          {(query.data ?? []).map((provider) => <div className="service-row" key={provider.id}><div className="min-w-0 flex-1"><p className="font-semibold">{provider.name}</p><p className="text-xs text-muted-foreground">{provider.categories.join(" · ")} · {provider.active === false ? "Inactive" : "Active"}</p></div><button className="btn btn-ghost" onClick={() => editProvider(provider)}>Edit</button><button className="btn btn-ghost" disabled={deactivate.isPending} onClick={() => setStatusTarget(provider)}>{provider.active === false ? "Reactivate provider" : "Deactivate provider"}</button><button className="btn btn-ghost text-destructive" disabled={removeProvider.isPending || provider.active !== false} onClick={() => setRemoveTarget(provider)}>Remove provider</button></div>)}
+          {(query.data ?? []).map((provider) => (
+            <div className="service-row" key={provider.id}>
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold">{provider.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {provider.categories.join(" · ")} ·{" "}
+                  {provider.active === false ? "Inactive" : "Active"}
+                </p>
+              </div>
+              <button
+                className="btn btn-ghost"
+                onClick={() => editProvider(provider)}
+              >
+                Edit
+              </button>
+              <button
+                className="btn btn-ghost"
+                disabled={deactivate.isPending}
+                onClick={() => setStatusTarget(provider)}
+              >
+                {provider.active === false
+                  ? "Reactivate provider"
+                  : "Deactivate provider"}
+              </button>
+              <button
+                className="btn btn-ghost text-destructive"
+                disabled={removeProvider.isPending}
+                onClick={() => setRemoveTarget(provider)}
+              >
+                Remove provider
+              </button>
+            </div>
+          ))}
         </div>
       </section>
-      {statusTarget ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="provider-status-title"><h2 id="provider-status-title" className="modal-title">{statusTarget.active === false ? "Reactivate provider?" : "Deactivate provider?"}</h2><p className="mt-3 text-sm text-muted-foreground">{statusTarget.name} will be {statusTarget.active === false ? "visible and bookable" : "hidden from new customer bookings"}. Historical bookings and pet records remain unchanged.</p><div className="mt-6 flex gap-2"><button className="btn btn-ghost" onClick={() => setStatusTarget(null)}>Cancel</button><button className="btn btn-primary" disabled={deactivate.isPending} onClick={() => deactivate.mutate({ id: statusTarget.id, active: statusTarget.active === false })}>{statusTarget.active === false ? "Reactivate provider" : "Activate provider"}</button></div></div></div> : null}
-      {removeTarget ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="remove-provider-title"><h2 id="remove-provider-title" className="modal-title">Remove provider?</h2><p className="mt-3 text-sm text-muted-foreground">Remove {removeTarget.name} from the provider directory? Historical bookings, pet records, and service history will remain intact.</p><div className="mt-6 flex gap-2"><button className="btn btn-ghost" onClick={() => setRemoveTarget(null)}>Cancel</button><button className="btn btn-primary" disabled={removeProvider.isPending} onClick={() => removeProvider.mutate(removeTarget.id)}>Remove provider</button></div></div></div> : null}
+      {statusTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="provider-status-title"
+          >
+            <h2 id="provider-status-title" className="modal-title">
+              {statusTarget.active === false
+                ? "Reactivate provider?"
+                : "Deactivate provider?"}
+            </h2>
+            <p className="mt-3 text-sm text-muted-foreground">
+              {statusTarget.name} will be{" "}
+              {statusTarget.active === false
+                ? "visible and bookable"
+                : "hidden from new customer bookings"}
+              . Historical bookings and pet records remain unchanged.
+            </p>
+            <div className="mt-6 flex gap-2">
+              <button
+                className="btn btn-ghost"
+                onClick={() => setStatusTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={deactivate.isPending}
+                onClick={() =>
+                  deactivate.mutate({
+                    id: statusTarget.id,
+                    active: statusTarget.active === false,
+                  })
+                }
+              >
+                {statusTarget.active === false
+                  ? "Reactivate provider"
+                  : "Deactivate provider"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {removeTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="remove-provider-title"
+          >
+            <h2 id="remove-provider-title" className="modal-title">
+              Remove provider?
+            </h2>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Remove {removeTarget.name} from the provider directory? Historical
+              bookings, pet records, and service history will remain intact.
+            </p>
+            <div className="mt-6 flex gap-2">
+              <button
+                className="btn btn-ghost"
+                onClick={() => setRemoveTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={removeProvider.isPending}
+                onClick={() => removeProvider.mutate(removeTarget.id)}
+              >
+                Remove provider
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2262,22 +2748,48 @@ function ProviderManagementPage() {
     enabled: isProvider,
   });
   const [draft, setDraft] = useState<ProviderDetail | null>(null);
-  const [serviceForm, setServiceForm] = useState({ name: "", description: "", price: "", durationMinutes: "60", category: "grooming", imageUrl: "" });
-  const [productForm, setProductForm] = useState({ name: "", description: "", price: "", category: "pet supplies", imageUrl: "" });
-  const [recordForm, setRecordForm] = useState({ type: "grooming", petId: "", title: "", date: "", nextDue: "", notes: "" });
+  const [serviceForm, setServiceForm] = useState({
+    name: "",
+    description: "",
+    price: "",
+    durationMinutes: "60",
+    category: "grooming",
+    imageUrl: "",
+  });
+  const [productForm, setProductForm] = useState({
+    name: "",
+    description: "",
+    price: "",
+    stock: "0",
+    category: "pet-supplies",
+    imageUrl: "",
+  });
+  const [recordForm, setRecordForm] = useState({
+    type: "grooming",
+    petId: "",
+    title: "",
+    date: "",
+    nextDue: "",
+    notes: "",
+  });
   const [showServiceForm, setShowServiceForm] = useState(false);
   const [editingServiceId, setEditingServiceId] = useState<number | null>(null);
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
   const [showProductForm, setShowProductForm] = useState(false);
-  const [showRecordForm, setShowRecordForm] = useState<"grooming" | "vaccination" | null>(null);
+  const [showRecordForm, setShowRecordForm] = useState<
+    "grooming" | "vaccination" | null
+  >(null);
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
   const [notice, setNotice] = useState("");
-  const [providerTab, setProviderTab] = useState<"workspace" | "records">("workspace");
-  const [selectedProviderPet, setSelectedProviderPet] = useState<ProviderPet | null>(null);
+  const [providerTab, setProviderTab] = useState<"workspace" | "records">(
+    "workspace",
+  );
+  const [selectedProviderPet, setSelectedProviderPet] =
+    useState<ProviderPet | null>(null);
   useEffect(() => {
     if (query.data) setDraft(query.data);
   }, [query.data]);
-  const save = useMutation({
+  const updateProfile = useMutation({
     mutationFn: (profile: ProviderDetail) =>
       adminRequest<ProviderDetail>("/api/provider/profile", {
         method: "PATCH",
@@ -2304,24 +2816,129 @@ function ProviderManagementPage() {
       queryClient.invalidateQueries({ queryKey: ["provider", "bookings"] }),
   });
   const addService = useMutation({
-    mutationFn: () => adminRequest<ProviderService>("/api/provider/services", { method: "POST", body: JSON.stringify({ ...serviceForm, price: Number(serviceForm.price), durationMinutes: Number(serviceForm.durationMinutes) }) }),
-    onSuccess: () => { setServiceForm({ name: "", description: "", price: "", durationMinutes: "60", category: "grooming", imageUrl: "" }); setShowServiceForm(false); query.refetch(); setNotice("Service added."); },
+    mutationFn: () =>
+      adminRequest<ProviderService>("/api/provider/services", {
+        method: "POST",
+        body: JSON.stringify({
+          ...serviceForm,
+          price: Number(serviceForm.price),
+          durationMinutes: Number(serviceForm.durationMinutes),
+        }),
+      }),
+    onSuccess: () => {
+      setServiceForm({
+        name: "",
+        description: "",
+        price: "",
+        durationMinutes: "60",
+        category: "grooming",
+        imageUrl: "",
+      });
+      setShowServiceForm(false);
+      query.refetch();
+      setNotice("Service added.");
+    },
   });
   const deleteService = useMutation({
-    mutationFn: (id: number) => adminRequest<void>(`/api/provider/services/${id}`, { method: "DELETE" }),
-    onSuccess: () => { query.refetch(); setNotice("Service removed."); },
+    mutationFn: (id: number) =>
+      adminRequest<void>(`/api/provider/services/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      query.refetch();
+      setNotice("Service removed.");
+    },
   });
   const updateService = useMutation({
-    mutationFn: ({ id, service }: { id: number; service: ProviderService }) => adminRequest<ProviderService>(`/api/provider/services/${id}`, { method: "PATCH", body: JSON.stringify(service) }),
-    onSuccess: () => { setEditingServiceId(null); query.refetch(); setNotice("Service updated."); },
+    mutationFn: ({ id, service }: { id: number; service: ProviderService }) =>
+      adminRequest<ProviderService>(`/api/provider/services/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(service),
+      }),
+    onSuccess: () => {
+      setEditingServiceId(null);
+      query.refetch();
+      setNotice("Service updated.");
+    },
   });
   const addProduct = useMutation({
-    mutationFn: () => adminRequest<ProviderProduct>("/api/provider/products", { method: "POST", body: JSON.stringify({ ...productForm, price: Number(productForm.price) }) }),
-    onSuccess: () => { setProductForm({ name: "", description: "", price: "", category: "pet supplies", imageUrl: "" }); setShowProductForm(false); query.refetch(); setNotice("Product added."); },
+    mutationFn: async () => {
+      const name = productForm.name.trim();
+      const description = productForm.description.trim();
+      const price = Number(productForm.price);
+      const stock = Number(productForm.stock);
+      if (!name) throw new Error("Product name is required.");
+      if (!description) throw new Error("Product description is required.");
+      if (!Number.isFinite(price) || price < 0)
+        throw new Error("Enter a valid non-negative price.");
+      if (!Number.isInteger(stock) || stock < 0)
+        throw new Error("Stock must be a non-negative whole number.");
+      if (productForm.imageUrl.length > 9_000_000)
+        throw new Error(
+          "The product image is too large. Choose an image smaller than 6 MB.",
+        );
+      return adminRequest<ProviderProduct>("/api/provider/products", {
+        method: "POST",
+        body: JSON.stringify({
+          ...productForm,
+          name,
+          description,
+          price,
+          stock,
+        }),
+      });
+    },
+    onSuccess: async (product) => {
+      setDraft((current) =>
+        current
+          ? {
+              ...current,
+              categories: current.categories.includes("pet-supplies")
+                ? current.categories
+                : [...current.categories, "pet-supplies"],
+              products: [...current.products, product],
+            }
+          : current,
+      );
+      setProductForm({
+        name: "",
+        description: "",
+        price: "",
+        stock: "0",
+        category: "pet-supplies",
+        imageUrl: "",
+      });
+      setShowProductForm(false);
+      await query.refetch();
+      queryClient.invalidateQueries({
+        queryKey: getGetProviderQueryKey(product.providerId),
+      });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+      setNotice("Product added.");
+    },
   });
   const deleteProduct = useMutation({
-    mutationFn: (id: number) => adminRequest<void>(`/api/provider/products/${id}`, { method: "DELETE" }),
+    mutationFn: (id: number) =>
+      adminRequest<void>(`/api/provider/products/${id}`, { method: "DELETE" }),
     onSuccess: () => query.refetch(),
+  });
+  const updateProduct = useMutation({
+    mutationFn: ({ id, product }: { id: number; product: ProviderProduct }) =>
+      adminRequest<ProviderProduct>(`/api/provider/products/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(product),
+      }),
+    onSuccess: () => {
+      setEditingProductId(null);
+      query.refetch();
+      setNotice("Product updated.");
+    },
+  });
+  const providerOrdersQuery = useQuery({
+    queryKey: ["provider", "orders"],
+    queryFn: () =>
+      adminRequest<import("@workspace/api-client-react").Order[]>(
+        "/api/provider/orders",
+      ),
+    enabled: isProvider,
   });
   const recordsQuery = useQuery({
     queryKey: ["provider", "records"],
@@ -2335,15 +2952,44 @@ function ProviderManagementPage() {
   });
   const selectedProviderPetQuery = useQuery({
     queryKey: ["provider", "pet-records", selectedProviderPet?.id],
-    queryFn: () => adminRequest<{ pet: Pet; owner: { name: string; email: string }; records: ProviderRecord[] }>(`/api/provider/pets/${selectedProviderPet?.id}/records`),
+    queryFn: () =>
+      adminRequest<{
+        pet: Pet;
+        owner: { name: string; email: string };
+        records: ProviderRecord[];
+      }>(`/api/provider/pets/${selectedProviderPet?.id}/records`),
     enabled: Boolean(selectedProviderPet),
   });
   const addRecord = useMutation({
-    mutationFn: () => adminRequest<ProviderRecord>("/api/provider/records", { method: "POST", body: JSON.stringify({ ...recordForm, petId: Number(recordForm.petId), nextDue: recordForm.nextDue || null }) }),
-    onSuccess: () => { setRecordForm({ type: "grooming", petId: "", title: "", date: "", nextDue: "", notes: "" }); setShowRecordForm(null); recordsQuery.refetch(); setNotice("History record added."); },
+    mutationFn: () =>
+      adminRequest<ProviderRecord>("/api/provider/records", {
+        method: "POST",
+        body: JSON.stringify({
+          ...recordForm,
+          petId: Number(recordForm.petId),
+          nextDue: recordForm.nextDue || null,
+        }),
+      }),
+    onSuccess: () => {
+      setRecordForm({
+        type: "grooming",
+        petId: "",
+        title: "",
+        date: "",
+        nextDue: "",
+        notes: "",
+      });
+      setShowRecordForm(null);
+      recordsQuery.refetch();
+      setNotice("History record added.");
+    },
   });
   const updateRecord = useMutation({
-    mutationFn: ({ id, notes }: { id: number; notes: string }) => adminRequest<ProviderRecord>(`/api/provider/records/${id}`, { method: "PATCH", body: JSON.stringify({ notes }) }),
+    mutationFn: ({ id, notes }: { id: number; notes: string }) =>
+      adminRequest<ProviderRecord>(`/api/provider/records/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ notes }),
+      }),
     onSuccess: () => recordsQuery.refetch(),
   });
   if (!isProvider) return <NotFound />;
@@ -2351,7 +2997,11 @@ function ProviderManagementPage() {
     return (
       <ErrorState
         onRetry={() => query.refetch()}
-        message={query.error instanceof Error ? query.error.message : "Provider information could not be loaded."}
+        message={
+          query.error instanceof Error
+            ? query.error.message
+            : "Provider information could not be loaded."
+        }
       />
     );
   if (query.isLoading || !draft)
@@ -2363,10 +3013,17 @@ function ProviderManagementPage() {
   const changeBackground = (file: File | undefined) => {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => setDraft({ ...draft, imageUrl: typeof reader.result === "string" ? reader.result : "" });
+    reader.onload = () =>
+      setDraft({
+        ...draft,
+        imageUrl: typeof reader.result === "string" ? reader.result : "",
+      });
     reader.readAsDataURL(file);
   };
-  const readImage = (file: File | undefined, onRead: (value: string) => void) => {
+  const readImage = (
+    file: File | undefined,
+    onRead: (value: string) => void,
+  ) => {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
@@ -2374,8 +3031,12 @@ function ProviderManagementPage() {
     };
     reader.readAsDataURL(file);
   };
-  const editingService = draft.services.find((item) => item.id === editingServiceId);
-  const editingProduct = draft.products.find((item) => item.id === editingProductId);
+  const editingService = draft.services.find(
+    (item) => item.id === editingServiceId,
+  );
+  const editingProduct = draft.products.find(
+    (item) => item.id === editingProductId,
+  );
   return (
     <div className="animate-in">
       <p className="eyebrow">Provider workspace</p>
@@ -2384,158 +3045,1221 @@ function ProviderManagementPage() {
         Update the provider information, services, and products customers can
         view.
       </p>
-      {notice ? <p className="mt-4 text-sm font-semibold text-primary" role="status">{notice}</p> : null}
-      <div className="mt-6 flex gap-2"><button className={`filter-chip ${providerTab === "workspace" ? "active" : ""}`} onClick={() => setProviderTab("workspace")}>Workspace</button><button className={`filter-chip ${providerTab === "records" ? "active" : ""}`} onClick={() => setProviderTab("records")}>Pet Records</button></div>
-      {providerTab === "records" ? <section className="surface-card mt-6 p-6"><p className="eyebrow">Provider records</p><h2 className="section-title mt-1">Pets connected to your bookings</h2>{providerPetsQuery.isLoading ? <LoadingState label="Loading connected pets" /> : providerPetsQuery.isError ? <ErrorState onRetry={() => providerPetsQuery.refetch()} message={providerPetsQuery.error.message} /> : <div className="list-stack mt-5">{(providerPetsQuery.data ?? []).map((pet) => <button className="service-row text-left" key={pet.id} onClick={() => setSelectedProviderPet(pet)}><div><p className="font-semibold">{pet.name}</p><p className="text-xs text-muted-foreground">{pet.species} · {pet.breed} · Owner: {pet.ownerName}</p></div><ArrowRight size={16} /></button>)}</div>}{selectedProviderPet && selectedProviderPetQuery.data ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="provider-pet-title"><div className="flex items-start justify-between gap-3"><div><p className="eyebrow">Pet Records</p><h2 id="provider-pet-title" className="modal-title">{selectedProviderPetQuery.data.pet.name}</h2><p className="mt-1 text-sm text-muted-foreground">Owner: {selectedProviderPetQuery.data.owner.name}</p></div><button className="modal-close" onClick={() => setSelectedProviderPet(null)} aria-label="Close pet records"><X size={17} /></button></div><div className="list-stack mt-5">{selectedProviderPetQuery.data.records.length ? selectedProviderPetQuery.data.records.map((record) => <div className="record-item" key={record.id}><p className="eyebrow">{record.serviceCategory ?? record.type}</p><p className="font-semibold">{record.title}</p><p className="text-xs text-muted-foreground">{record.providerName} · {formatDate(record.date)} · {statusLabel(record.status)}</p><p className="mt-2 text-sm text-muted-foreground">{record.notes}</p></div>) : <p className="text-sm text-muted-foreground">No completed records for this pet yet.</p>}</div></div></div> : null}</section> : null}
-      {providerTab === "records" ? null : <>
-      <section className="surface-card mt-6 p-6">
-        <div className="flex items-center justify-between gap-3"><div><p className="eyebrow">Store background</p><h2 className="section-title mt-1">{draft.imageUrl ? "Background uploaded" : "No background uploaded"}</h2></div><button className="btn btn-secondary" onClick={() => setShowBackgroundForm((open) => !open)}>{draft.imageUrl ? "Change background" : "+ Add store background"}</button></div>
-        {draft.imageUrl ? <img className="mt-4 h-32 w-full object-cover" src={draft.imageUrl} alt="Store background preview" /> : null}
-        {showBackgroundForm ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="background-title"><h2 id="background-title" className="modal-title mb-5">Store background</h2><input type="file" accept="image/*" onChange={(event) => changeBackground(event.target.files?.[0])} /><div className="mt-5 flex gap-2"><button className="btn btn-primary" onClick={() => { save.mutate(draft); setShowBackgroundForm(false); }}>Upload</button>{draft.imageUrl ? <button className="btn btn-ghost" onClick={() => setDraft({ ...draft, imageUrl: "" })}>Remove</button> : null}<button className="btn btn-ghost" onClick={() => setShowBackgroundForm(false)}>Cancel</button></div></div></div> : null}
-      </section>
-      <div className="surface-card mt-8 p-6">
-        <div className="form-grid">
-          <div className="form-field">
-            <label className="form-label">Provider name</label>
-            <input
-              className="input"
-              value={draft.name}
-              onChange={(event) => change("name", event.target.value)}
-            />
-          </div>
-          <div className="form-field">
-            <label className="form-label">Location</label>
-            <input
-              className="input"
-              value={draft.location}
-              onChange={(event) => change("location", event.target.value)}
-            />
-          </div>
-          <div className="form-field full">
-            <label className="form-label">Description</label>
-            <textarea
-              className="input h-24 py-3"
-              value={draft.description}
-              onChange={(event) => change("description", event.target.value)}
-            />
-          </div>
-          <div className="form-field">
-            <label className="form-label">Contact</label>
-            <input
-              className="input"
-              value={draft.contact}
-              onChange={(event) => change("contact", event.target.value)}
-            />
-          </div>
-          <div className="form-field">
-            <label className="form-label">Hours</label>
-            <input
-              className="input"
-              value={draft.hours}
-              onChange={(event) => change("hours", event.target.value)}
-            />
-          </div>
-        </div>
-        <div className="mt-8 flex items-center justify-between gap-3"><h2 className="section-title">My services</h2><button className="btn btn-secondary" onClick={() => setShowServiceForm((open) => !open)}>+ Add a service</button></div>
-        {showServiceForm ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setShowServiceForm(false)}><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="add-service-title"><div className="flex items-start justify-between gap-3"><div><p className="eyebrow">Provider services</p><h2 id="add-service-title" className="modal-title">Add new service</h2></div><button className="modal-close" onClick={() => setShowServiceForm(false)} aria-label="Close add service"><X size={17} /></button></div><div className="form-grid mt-5">
-          <input className="input" placeholder="Service name" value={serviceForm.name} onChange={(event) => setServiceForm({ ...serviceForm, name: event.target.value })} />
-          <input className="input" placeholder="Description" value={serviceForm.description} onChange={(event) => setServiceForm({ ...serviceForm, description: event.target.value })} />
-          <input className="input" type="number" placeholder="Price" value={serviceForm.price} onChange={(event) => setServiceForm({ ...serviceForm, price: event.target.value })} />
-          <input className="input" type="number" placeholder="Duration minutes" value={serviceForm.durationMinutes} onChange={(event) => setServiceForm({ ...serviceForm, durationMinutes: event.target.value })} />
-          <select className="input select" value={serviceForm.category} onChange={(event) => setServiceForm({ ...serviceForm, category: event.target.value })}><option value="grooming">Grooming</option><option value="vaccination">Vaccination</option></select>
-          <input className="input" type="file" accept="image/*" onChange={(event) => readImage(event.target.files?.[0], (imageUrl) => setServiceForm({ ...serviceForm, imageUrl }))} />
-          <div className="flex gap-2"><button className="btn btn-primary" onClick={() => addService.mutate()} disabled={addService.isPending}>Save service</button><button className="btn btn-ghost" onClick={() => setShowServiceForm(false)}>Cancel</button></div>
-        </div></div></div> : null}
-        <div className="list-stack mt-4">{draft.services.map((service) => <div key={service.id}>
-          <div className="service-row"><div className="flex-1"><p className="font-semibold">{service.name}</p><p className="text-xs text-muted-foreground">{service.category} · {money(service.price)} · {service.available === false ? "Unavailable" : "Available"}</p></div><button className="btn btn-ghost" onClick={() => setEditingServiceId(editingServiceId === service.id ? null : service.id)}>Edit</button><button className="btn btn-ghost" onClick={() => window.confirm(`Remove ${service.name}?`) && deleteService.mutate(service.id)} disabled={deleteService.isPending}>Remove</button></div>
-          {false && editingServiceId === service.id ? <div /> : null}
-        </div>)}</div>
-        <div className="mt-8 flex items-center justify-between gap-3"><h2 className="section-title">Pet supply products</h2><button className="btn btn-secondary" onClick={() => setShowProductForm((open) => !open)}>+ Add a product</button></div>
-        <div className="list-stack mt-4">{draft.products.map((product) => <div className="service-row" key={product.id}><div className="flex-1"><p className="font-semibold">{product.name}</p><p className="text-xs text-muted-foreground">{product.category} · {money(product.price)} · {product.inStock ? "Available" : "Unavailable"}</p></div><button className="btn btn-ghost" onClick={() => setEditingProductId(product.id)}>Edit</button><button className="btn btn-ghost" onClick={() => window.confirm(`Remove ${product.name}?`) && deleteProduct.mutate(product.id)} disabled={deleteProduct.isPending}>Remove</button></div>)}</div>
-        {showProductForm ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setShowProductForm(false)}><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="add-product-title"><div className="flex items-start justify-between gap-3"><div><p className="eyebrow">Pet supplies</p><h2 id="add-product-title" className="modal-title">Add new product</h2></div><button className="modal-close" onClick={() => setShowProductForm(false)} aria-label="Close add product"><X size={17} /></button></div><div className="form-grid mt-5">
-          <input className="input" placeholder="Product name" value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} />
-          <input className="input" placeholder="Description" value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} />
-          <input className="input" type="number" placeholder="Price" value={productForm.price} onChange={(event) => setProductForm({ ...productForm, price: event.target.value })} />
-          <input className="input" placeholder="Product category" value={productForm.category} onChange={(event) => setProductForm({ ...productForm, category: event.target.value })} />
-          <input className="input" type="file" accept="image/*" onChange={(event) => readImage(event.target.files?.[0], (imageUrl) => setProductForm({ ...productForm, imageUrl }))} />
-          <button className="btn btn-primary" onClick={() => addProduct.mutate()} disabled={addProduct.isPending}>Save product</button><button className="btn btn-ghost" onClick={() => setShowProductForm(false)}>Cancel</button>
-        </div></div></div> : null}
-        {editingProduct ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="edit-product-title"><h2 id="edit-product-title" className="modal-title mb-5">Edit product</h2><div className="form-grid"><input className="input" value={editingProduct.name} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, name: event.target.value } : item) })} /><input className="input" value={editingProduct.description} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, description: event.target.value } : item) })} /><input className="input" type="number" value={editingProduct.price} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, price: Number(event.target.value) } : item) })} /><input className="input" value={editingProduct.category} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, category: event.target.value } : item) })} /><input className="input" type="file" accept="image/*" onChange={(event) => readImage(event.target.files?.[0], (imageUrl) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, imageUrl } : item) }))} /><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editingProduct.inStock} onChange={(event) => setDraft({ ...draft, products: draft.products.map((item) => item.id === editingProduct.id ? { ...item, inStock: event.target.checked } : item) })} /> Available</label></div><div className="mt-5 flex gap-2"><button className="btn btn-primary" onClick={() => { save.mutate(draft); setEditingProductId(null); }}>Save changes</button><button className="btn btn-ghost" onClick={() => { query.refetch(); setEditingProductId(null); }}>Cancel</button></div></div></div> : null}
+      {notice ? (
+        <p className="mt-4 text-sm font-semibold text-primary" role="status">
+          {notice}
+        </p>
+      ) : null}
+      <div className="mt-6 flex gap-2">
         <button
-          className="btn btn-primary mt-8"
-          onClick={() => save.mutate(draft)}
-          disabled={save.isPending}
+          className={`filter-chip ${providerTab === "workspace" ? "active" : ""}`}
+          onClick={() => setProviderTab("workspace")}
         >
-          {save.isPending ? "Saving…" : "Save provider changes"}
+          Workspace
         </button>
-        {save.isSuccess ? (
-          <p className="mt-3 text-sm text-primary">
-            Provider information saved.
-          </p>
-        ) : null}
-        {save.isError ? (
-          <p className="mt-3 text-sm text-destructive">
-            Provider information could not be saved.
-          </p>
-        ) : null}
+        <button
+          className={`filter-chip ${providerTab === "records" ? "active" : ""}`}
+          onClick={() => setProviderTab("records")}
+        >
+          Pet Records
+        </button>
       </div>
-      <section className="surface-card mt-6 p-6">
-        <p className="eyebrow">Booking requests</p>
-        <h2 className="section-title mt-1">Your provider bookings</h2>
-        {bookingsQuery.isLoading ? (
-          <div className="mt-5">
-            <LoadingState label="Loading your booking requests" />
-          </div>
-        ) : bookingsQuery.data?.length ? (
-          <div className="table-wrap mt-5">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Service</th>
-                  <th>Pet</th>
-                  <th>Schedule</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bookingsQuery.data.map((booking) => (
-                  <tr key={booking.id}>
-                    <td>{booking.serviceName}</td>
-                    <td>{booking.petName}</td>
-                    <td>
-                      {formatDate(booking.date)} at {booking.time}
-                    </td>
-                    <td><span className={`status status-${booking.status}`}>{statusLabel(booking.status)}</span>{booking.status === "cancellation_pending" ? <div className="mt-2 flex gap-2"><button className="btn btn-primary h-9 min-h-0 text-xs" disabled={updateBooking.isPending} onClick={() => { if (window.confirm("Approve this cancellation request?")) updateBooking.mutate({ id: booking.id, status: "approve_cancellation" }); }}>Approve cancellation</button><button className="btn btn-ghost h-9 min-h-0 text-xs" disabled={updateBooking.isPending} onClick={() => { if (window.confirm("Reject this cancellation request?")) updateBooking.mutate({ id: booking.id, status: "reject_cancellation" }); }}>Reject</button></div> : null}{["pending", "confirmed"].includes(booking.status) ? <button className="btn btn-secondary mt-2 h-9 min-h-0 text-xs" disabled={updateBooking.isPending} onClick={() => updateBooking.mutate({ id: booking.id, status: "completed" })}>Completed</button> : null}</td>
-                  </tr>
+      {providerTab === "records" ? (
+        <section className="surface-card mt-6 p-6">
+          <p className="eyebrow">Provider records</p>
+          <h2 className="section-title mt-1">
+            Pets connected to your bookings
+          </h2>
+          {providerPetsQuery.isLoading ? (
+            <LoadingState label="Loading connected pets" />
+          ) : providerPetsQuery.isError ? (
+            <ErrorState
+              onRetry={() => providerPetsQuery.refetch()}
+              message={providerPetsQuery.error.message}
+            />
+          ) : (
+            <div className="list-stack mt-5">
+              {(providerPetsQuery.data ?? []).map((pet) => (
+                <button
+                  className="service-row text-left"
+                  key={pet.id}
+                  onClick={() => setSelectedProviderPet(pet)}
+                >
+                  <div>
+                    <p className="font-semibold">{pet.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {pet.species} · {pet.breed} · Owner: {pet.ownerName}
+                    </p>
+                  </div>
+                  <ArrowRight size={16} />
+                </button>
+              ))}
+            </div>
+          )}
+          {selectedProviderPet && selectedProviderPetQuery.data ? (
+            <div className="modal-backdrop" role="presentation">
+              <div
+                className="modal animate-in"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="provider-pet-title"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="eyebrow">Pet Records</p>
+                    <h2 id="provider-pet-title" className="modal-title">
+                      {selectedProviderPetQuery.data.pet.name}
+                    </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Owner: {selectedProviderPetQuery.data.owner.name}
+                    </p>
+                  </div>
+                  <button
+                    className="modal-close"
+                    onClick={() => setSelectedProviderPet(null)}
+                    aria-label="Close pet records"
+                  >
+                    <X size={17} />
+                  </button>
+                </div>
+                <div className="list-stack mt-5">
+                  {selectedProviderPetQuery.data.records.length ? (
+                    selectedProviderPetQuery.data.records.map((record) => (
+                      <div className="record-item" key={record.id}>
+                        <p className="eyebrow">
+                          {record.serviceCategory ?? record.type}
+                        </p>
+                        <p className="font-semibold">{record.title}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {record.providerName} · {formatDate(record.date)} ·{" "}
+                          {statusLabel(record.status)}
+                        </p>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          {record.notes}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      No completed records for this pet yet.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+      {providerTab === "records" ? null : (
+        <>
+          <section className="surface-card mt-6 p-6">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="eyebrow">Store background</p>
+                <h2 className="section-title mt-1">
+                  {draft.imageUrl
+                    ? "Background uploaded"
+                    : "No background uploaded"}
+                </h2>
+              </div>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setShowBackgroundForm((open) => !open)}
+              >
+                {draft.imageUrl
+                  ? "Change background"
+                  : "+ Add store background"}
+              </button>
+            </div>
+            {draft.imageUrl ? (
+              <img
+                className="mt-4 h-32 w-full object-cover"
+                src={draft.imageUrl}
+                alt="Store background preview"
+              />
+            ) : null}
+            {showBackgroundForm ? (
+              <div className="modal-backdrop" role="presentation">
+                <div
+                  className="modal animate-in"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="background-title"
+                >
+                  <h2 id="background-title" className="modal-title mb-5">
+                    Store background
+                  </h2>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) =>
+                      changeBackground(event.target.files?.[0])
+                    }
+                  />
+                  <div className="mt-5 flex gap-2">
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        updateProfile.mutate(draft);
+                        setShowBackgroundForm(false);
+                      }}
+                    >
+                      Upload
+                    </button>
+                    {draft.imageUrl ? (
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          const next = { ...draft, imageUrl: "" };
+                          setDraft(next);
+                          updateProfile.mutate(next);
+                        }}
+                      >
+                        Remove
+                      </button>
+                    ) : null}
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => setShowBackgroundForm(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </section>
+          <div className="surface-card mt-8 p-6">
+            <div className="form-grid">
+              <div className="form-field">
+                <label className="form-label">Provider name</label>
+                <input
+                  className="input"
+                  value={draft.name}
+                  onChange={(event) => change("name", event.target.value)}
+                  onBlur={() => updateProfile.mutate(draft)}
+                />
+              </div>
+              <div className="form-field">
+                <label className="form-label">Location</label>
+                <input
+                  className="input"
+                  value={draft.location}
+                  onChange={(event) => change("location", event.target.value)}
+                  onBlur={() => updateProfile.mutate(draft)}
+                />
+              </div>
+              <div className="form-field full">
+                <label className="form-label">Description</label>
+                <textarea
+                  className="input h-24 py-3"
+                  value={draft.description}
+                  onChange={(event) =>
+                    change("description", event.target.value)
+                  }
+                  onBlur={() => updateProfile.mutate(draft)}
+                />
+              </div>
+              <div className="form-field">
+                <label className="form-label">Contact</label>
+                <input
+                  className="input"
+                  value={draft.contact}
+                  onChange={(event) => change("contact", event.target.value)}
+                  onBlur={() => updateProfile.mutate(draft)}
+                />
+              </div>
+              <div className="form-field">
+                <label className="form-label">Hours</label>
+                <input
+                  className="input"
+                  value={draft.hours}
+                  onChange={(event) => change("hours", event.target.value)}
+                  onBlur={() => updateProfile.mutate(draft)}
+                />
+              </div>
+            </div>
+            <div className="mt-8 flex items-center justify-between gap-3">
+              <h2 className="section-title">My services</h2>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setShowServiceForm((open) => !open)}
+              >
+                + Add a service
+              </button>
+            </div>
+            {showServiceForm ? (
+              <div
+                className="modal-backdrop"
+                role="presentation"
+                onMouseDown={(event) =>
+                  event.target === event.currentTarget &&
+                  setShowServiceForm(false)
+                }
+              >
+                <div
+                  className="modal animate-in"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="add-service-title"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="eyebrow">Provider services</p>
+                      <h2 id="add-service-title" className="modal-title">
+                        Add new service
+                      </h2>
+                    </div>
+                    <button
+                      className="modal-close"
+                      onClick={() => setShowServiceForm(false)}
+                      aria-label="Close add service"
+                    >
+                      <X size={17} />
+                    </button>
+                  </div>
+                  <div className="form-grid mt-5">
+                    <input
+                      className="input"
+                      placeholder="Service name"
+                      value={serviceForm.name}
+                      onChange={(event) =>
+                        setServiceForm({
+                          ...serviceForm,
+                          name: event.target.value,
+                        })
+                      }
+                    />
+                    <input
+                      className="input"
+                      placeholder="Description"
+                      value={serviceForm.description}
+                      onChange={(event) =>
+                        setServiceForm({
+                          ...serviceForm,
+                          description: event.target.value,
+                        })
+                      }
+                    />
+                    <input
+                      className="input"
+                      type="number"
+                      placeholder="Price"
+                      value={serviceForm.price}
+                      onChange={(event) =>
+                        setServiceForm({
+                          ...serviceForm,
+                          price: event.target.value,
+                        })
+                      }
+                    />
+                    <input
+                      className="input"
+                      type="number"
+                      placeholder="Duration minutes"
+                      value={serviceForm.durationMinutes}
+                      onChange={(event) =>
+                        setServiceForm({
+                          ...serviceForm,
+                          durationMinutes: event.target.value,
+                        })
+                      }
+                    />
+                    <select
+                      className="input select"
+                      value={serviceForm.category}
+                      onChange={(event) =>
+                        setServiceForm({
+                          ...serviceForm,
+                          category: event.target.value,
+                        })
+                      }
+                    >
+                      <option value="grooming">Grooming</option>
+                      <option value="vaccination">Vaccination</option>
+                    </select>
+                    <input
+                      className="input"
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) =>
+                        readImage(event.target.files?.[0], (imageUrl) =>
+                          setServiceForm({ ...serviceForm, imageUrl }),
+                        )
+                      }
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => addService.mutate()}
+                        disabled={addService.isPending}
+                      >
+                        Save service
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setShowServiceForm(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            <div className="list-stack mt-4">
+              {draft.services.map((service) => (
+                <div key={service.id}>
+                  <div className="service-row">
+                    <div className="flex-1">
+                      <p className="font-semibold">{service.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {service.category} · {money(service.price)} ·{" "}
+                        {service.available === false
+                          ? "Unavailable"
+                          : "Available"}
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() =>
+                        setEditingServiceId(
+                          editingServiceId === service.id ? null : service.id,
+                        )
+                      }
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() =>
+                        window.confirm(`Remove ${service.name}?`) &&
+                        deleteService.mutate(service.id)
+                      }
+                      disabled={deleteService.isPending}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  {false && editingServiceId === service.id ? <div /> : null}
+                </div>
+              ))}
+            </div>
+            <section className="surface-card mt-8 border p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="eyebrow">Shop inventory</p>
+                  <h2 className="section-title mt-1">Pet Supply Products</h2>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setShowProductForm((open) => !open)}
+                >
+                  + Add a product
+                </button>
+              </div>
+              <div className="list-stack mt-4">
+                {draft.products.map((product) => (
+                  <div className="service-row" key={product.id}>
+                    {product.imageUrl ? (
+                      <img
+                        className="product-thumb"
+                        src={product.imageUrl}
+                        alt=""
+                      />
+                    ) : null}
+                    <div className="flex-1">
+                      <p className="font-semibold">{product.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {product.category} · {money(product.price)} ·{" "}
+                        {product.stock} in stock ·{" "}
+                        {product.active ? "Active" : "Inactive"}
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => setEditingProductId(product.id)}
+                    >
+                      Edit
+                    </button>
+                    {product.active ? (
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() =>
+                          window.confirm(`Deactivate ${product.name}?`) &&
+                          deleteProduct.mutate(product.id)
+                        }
+                        disabled={deleteProduct.isPending}
+                      >
+                        Deactivate
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() =>
+                          updateProduct.mutate({
+                            id: product.id,
+                            product: { ...product, active: true },
+                          })
+                        }
+                      >
+                        Reactivate
+                      </button>
+                    )}
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+              {showProductForm ? (
+                <div
+                  className="modal-backdrop"
+                  role="presentation"
+                  onMouseDown={(event) =>
+                    event.target === event.currentTarget &&
+                    setShowProductForm(false)
+                  }
+                >
+                  <div
+                    className="modal animate-in"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="add-product-title"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="eyebrow">Pet supplies</p>
+                        <h2 id="add-product-title" className="modal-title">
+                          Add new product
+                        </h2>
+                      </div>
+                      <button
+                        className="modal-close"
+                        onClick={() => setShowProductForm(false)}
+                        aria-label="Close add product"
+                      >
+                        <X size={17} />
+                      </button>
+                    </div>
+                    <div className="form-grid mt-5">
+                      <input
+                        className="input"
+                        placeholder="Product name"
+                        value={productForm.name}
+                        onChange={(event) =>
+                          setProductForm({
+                            ...productForm,
+                            name: event.target.value,
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        placeholder="Description"
+                        value={productForm.description}
+                        onChange={(event) =>
+                          setProductForm({
+                            ...productForm,
+                            description: event.target.value,
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        type="number"
+                        placeholder="Price"
+                        value={productForm.price}
+                        onChange={(event) =>
+                          setProductForm({
+                            ...productForm,
+                            price: event.target.value,
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="Stock quantity"
+                        value={productForm.stock}
+                        onChange={(event) =>
+                          setProductForm({
+                            ...productForm,
+                            stock: event.target.value,
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        placeholder="Product category"
+                        value={productForm.category}
+                        onChange={(event) =>
+                          setProductForm({
+                            ...productForm,
+                            category: event.target.value,
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        type="file"
+                        accept="image/*"
+                        onChange={(event) =>
+                          readImage(event.target.files?.[0], (imageUrl) =>
+                            setProductForm({ ...productForm, imageUrl }),
+                          )
+                        }
+                      />
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => addProduct.mutate()}
+                        disabled={addProduct.isPending}
+                        type="button"
+                      >
+                        {addProduct.isPending
+                          ? "Saving product…"
+                          : "Save product"}
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setShowProductForm(false)}
+                      >
+                        Cancel
+                      </button>
+                      {addProduct.isError ? (
+                        <p
+                          className="text-sm font-semibold text-destructive"
+                          role="alert"
+                        >
+                          {addProduct.error.message}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {editingProduct ? (
+                <div className="modal-backdrop" role="presentation">
+                  <div
+                    className="modal animate-in"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="edit-product-title"
+                  >
+                    <h2 id="edit-product-title" className="modal-title mb-5">
+                      Edit product
+                    </h2>
+                    <div className="form-grid">
+                      <input
+                        className="input"
+                        value={editingProduct.name}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            products: draft.products.map((item) =>
+                              item.id === editingProduct.id
+                                ? { ...item, name: event.target.value }
+                                : item,
+                            ),
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        value={editingProduct.description}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            products: draft.products.map((item) =>
+                              item.id === editingProduct.id
+                                ? { ...item, description: event.target.value }
+                                : item,
+                            ),
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        type="number"
+                        value={editingProduct.price}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            products: draft.products.map((item) =>
+                              item.id === editingProduct.id
+                                ? { ...item, price: Number(event.target.value) }
+                                : item,
+                            ),
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={editingProduct.stock}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            products: draft.products.map((item) =>
+                              item.id === editingProduct.id
+                                ? { ...item, stock: Number(event.target.value) }
+                                : item,
+                            ),
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        value={editingProduct.category}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            products: draft.products.map((item) =>
+                              item.id === editingProduct.id
+                                ? { ...item, category: event.target.value }
+                                : item,
+                            ),
+                          })
+                        }
+                      />
+                      <input
+                        className="input"
+                        type="file"
+                        accept="image/*"
+                        onChange={(event) =>
+                          readImage(event.target.files?.[0], (imageUrl) =>
+                            setDraft({
+                              ...draft,
+                              products: draft.products.map((item) =>
+                                item.id === editingProduct.id
+                                  ? { ...item, imageUrl }
+                                  : item,
+                              ),
+                            }),
+                          )
+                        }
+                      />
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={editingProduct.active}
+                          onChange={(event) =>
+                            setDraft({
+                              ...draft,
+                              products: draft.products.map((item) =>
+                                item.id === editingProduct.id
+                                  ? { ...item, active: event.target.checked }
+                                  : item,
+                              ),
+                            })
+                          }
+                        />{" "}
+                        Active
+                      </label>
+                    </div>
+                    <div className="mt-5 flex gap-2">
+                      <button
+                        className="btn btn-primary"
+                        onClick={() =>
+                          updateProduct.mutate({
+                            id: editingProduct.id,
+                            product: editingProduct,
+                          })
+                        }
+                      >
+                        Save changes
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          query.refetch();
+                          setEditingProductId(null);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </section>
           </div>
-        ) : (
-          <p className="mt-5 text-sm text-muted-foreground">
-            No booking requests yet.
-          </p>
-        )}
-      </section>
-      </>}
+          <section className="surface-card mt-6 p-6">
+            <p className="eyebrow">Product orders</p>
+            <h2 className="section-title mt-1">Provider Orders</h2>
+            {providerOrdersQuery.data?.length ? (
+              <div className="table-wrap mt-5">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Order</th>
+                      <th>Customer</th>
+                      <th>Products</th>
+                      <th>Quantity</th>
+                      <th>Date</th>
+                      <th>Status</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {providerOrdersQuery.data.map((order) => (
+                      <tr key={order.id}>
+                        <td>#{order.id}</td>
+                        <td>{order.customerName}</td>
+                        <td>
+                          {order.items
+                            .map(
+                              (item) =>
+                                `${item.productName} (${money(item.price)})`,
+                            )
+                            .join(", ")}
+                        </td>
+                        <td>{order.itemCount}</td>
+                        <td>{formatDate(order.createdAt)}</td>
+                        <td>
+                          <span
+                            className={`status status-${order.status.toLowerCase()}`}
+                          >
+                            {order.status}
+                          </span>
+                        </td>
+                        <td>{money(order.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="mt-5 text-sm text-muted-foreground">
+                No product orders yet.
+              </p>
+            )}
+          </section>
+          <section className="surface-card mt-6 p-6">
+            <p className="eyebrow">Booking requests</p>
+            <h2 className="section-title mt-1">Your provider bookings</h2>
+            {bookingsQuery.isLoading ? (
+              <div className="mt-5">
+                <LoadingState label="Loading your booking requests" />
+              </div>
+            ) : bookingsQuery.data?.length ? (
+              <div className="table-wrap mt-5">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Service</th>
+                      <th>Pet</th>
+                      <th>Schedule</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bookingsQuery.data.map((booking) => (
+                      <tr key={booking.id}>
+                        <td>{booking.serviceName}</td>
+                        <td>{booking.petName}</td>
+                        <td>
+                          {formatDate(booking.date)} at {booking.time}
+                        </td>
+                        <td>
+                          <span className={`status status-${booking.status}`}>
+                            {statusLabel(booking.status)}
+                          </span>
+                          {booking.status === "cancellation_pending" ? (
+                            <div className="mt-2 flex gap-2">
+                              <button
+                                className="btn btn-primary h-9 min-h-0 text-xs"
+                                disabled={updateBooking.isPending}
+                                onClick={() => {
+                                  if (
+                                    window.confirm(
+                                      "Approve this cancellation request?",
+                                    )
+                                  )
+                                    updateBooking.mutate({
+                                      id: booking.id,
+                                      status: "approve_cancellation",
+                                    });
+                                }}
+                              >
+                                Approve cancellation
+                              </button>
+                              <button
+                                className="btn btn-ghost h-9 min-h-0 text-xs"
+                                disabled={updateBooking.isPending}
+                                onClick={() => {
+                                  if (
+                                    window.confirm(
+                                      "Reject this cancellation request?",
+                                    )
+                                  )
+                                    updateBooking.mutate({
+                                      id: booking.id,
+                                      status: "reject_cancellation",
+                                    });
+                                }}
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          ) : null}
+                          {booking.status === "pending" ? (
+                            <div className="mt-2 flex gap-2">
+                              <button
+                                className="btn btn-primary h-9 min-h-0 text-xs"
+                                disabled={updateBooking.isPending}
+                                onClick={() =>
+                                  updateBooking.mutate({
+                                    id: booking.id,
+                                    status: "confirmed",
+                                  })
+                                }
+                              >
+                                Confirm
+                              </button>
+                              <button
+                                className="btn btn-ghost h-9 min-h-0 text-xs"
+                                disabled={updateBooking.isPending}
+                                onClick={() =>
+                                  window.confirm("Cancel this booking?") &&
+                                  updateBooking.mutate({
+                                    id: booking.id,
+                                    status: "cancelled",
+                                  })
+                                }
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : null}
+                          {booking.status === "confirmed" ? (
+                            <div className="mt-2 flex gap-2">
+                              <button
+                                className="btn btn-secondary h-9 min-h-0 text-xs"
+                                disabled={updateBooking.isPending}
+                                onClick={() =>
+                                  updateBooking.mutate({
+                                    id: booking.id,
+                                    status: "completed",
+                                  })
+                                }
+                              >
+                                Complete service
+                              </button>
+                              <button
+                                className="btn btn-ghost h-9 min-h-0 text-xs"
+                                disabled={updateBooking.isPending}
+                                onClick={() =>
+                                  window.confirm("Cancel this booking?") &&
+                                  updateBooking.mutate({
+                                    id: booking.id,
+                                    status: "cancelled",
+                                  })
+                                }
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="mt-5 text-sm text-muted-foreground">
+                No booking requests yet.
+              </p>
+            )}
+          </section>
+        </>
+      )}
       <section className="surface-card mt-6 p-6">
         <p className="eyebrow">Provider records</p>
         <h2 className="section-title mt-1">Grooming and vaccination history</h2>
-        <div className="mt-4 flex flex-wrap gap-3"><button className="btn btn-secondary" onClick={() => { setRecordForm({ ...recordForm, type: "vaccination" }); setShowRecordForm(showRecordForm === "vaccination" ? null : "vaccination"); }}>+ Add vaccination record</button><button className="btn btn-secondary" onClick={() => { setRecordForm({ ...recordForm, type: "grooming" }); setShowRecordForm(showRecordForm === "grooming" ? null : "grooming"); }}>+ Add grooming record</button></div>
-        {showRecordForm ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="record-title"><h2 id="record-title" className="modal-title mb-5">Add {showRecordForm} record</h2><div className="form-grid">
-          <select className="input select" value={recordForm.type} onChange={(event) => setRecordForm({ ...recordForm, type: event.target.value })}><option value="grooming">Grooming</option><option value="vaccination">Vaccination</option></select>
-          <select className="input select" value={recordForm.petId} onChange={(event) => setRecordForm({ ...recordForm, petId: event.target.value })}><option value="">Pet from a booking</option>{(bookingsQuery.data ?? []).map((booking) => <option key={`${booking.id}-${booking.petId}`} value={booking.petId}>{booking.petName}</option>)}</select>
-          <input className="input" placeholder="Title or vaccine/service" value={recordForm.title} onChange={(event) => setRecordForm({ ...recordForm, title: event.target.value })} />
-          <input className="input" type="date" value={recordForm.date} onChange={(event) => setRecordForm({ ...recordForm, date: event.target.value })} />
-          {recordForm.type === "vaccination" ? <input className="input" type="date" placeholder="Next due" value={recordForm.nextDue} onChange={(event) => setRecordForm({ ...recordForm, nextDue: event.target.value })} /> : null}
-          <textarea className="input h-20 py-3" placeholder="Notes" value={recordForm.notes} onChange={(event) => setRecordForm({ ...recordForm, notes: event.target.value })} />
-          <button className="btn btn-secondary" onClick={() => addRecord.mutate()} disabled={addRecord.isPending}>Add history record</button>
-          <button className="btn btn-ghost" onClick={() => setShowRecordForm(null)}>Cancel</button>
-        </div></div></div> : null}
-        <div className="list-stack mt-5">{(recordsQuery.data ?? []).map((record) => <div className="service-row" key={record.id}><div className="flex-1"><p className="font-semibold">{record.title}</p><p className="text-xs text-muted-foreground">{record.type} · {formatDate(record.date)} · pet {record.petId}</p><p className="mt-1 text-sm text-muted-foreground">{record.notes}</p></div><button className="btn btn-ghost" onClick={() => { const notes = window.prompt("Update notes", record.notes); if (notes !== null) updateRecord.mutate({ id: record.id, notes }); }}>Edit notes</button></div>)}</div>
-        {addRecord.isError ? <p className="mt-3 text-sm text-destructive">{addRecord.error.message}</p> : null}
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              setRecordForm({ ...recordForm, type: "vaccination" });
+              setShowRecordForm(
+                showRecordForm === "vaccination" ? null : "vaccination",
+              );
+            }}
+          >
+            + Add vaccination record
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              setRecordForm({ ...recordForm, type: "grooming" });
+              setShowRecordForm(
+                showRecordForm === "grooming" ? null : "grooming",
+              );
+            }}
+          >
+            + Add grooming record
+          </button>
+        </div>
+        {showRecordForm ? (
+          <div className="modal-backdrop" role="presentation">
+            <div
+              className="modal animate-in"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="record-title"
+            >
+              <h2 id="record-title" className="modal-title mb-5">
+                Add {showRecordForm} record
+              </h2>
+              <div className="form-grid">
+                <select
+                  className="input select"
+                  value={recordForm.type}
+                  onChange={(event) =>
+                    setRecordForm({ ...recordForm, type: event.target.value })
+                  }
+                >
+                  <option value="grooming">Grooming</option>
+                  <option value="vaccination">Vaccination</option>
+                </select>
+                <select
+                  className="input select"
+                  value={recordForm.petId}
+                  onChange={(event) =>
+                    setRecordForm({ ...recordForm, petId: event.target.value })
+                  }
+                >
+                  <option value="">Pet from a booking</option>
+                  {(bookingsQuery.data ?? []).map((booking) => (
+                    <option
+                      key={`${booking.id}-${booking.petId}`}
+                      value={booking.petId}
+                    >
+                      {booking.petName}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="input"
+                  placeholder="Title or vaccine/service"
+                  value={recordForm.title}
+                  onChange={(event) =>
+                    setRecordForm({ ...recordForm, title: event.target.value })
+                  }
+                />
+                <input
+                  className="input"
+                  type="date"
+                  value={recordForm.date}
+                  onChange={(event) =>
+                    setRecordForm({ ...recordForm, date: event.target.value })
+                  }
+                />
+                {recordForm.type === "vaccination" ? (
+                  <input
+                    className="input"
+                    type="date"
+                    placeholder="Next due"
+                    value={recordForm.nextDue}
+                    onChange={(event) =>
+                      setRecordForm({
+                        ...recordForm,
+                        nextDue: event.target.value,
+                      })
+                    }
+                  />
+                ) : null}
+                <textarea
+                  className="input h-20 py-3"
+                  placeholder="Notes"
+                  value={recordForm.notes}
+                  onChange={(event) =>
+                    setRecordForm({ ...recordForm, notes: event.target.value })
+                  }
+                />
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => addRecord.mutate()}
+                  disabled={addRecord.isPending}
+                >
+                  Add history record
+                </button>
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => setShowRecordForm(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        <div className="list-stack mt-5">
+          {(recordsQuery.data ?? []).map((record) => (
+            <div className="service-row" key={record.id}>
+              <div className="flex-1">
+                <p className="font-semibold">{record.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {record.type} · {formatDate(record.date)} · pet {record.petId}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {record.notes}
+                </p>
+              </div>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  const notes = window.prompt("Update notes", record.notes);
+                  if (notes !== null)
+                    updateRecord.mutate({ id: record.id, notes });
+                }}
+              >
+                Edit notes
+              </button>
+            </div>
+          ))}
+        </div>
+        {addRecord.isError ? (
+          <p className="mt-3 text-sm text-destructive">
+            {addRecord.error.message}
+          </p>
+        ) : null}
       </section>
-      {editingService ? <div className="modal-backdrop" role="presentation"><div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="edit-service-title"><h2 id="edit-service-title" className="modal-title mb-5">Edit service</h2><div className="form-grid"><input className="input" value={editingService.name} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, name: event.target.value } : item) })} /><input className="input" value={editingService.description} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, description: event.target.value } : item) })} /><input className="input" type="number" value={editingService.price} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, price: Number(event.target.value) } : item) })} /><select className="input select" value={editingService.category} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, category: event.target.value } : item) })}><option value="grooming">Grooming</option><option value="vaccination">Vaccination</option></select><input className="input" type="file" accept="image/*" onChange={(event) => readImage(event.target.files?.[0], (imageUrl) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, imageUrl } : item) }))} /><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={editingService.available !== false} onChange={(event) => setDraft({ ...draft, services: draft.services.map((item) => item.id === editingService.id ? { ...item, available: event.target.checked } : item) })} /> Available</label></div><div className="mt-5 flex gap-2"><button className="btn btn-primary" onClick={() => updateService.mutate({ id: editingService.id, service: editingService })}>Save changes</button><button className="btn btn-ghost" onClick={() => { query.refetch(); setEditingServiceId(null); }}>Cancel</button></div></div></div> : null}
+      {editingService ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-service-title"
+          >
+            <h2 id="edit-service-title" className="modal-title mb-5">
+              Edit service
+            </h2>
+            <div className="form-grid">
+              <input
+                className="input"
+                value={editingService.name}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    services: draft.services.map((item) =>
+                      item.id === editingService.id
+                        ? { ...item, name: event.target.value }
+                        : item,
+                    ),
+                  })
+                }
+              />
+              <input
+                className="input"
+                value={editingService.description}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    services: draft.services.map((item) =>
+                      item.id === editingService.id
+                        ? { ...item, description: event.target.value }
+                        : item,
+                    ),
+                  })
+                }
+              />
+              <input
+                className="input"
+                type="number"
+                value={editingService.price}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    services: draft.services.map((item) =>
+                      item.id === editingService.id
+                        ? { ...item, price: Number(event.target.value) }
+                        : item,
+                    ),
+                  })
+                }
+              />
+              <select
+                className="input select"
+                value={editingService.category}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    services: draft.services.map((item) =>
+                      item.id === editingService.id
+                        ? { ...item, category: event.target.value }
+                        : item,
+                    ),
+                  })
+                }
+              >
+                <option value="grooming">Grooming</option>
+                <option value="vaccination">Vaccination</option>
+              </select>
+              <input
+                className="input"
+                type="file"
+                accept="image/*"
+                onChange={(event) =>
+                  readImage(event.target.files?.[0], (imageUrl) =>
+                    setDraft({
+                      ...draft,
+                      services: draft.services.map((item) =>
+                        item.id === editingService.id
+                          ? { ...item, imageUrl }
+                          : item,
+                      ),
+                    }),
+                  )
+                }
+              />
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={editingService.available !== false}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      services: draft.services.map((item) =>
+                        item.id === editingService.id
+                          ? { ...item, available: event.target.checked }
+                          : item,
+                      ),
+                    })
+                  }
+                />{" "}
+                Available
+              </label>
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                className="btn btn-primary"
+                onClick={() =>
+                  updateService.mutate({
+                    id: editingService.id,
+                    service: editingService,
+                  })
+                }
+              >
+                Save changes
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  query.refetch();
+                  setEditingServiceId(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2874,7 +4598,11 @@ function RecordsPanel({ pet }: { pet: Pet }) {
                     <p className="mt-1 text-xs text-muted-foreground">
                       {record.providerName} · {formatDate(record.date)}
                     </p>
-                    {record.bookingId ? <p className="mt-1 text-xs text-muted-foreground">Booking #{record.bookingId}</p> : null}
+                    {record.bookingId ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Booking #{record.bookingId}
+                      </p>
+                    ) : null}
                   </div>
                   <span
                     className={`status status-${record.status.toLowerCase()}`}
@@ -2996,8 +4724,148 @@ function PetsPage() {
 }
 
 function OrdersPage() {
+  const { user } = useAuth();
   const query = useListOrders({ query: { queryKey: getListOrdersQueryKey() } });
   const orders = query.data ?? [];
+  type CartLine = {
+    providerId: number;
+    providerName: string;
+    product: ProviderProduct;
+    quantity: number;
+    selected: boolean;
+  };
+  const loadCart = (): CartLine[] => {
+    const prefix = `petnest-cart-${user?.id ?? "guest"}-`;
+    const lines: CartLine[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      const providerId = Number(key.slice(prefix.length));
+      try {
+        const stored = JSON.parse(localStorage.getItem(key) ?? "[]") as Array<{
+          product: ProviderProduct;
+          quantity: number;
+        }>;
+        lines.push(
+          ...stored.map((item) => ({
+            ...item,
+            providerId,
+            providerName: `Shop #${providerId}`,
+            selected: true,
+          })),
+        );
+      } catch {
+        /* Ignore only malformed local cart data. */
+      }
+    }
+    return lines;
+  };
+  const [cart, setCart] = useState<CartLine[]>(loadCart);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [cartError, setCartError] = useState("");
+  useEffect(() => {
+    const providerIds = [...new Set(cart.map((item) => item.providerId))];
+    void Promise.all(
+      providerIds.map(async (providerId) => {
+        try {
+          const provider = await adminRequest<ProviderDetail>(
+            `/api/providers/${providerId}`,
+          );
+          setCart((current) =>
+            current.map((line) =>
+              line.providerId !== providerId
+                ? line
+                : {
+                    ...line,
+                    providerName: provider.name,
+                    product: provider.products.find(
+                      (product) => product.id === line.product.id,
+                    ) ?? { ...line.product, active: false, stock: 0 },
+                  },
+            ),
+          );
+        } catch {
+          setCart((current) =>
+            current.map((line) =>
+              line.providerId === providerId
+                ? {
+                    ...line,
+                    product: { ...line.product, active: false, stock: 0 },
+                  }
+                : line,
+            ),
+          );
+        }
+      }),
+    );
+  }, []);
+  const persistCart = (next: CartLine[]) => {
+    const providerIds = new Set([
+      ...cart.map((item) => item.providerId),
+      ...next.map((item) => item.providerId),
+    ]);
+    for (const providerId of providerIds) {
+      const stored = next
+        .filter((item) => item.providerId === providerId)
+        .map(({ product, quantity }) => ({ product, quantity }));
+      localStorage.setItem(
+        `petnest-cart-${user?.id ?? "guest"}-${providerId}`,
+        JSON.stringify(stored),
+      );
+    }
+    setCart(next);
+  };
+  const selected = cart.filter((item) => item.selected);
+  const cartTotal = selected.reduce(
+    (sum, item) => sum + item.product.price * item.quantity,
+    0,
+  );
+  const checkout = useMutation({
+    mutationFn: async () => {
+      const succeeded: number[] = [];
+      let error = "";
+      for (const providerId of [
+        ...new Set(selected.map((item) => item.providerId)),
+      ]) {
+        const lines = selected.filter((item) => item.providerId === providerId);
+        try {
+          await adminRequest("/api/orders", {
+            method: "POST",
+            body: JSON.stringify({
+              providerId,
+              items: lines.map((item) => ({
+                productId: item.product.id,
+                quantity: item.quantity,
+              })),
+            }),
+          });
+          succeeded.push(providerId);
+        } catch (reason) {
+          error = reason instanceof Error ? reason.message : "Checkout failed.";
+          break;
+        }
+      }
+      return { succeeded, error };
+    },
+    onSuccess: ({ succeeded, error }) => {
+      const successfulKeys = new Set(
+        selected
+          .filter((item) => succeeded.includes(item.providerId))
+          .map((item) => `${item.providerId}:${item.product.id}`),
+      );
+      persistCart(
+        cart.filter(
+          (item) =>
+            !successfulKeys.has(`${item.providerId}:${item.product.id}`),
+        ),
+      );
+      query.refetch();
+      setCheckoutOpen(false);
+      setCartError(
+        error || (succeeded.length ? "Order placed successfully." : ""),
+      );
+    },
+  });
   return (
     <div className="animate-in">
       <p className="eyebrow">Good things, on the way</p>
@@ -3006,6 +4874,155 @@ function OrdersPage() {
         Track the useful little things that keep your pet comfortable, fed, and
         entertained.
       </p>
+      <section className="surface-card mt-8 p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="eyebrow">Shopping cart</p>
+            <h2 className="section-title mt-1">Items ready to order</h2>
+          </div>
+          <span className="tag tag-accent">
+            {cart.length} item{cart.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        {cart.length ? (
+          <>
+            <div className="list-stack mt-5">
+              {cart.map((item) => (
+                <div
+                  className="product-row"
+                  key={`${item.providerId}-${item.product.id}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={item.selected}
+                    onChange={(event) =>
+                      persistCart(
+                        cart.map((line) =>
+                          line === item
+                            ? { ...line, selected: event.target.checked }
+                            : line,
+                        ),
+                      )
+                    }
+                    aria-label={`Select ${item.product.name}`}
+                  />
+                  {item.product.imageUrl ? (
+                    <img
+                      className="product-thumb"
+                      src={item.product.imageUrl}
+                      alt=""
+                    />
+                  ) : (
+                    <div className="product-thumb grid place-items-center bg-muted">
+                      <Package size={18} />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold">{item.product.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {item.providerName} · {money(item.product.price)}
+                    </p>
+                    <p
+                      className={`mt-1 text-xs ${item.product.active && item.product.stock > 0 ? "text-muted-foreground" : "text-destructive"}`}
+                    >
+                      {item.product.active
+                        ? item.product.stock > 0
+                          ? `${item.product.stock} available`
+                          : "Out of Stock"
+                        : "No longer available"}
+                    </p>
+                  </div>
+                  <button
+                    className="btn btn-ghost h-9 min-h-0 px-3"
+                    onClick={() =>
+                      persistCart(
+                        cart.map((line) =>
+                          line === item
+                            ? {
+                                ...line,
+                                quantity: Math.max(1, line.quantity - 1),
+                              }
+                            : line,
+                        ),
+                      )
+                    }
+                  >
+                    −
+                  </button>
+                  <span>{item.quantity}</span>
+                  <button
+                    className="btn btn-ghost h-9 min-h-0 px-3"
+                    disabled={
+                      !item.product.active ||
+                      item.quantity >= item.product.stock
+                    }
+                    onClick={() =>
+                      persistCart(
+                        cart.map((line) =>
+                          line === item
+                            ? { ...line, quantity: line.quantity + 1 }
+                            : line,
+                        ),
+                      )
+                    }
+                  >
+                    +
+                  </button>
+                  <span className="w-24 text-right font-mono text-sm">
+                    {money(item.product.price * item.quantity)}
+                  </span>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() =>
+                      persistCart(cart.filter((line) => line !== item))
+                    }
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-5 border-t pt-4">
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">
+                  Subtotal / Total
+                </p>
+                <p className="font-mono text-xl font-semibold">
+                  {money(cartTotal)}
+                </p>
+              </div>
+              <button
+                className="btn btn-primary"
+                disabled={
+                  !selected.length ||
+                  selected.some(
+                    (item) =>
+                      !item.product.active ||
+                      item.product.stock < item.quantity,
+                  )
+                }
+                onClick={() => {
+                  setCartError("");
+                  setCheckoutOpen(true);
+                }}
+              >
+                Checkout
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="mt-5 text-sm text-muted-foreground">
+            Your cart is empty. Add products from a Pet Supplies shop.
+          </p>
+        )}
+        {cartError ? (
+          <p
+            className={`mt-3 text-sm ${cartError.includes("successfully") ? "text-primary" : "text-destructive"}`}
+          >
+            {cartError}
+          </p>
+        ) : null}
+      </section>
       <div className="mt-8">
         {query.isLoading ? (
           <LoadingState label="Checking on your deliveries" />
@@ -3042,6 +5059,16 @@ function OrdersPage() {
                     <td>{formatDate(order.createdAt)}</td>
                     <td>
                       {order.itemCount} item{order.itemCount === 1 ? "" : "s"}
+                      {order.items.length ? (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {order.items
+                            .map(
+                              (item) =>
+                                `${item.productName} × ${item.quantity}`,
+                            )
+                            .join(", ")}
+                        </div>
+                      ) : null}
                     </td>
                     <td>
                       <span
@@ -3065,7 +5092,7 @@ function OrdersPage() {
             copy="When you find something useful from a local provider, your supply orders will live here."
             action={
               <Link
-                href="/providers?category=supplies"
+                href="/providers?category=pet-supplies"
                 className="btn btn-primary"
                 data-testid="link-orders-shop"
               >
@@ -3075,6 +5102,54 @@ function OrdersPage() {
           />
         )}
       </div>
+      {checkoutOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal animate-in" role="dialog" aria-modal="true">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="eyebrow">Checkout</p>
+                <h2 className="modal-title">Confirm selected items</h2>
+              </div>
+              <button
+                className="modal-close"
+                onClick={() => setCheckoutOpen(false)}
+              >
+                <X size={17} />
+              </button>
+            </div>
+            <div className="list-stack mt-5">
+              {selected.map((item) => (
+                <div
+                  className="product-row"
+                  key={`${item.providerId}-${item.product.id}`}
+                >
+                  <div className="flex-1">
+                    <p className="font-semibold">{item.product.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {item.providerName} · {item.quantity} ×{" "}
+                      {money(item.product.price)}
+                    </p>
+                  </div>
+                  <span className="font-mono">
+                    {money(item.quantity * item.product.price)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-5 flex items-center justify-between border-t pt-4 font-semibold">
+              <span>Total</span>
+              <span className="font-mono">{money(cartTotal)}</span>
+            </div>
+            <button
+              className="btn btn-primary mt-5 w-full"
+              disabled={checkout.isPending}
+              onClick={() => checkout.mutate()}
+            >
+              {checkout.isPending ? "Placing order…" : "Place Order"}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

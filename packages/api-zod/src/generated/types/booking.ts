@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { BookingCancellationDecision } from './bookingCancellationDecision';
 import type { BookingServiceCategory } from './bookingServiceCategory';
 
 export interface Booking {
@@ -21,4 +22,8 @@ export interface Booking {
   time: string;
   status: string;
   price: number;
+  cancellationReason?: string | null;
+  cancellationPreviousStatus?: string | null;
+  cancellationDecision?: BookingCancellationDecision;
+  cancellationDecidedAt?: string | null;
 }
