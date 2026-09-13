@@ -1143,7 +1143,7 @@ router.get("/providers/:providerId", async (req, res) => {
         ])
         .next()
     : await providerCollection.findOne(
-        { id: parsed.data.providerId, active: true },
+        { id: parsed.data.providerId, active: { $ne: false } },
         { projection: { _id: 0 } },
       );
   if (!provider) {
