@@ -465,6 +465,7 @@ type UserProfile = {
   updatedAt: string;
 };
 type StoredSession = { _id: string; userId: string; expiresAt: Date };
+type BookingLock = { _id: string; token: string; expiresAt: Date };
 
 const legacyOwnerId = "legacy-seed-data";
 
@@ -477,7 +478,7 @@ function isValidBookingDate(value: string): boolean {
   ) {
     return false;
   }
-  return value >= new Date().toISOString().slice(0, 10);
+  return value >= manilaNow().date;
 }
 
 function timeToMinutes(value: string): number | null {
@@ -487,6 +488,53 @@ function timeToMinutes(value: string): number | null {
   const minutes = Number(match[2]);
   if (hours > 23 || minutes > 59) return null;
   return hours * 60 + minutes;
+}
+
+const weekdayIndexes: Record<string, number> = {
+  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+};
+
+function parseClock(value: string, meridiem: string): number | null {
+  const [hourText, minuteText = "0"] = value.split(":");
+  let hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 1 || hour > 12 || minute > 59) return null;
+  if (hour === 12) hour = 0;
+  if (meridiem.toUpperCase() === "PM") hour += 12;
+  return hour * 60 + minute;
+}
+
+function providerSchedule(hours: string) {
+  const dayTokens = hours.toLowerCase().match(/mon|tue|wed|thu|fri|sat|sun/g) ?? [];
+  const timeTokens = [...hours.matchAll(/(\d{1,2}(?::\d{2})?)\s*(AM|PM)/gi)];
+  if (timeTokens.length < 2) return null;
+  const open = parseClock(timeTokens[0][1], timeTokens[0][2]);
+  const close = parseClock(timeTokens[1][1], timeTokens[1][2]);
+  if (open === null || close === null || close <= open) return null;
+  const workingDays = new Set<number>();
+  if (dayTokens.length === 0) {
+    for (let day = 0; day < 7; day += 1) workingDays.add(day);
+  } else {
+    const firstDay = weekdayIndexes[dayTokens[0]!]!;
+    const lastDay = weekdayIndexes[dayTokens[1] ?? dayTokens[0]!]!;
+    for (let day = firstDay; ; day = (day + 1) % 7) {
+      workingDays.add(day);
+      if (day === lastDay) break;
+    }
+  }
+  return { workingDays, open, close };
+}
+
+function minutesToTime(minutes: number) {
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+function manilaNow() {
+  const shifted = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  return {
+    date: shifted.toISOString().slice(0, 10),
+    minutes: shifted.getUTCHours() * 60 + shifted.getUTCMinutes(),
+  };
 }
 
 const mongoUri = process.env.MONGODB_URI;
@@ -508,6 +556,30 @@ const userCollection: Collection<UserProfile> = database.collection("users");
 const sessionCollection: Collection<StoredSession> =
   database.collection("sessions");
 const counterCollection: Collection<Counter> = database.collection("counters");
+const bookingLockCollection: Collection<BookingLock> =
+  database.collection("bookingLocks");
+
+async function acquireBookingLock(providerId: number, date: string) {
+  const id = `${providerId}:${date}`;
+  const token = randomUUID();
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const now = new Date();
+    try {
+      const lock = await bookingLockCollection.findOneAndUpdate(
+        { _id: id, $or: [{ expiresAt: { $lte: now } }, { token }] },
+        { $set: { token, expiresAt: new Date(now.getTime() + 10_000) } },
+        { upsert: true, returnDocument: "after" },
+      );
+      if (lock?.token === token) {
+        return () => bookingLockCollection.deleteOne({ _id: id, token });
+      }
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Booking availability is busy. Please try again.");
+}
 
 let initialization: Promise<void> | undefined;
 const configuredSessionSecret = process.env.SESSION_SECRET;
@@ -835,6 +907,10 @@ export function initializePetnestData(): Promise<void> {
       userCollection.createIndex({ email: 1 }, { unique: true }),
       userCollection.createIndex({ id: 1 }, { unique: true }),
       sessionCollection.createIndex(
+        { expiresAt: 1 },
+        { expireAfterSeconds: 0 },
+      ),
+      bookingLockCollection.createIndex(
         { expiresAt: 1 },
         { expireAfterSeconds: 0 },
       ),
@@ -1269,7 +1345,32 @@ router.get("/providers/:providerId", async (req, res) => {
     return;
   }
   await initializePetnestData();
-  const provider = requestedCategory
+  const categoriesOnly = req.query.view === "categories";
+  if (req.query.view !== undefined && !categoriesOnly) {
+    res.status(400).json({ error: "Choose a valid provider view." });
+    return;
+  }
+  const provider = categoriesOnly
+    ? await providerCollection
+        .aggregate<Provider>([
+          { $match: { id: parsed.data.providerId, active: { $ne: false } } },
+          {
+            $set: {
+              categories: {
+                $concatArrays: [
+                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$services", as: "service", cond: { $and: [{ $eq: ["$$service.category", "grooming"] }, { $eq: ["$$service.available", true] }] } } } }, 0] }, ["grooming"], []] },
+                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$services", as: "service", cond: { $and: [{ $eq: ["$$service.category", "vaccination"] }, { $eq: ["$$service.available", true] }] } } } }, 0] }, ["vaccination"], []] },
+                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$products", as: "product", cond: { $and: [{ $eq: ["$$product.category", "pet-supplies"] }, { $eq: ["$$product.active", true] }] } } } }, 0] }, ["pet-supplies"], []] },
+                ],
+              },
+              services: [],
+              products: [],
+            },
+          },
+          { $unset: "_id" },
+        ])
+        .next()
+    : requestedCategory
     ? await providerCollection
         .aggregate<Provider>([
           {
@@ -1337,6 +1438,70 @@ router.get("/providers/:providerId", async (req, res) => {
     return;
   }
   res.json(GetProviderResponse.parse(provider));
+});
+
+router.get("/providers/:providerId/availability", async (req, res) => {
+  const providerId = Number(req.params.providerId);
+  const serviceId = Number(req.query.serviceId);
+  const month = typeof req.query.month === "string" ? req.query.month : "";
+  if (!Number.isInteger(providerId) || !Number.isInteger(serviceId) || !/^\d{4}-\d{2}$/.test(month)) {
+    res.status(400).json({ error: "A valid provider, service, and month are required." });
+    return;
+  }
+  await initializePetnestData();
+  const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false } });
+  const service = provider?.services.find((item) => item.id === serviceId && item.available);
+  const schedule = provider ? providerSchedule(provider.hours) : null;
+  if (!provider || !service || !schedule || !["grooming", "vaccination"].includes(service.category)) {
+    res.status(404).json({ error: "Availability is not configured for this service." });
+    return;
+  }
+  const [year, monthNumber] = month.split("-").map(Number);
+  if (monthNumber < 1 || monthNumber > 12 || year < 2000 || year > 2200) {
+    res.status(400).json({ error: "Choose a valid month." });
+    return;
+  }
+  const first = new Date(Date.UTC(year, monthNumber - 1, 1));
+  if (first.toISOString().slice(0, 7) !== month) {
+    res.status(400).json({ error: "Choose a valid month." });
+    return;
+  }
+  const lastDate = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const monthBookings = await bookingCollection.find({
+    providerId,
+    date: { $gte: `${month}-01`, $lte: `${month}-${String(lastDate).padStart(2, "0")}` },
+    status: { $nin: ["completed", "cancelled"] },
+  }).project({ date: 1, time: 1, serviceName: 1, serviceCategory: 1 }).toArray();
+  const current = manilaNow();
+  const dates: Record<string, string[]> = {};
+  const slots: Record<string, Array<{ time: string; status: "available" | "unavailable" }>> = {};
+  for (let day = 1; day <= lastDate; day += 1) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    const weekday = new Date(`${date}T00:00:00.000Z`).getUTCDay();
+    slots[date] = [];
+    if (date < current.date || !schedule.workingDays.has(weekday)) {
+      dates[date] = [];
+      continue;
+    }
+    const bookings = monthBookings.filter((booking) => booking.date === date);
+    dates[date] = [];
+    for (let start = schedule.open; start + service.durationMinutes <= schedule.close; start += 30) {
+      const end = start + service.durationMinutes;
+      const conflicts = bookings.some((booking) => {
+        const bookedStart = timeToMinutes(booking.time);
+        const bookedService = provider.services.find((candidate) => candidate.name === booking.serviceName && candidate.category === booking.serviceCategory);
+        if (bookedStart === null) return false;
+        const bookedEnd = bookedStart + (bookedService?.durationMinutes ?? 30);
+        return start < bookedEnd && bookedStart < end;
+      });
+      const time = minutesToTime(start);
+      const hasPassed = date === current.date && start <= current.minutes;
+      const status = conflicts || hasPassed ? "unavailable" : "available";
+      slots[date].push({ time, status });
+      if (status === "available") dates[date].push(time);
+    }
+  }
+  res.json({ providerId, serviceId, month, dates, slots });
 });
 
 router.get("/services", async (req, res) => {
@@ -2332,6 +2497,23 @@ router.post("/bookings", async (req, res) => {
       .json({ error: "This service is not offered by the provider." });
     return;
   }
+  const current = manilaNow();
+  if (parsed.data.date === current.date && requestedStart <= current.minutes) {
+    res.status(409).json({ error: "Choose a time later than the current time." });
+    return;
+  }
+  const schedule = providerSchedule(provider.hours);
+  const requestedWeekday = new Date(`${parsed.data.date}T00:00:00.000Z`).getUTCDay();
+  if (
+    !schedule ||
+    !schedule.workingDays.has(requestedWeekday) ||
+    requestedStart < schedule.open ||
+    requestedStart + service.durationMinutes > schedule.close ||
+    (requestedStart - schedule.open) % 30 !== 0
+  ) {
+    res.status(409).json({ error: "This date or time is outside the provider's availability." });
+    return;
+  }
   if (parsed.data.recordId !== null) {
     const record = await recordCollection.findOne({
       id: parsed.data.recordId,
@@ -2346,11 +2528,19 @@ router.post("/bookings", async (req, res) => {
       return;
     }
   }
+  let releaseLock: (() => Promise<unknown>) | undefined;
+  try {
+    releaseLock = await acquireBookingLock(provider.id, parsed.data.date);
+  } catch {
+    res.status(503).json({ error: "Booking availability is busy. Please try again." });
+    return;
+  }
+  try {
   const providerBookings = await bookingCollection
     .find({
       providerId: provider.id,
       date: parsed.data.date,
-      status: { $nin: ["cancelled"] },
+      status: { $nin: ["completed", "cancelled"] },
     })
     .project({ time: 1, serviceName: 1, serviceCategory: 1 })
     .toArray();
@@ -2393,6 +2583,9 @@ router.post("/bookings", async (req, res) => {
   };
   await bookingCollection.insertOne(booking);
   res.status(201).json(CreateBookingResponse.parse(booking));
+  } finally {
+    await releaseLock();
+  }
 });
 
 router.delete("/bookings/:bookingId", async (req, res) => {
@@ -2448,15 +2641,38 @@ router.post("/bookings/:bookingId/cancellation-request", async (req, res) => {
 router.get("/provider/bookings", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
-  const bookings = await bookingCollection
-    .find({ providerId: access.providerId }, { projection: { _id: 0 } })
-    .sort({ date: 1, time: 1 })
+  const [bookings, provider] = await Promise.all([
+    bookingCollection
+      .find({ providerId: access.providerId }, { projection: { _id: 0 } })
+      .sort({ date: 1, time: 1 })
+      .toArray(),
+    providerCollection.findOne({ id: access.providerId }),
+  ]);
+  const owners = await userCollection
+    .find(
+      { id: { $in: [...new Set(bookings.map((booking) => booking.ownerId))] } },
+      { projection: { _id: 0, id: 1, name: 1 } },
+    )
     .toArray();
+  const ownerNames = new Map(owners.map((owner) => [owner.id, owner.name]));
   res.json(
-    bookings.map(({ ownerId, ...booking }) => ({
-      ...booking,
-      customerId: ownerId,
-    })),
+    bookings.map(({ ownerId, ...booking }) => {
+      const service = provider?.services.find(
+        (candidate) =>
+          candidate.name === booking.serviceName &&
+          candidate.category === booking.serviceCategory,
+      );
+      const start = timeToMinutes(booking.time);
+      return {
+        ...booking,
+        customerId: ownerId,
+        customerName: ownerNames.get(ownerId) ?? "Customer",
+        endTime:
+          start === null
+            ? booking.time
+            : minutesToTime(start + (service?.durationMinutes ?? 30)),
+      };
+    }),
   );
 });
 

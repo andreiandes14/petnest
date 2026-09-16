@@ -55,6 +55,7 @@ import {
   ArrowRight,
   CalendarDays,
   Check,
+  ChevronLeft,
   ChevronRight,
   CircleHelp,
   Clock3,
@@ -1213,6 +1214,71 @@ function LegacyBookingModal({
   );
 }
 
+function AvailabilityCalendar({
+  providerId,
+  serviceId,
+  selectedDate,
+  onSelect,
+}: {
+  providerId: number;
+  serviceId: number;
+  selectedDate: string;
+  onSelect: (date: string, slots: AvailabilitySlot[]) => void;
+}) {
+  const currentMonth = new Date(Date.now() + 8 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 7);
+  const [month, setMonth] = useState(selectedDate.slice(0, 7) || currentMonth);
+  const availability = useQuery({
+    queryKey: ["availability", providerId, serviceId, month],
+    queryFn: ({ signal }) =>
+      adminRequest<AvailabilityResponse>(
+        `/api/providers/${providerId}/availability?serviceId=${serviceId}&month=${month}`,
+        { signal },
+      ),
+  });
+  const firstWeekday = new Date(`${month}-01T00:00:00.000Z`).getUTCDay();
+  const days = new Date(
+    Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0),
+  ).getUTCDate();
+  return (
+    <div className="surface-card p-4" data-testid="customer-availability-calendar">
+      <div className="flex items-center justify-between gap-3">
+        <button className="btn btn-ghost btn-icon" type="button" aria-label="Previous month" disabled={month <= currentMonth} onClick={() => setMonth(shiftMonth(month, -1))}>
+          <ChevronLeft size={16} />
+        </button>
+        <p className="font-semibold">{monthTitle(month)}</p>
+        <button className="btn btn-ghost btn-icon" type="button" aria-label="Next month" onClick={() => setMonth(shiftMonth(month, 1))}>
+          <ChevronRight size={16} />
+        </button>
+      </div>
+      <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-muted-foreground">
+        {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((day) => <span key={day}>{day}</span>)}
+      </div>
+      {availability.isLoading ? <p className="py-6 text-center text-sm text-muted-foreground">Checking availability…</p> : availability.isError ? <p className="py-6 text-center text-sm text-destructive">Availability could not be loaded.</p> : (
+        <div className="mt-2 grid grid-cols-7 gap-1">
+          {Array.from({ length: firstWeekday }).map((_, index) => <span key={`blank-${index}`} />)}
+          {Array.from({ length: days }, (_, index) => index + 1).map((day) => {
+            const value = `${month}-${String(day).padStart(2, '0')}`;
+            const times = availability.data?.dates[value] ?? [];
+            const slots = availability.data?.slots[value] ?? [];
+            const disabled = times.length === 0;
+            const partiallyAvailable = times.length > 0 && slots.some((slot) => slot.status === 'unavailable');
+            return <button key={value} type="button" disabled={disabled} onClick={() => onSelect(value, slots)} className={`min-h-10 rounded-lg border text-sm transition ${selectedDate === value ? 'border-primary bg-primary text-primary-foreground' : disabled ? 'cursor-not-allowed border-destructive/30 bg-destructive/10 text-destructive opacity-60' : partiallyAvailable ? 'border-amber-400/60 bg-amber-50 text-amber-900 hover:border-primary' : 'border-border bg-background text-foreground hover:border-primary hover:text-primary'}`} aria-label={`${value}${disabled ? ', unavailable' : partiallyAvailable ? `, partially available, ${times.length} times available` : `, ${times.length} times available`}`}>
+              {day}
+            </button>;
+          })}
+        </div>
+      )}
+      <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground" aria-label="Calendar color legend">
+        <span className="inline-flex items-center gap-2"><span className="h-3 w-3 rounded border border-border bg-background" /> Available</span>
+        <span className="inline-flex items-center gap-2"><span className="h-3 w-3 rounded border border-amber-400/60 bg-amber-50" /> Partially available</span>
+        <span className="inline-flex items-center gap-2"><span className="h-3 w-3 rounded border border-destructive/30 bg-destructive/10" /> Unavailable or fully booked</span>
+      </div>
+    </div>
+  );
+}
+
 function BookingModal({
   provider,
   service,
@@ -1227,7 +1293,8 @@ function BookingModal({
   const [petId, setPetId] = useState("");
   const [recordId, setRecordId] = useState("");
   const [date, setDate] = useState("");
-  const [time, setTime] = useState("10:00");
+  const [time, setTime] = useState("");
+  const [timeSlots, setTimeSlots] = useState<AvailabilitySlot[]>([]);
   const [notes, setNotes] = useState("");
   const [reviewing, setReviewing] = useState(false);
   const [complete, setComplete] = useState(false);
@@ -1270,6 +1337,7 @@ function BookingModal({
           queryClient.invalidateQueries({
             queryKey: getGetDashboardSummaryQueryKey(),
           });
+          queryClient.invalidateQueries({ queryKey: ["availability", provider.id] });
           setSavedBooking(booking);
           setComplete(true);
         },
@@ -1437,37 +1505,31 @@ function BookingModal({
                 ))}
               </select>
             </div>
-            <div className="form-grid">
-              <div className="form-field">
-                <label className="form-label" htmlFor="booking-date">
-                  Date
-                </label>
-                <input
-                  className="input"
-                  id="booking-date"
-                  type="date"
-                  min={new Date().toISOString().slice(0, 10)}
-                  value={date}
-                  onChange={(event) => setDate(event.target.value)}
-                />
-              </div>
-              <div className="form-field">
-                <label className="form-label" htmlFor="booking-time">
-                  Time
-                </label>
-                <select
-                  className="input select"
-                  id="booking-time"
-                  value={time}
-                  onChange={(event) => setTime(event.target.value)}
-                >
-                  <option>09:00</option>
-                  <option>10:00</option>
-                  <option>11:30</option>
-                  <option>13:00</option>
-                  <option>15:30</option>
-                </select>
-              </div>
+            <div className="form-field">
+              <label className="form-label">Available date</label>
+              <AvailabilityCalendar providerId={provider.id} serviceId={service.id} selectedDate={date} onSelect={(nextDate, slots) => { setDate(nextDate); setTimeSlots(slots); setTime(""); }} />
+            </div>
+            <div className="form-field">
+              <label className="form-label">Available time slots</label>
+              {date ? (
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4" data-testid="booking-time-slots">
+                  {timeSlots.map((slot) => (
+                    <button
+                      key={slot.time}
+                      type="button"
+                      disabled={slot.status !== "available"}
+                      onClick={() => setTime(slot.time)}
+                      className={`rounded-lg border px-2 py-2 text-xs font-semibold ${time === slot.time ? "border-primary bg-primary text-primary-foreground" : slot.status === "available" ? "border-border bg-background hover:border-primary" : "cursor-not-allowed border-destructive/30 bg-destructive/10 text-destructive opacity-60"}`}
+                      aria-label={`${slot.time}, ${slot.status}`}
+                    >
+                      {slot.time}
+                      <span className="mt-0.5 block text-[9px] font-normal">{slot.status === "available" ? "Available" : "Booked / unavailable"}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">Select a date to view times.</p>
+              )}
             </div>
             <div className="form-field">
               <label className="form-label" htmlFor="booking-notes">
@@ -1484,7 +1546,7 @@ function BookingModal({
             <button
               className="btn btn-primary w-full"
               onClick={() => setReviewing(true)}
-              disabled={!petId || !date}
+              disabled={!petId || !date || !time}
             >
               Review booking
             </button>
@@ -1518,7 +1580,7 @@ function ProviderDetailPage() {
     enabled: !!providerId,
     queryFn: ({ signal }) =>
       adminRequest<ProviderDetail>(
-        `/api/providers/${providerId}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`,
+        `/api/providers/${providerId}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : "?view=categories"}`,
         { signal },
       ),
   });
@@ -1700,6 +1762,37 @@ function ProviderDetailPage() {
           <Check size={16} /> {notice}
         </div>
       ) : null}
+      {!selectedCategory ? (
+        <section className="surface-card mt-6 p-6" data-testid="provider-category-picker">
+          <p className="eyebrow">Choose what you need</p>
+          <h2 className="section-title mt-1">Available categories</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Select a category to see only this provider's matching services or products.
+          </p>
+          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {provider.categories.map((category) => {
+              const meta = categoryMeta[category as keyof typeof categoryMeta];
+              if (!meta) return null;
+              const Icon = meta.icon;
+              return (
+                <Link
+                  key={category}
+                  href={`/providers/${provider.id}?category=${category}`}
+                  className="surface-card group border p-5 transition hover:border-primary"
+                  data-testid={`link-provider-category-${category}`}
+                >
+                  <Icon size={22} className="text-primary" />
+                  <h3 className="mt-4 font-display text-xl">{meta.label}</h3>
+                  <p className="mt-1 text-sm text-muted-foreground">{meta.copy}</p>
+                  <span className="mt-4 inline-flex items-center gap-1 text-xs font-bold text-primary">
+                    View {meta.label} <ChevronRight size={14} />
+                  </span>
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+      ) : (
       <div className={`detail-panels ${suppliesOnly ? "pet-supplies-panels" : ""}`}>
         {!suppliesOnly ? (
           <section className="surface-card p-5">
@@ -1746,7 +1839,7 @@ function ProviderDetailPage() {
             </div>
           </section>
         ) : null}
-        {suppliesOnly || !selectedCategory ? (
+        {suppliesOnly ? (
           <section className="surface-card pet-supplies-panel">
             <div className="mb-4 flex items-end justify-between">
               <div>
@@ -1891,6 +1984,7 @@ function ProviderDetailPage() {
           </section>
         ) : null}
       </div>
+      )}
       {checkingOut ? (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -1991,6 +2085,7 @@ function BookingsPage() {
       setCancellationBooking(null);
       setCancellationReason("");
       queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: ["availability"] });
     },
   });
   const bookings: Booking[] = query.data ?? [];
@@ -2202,7 +2297,11 @@ function BookingsPage() {
   );
 }
 
-type AdminBooking = Booking & { customerId: string };
+type AdminBooking = Booking & {
+  customerId: string;
+  customerName?: string;
+  endTime?: string;
+};
 type AdminAccount = {
   id: string;
   name: string;
@@ -2212,6 +2311,28 @@ type AdminAccount = {
   isActive: boolean;
   createdAt: string;
 };
+
+type AvailabilitySlot = {
+  time: string;
+  status: "available" | "unavailable";
+};
+type AvailabilityResponse = {
+  providerId: number;
+  serviceId: number;
+  month: string;
+  dates: Record<string, string[]>;
+  slots: Record<string, AvailabilitySlot[]>;
+};
+
+function shiftMonth(month: string, amount: number) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, monthNumber - 1 + amount, 1));
+  return shifted.toISOString().slice(0, 7);
+}
+
+function monthTitle(month: string) {
+  return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00.000Z`));
+}
 type AdminLogCategory = "grooming" | "vaccination" | "pet-supplies";
 type AdminActivityLog = {
   id: string;
@@ -2953,6 +3074,47 @@ function CustomerProfilePage() {
   );
 }
 
+function ProviderBookingsCalendar({ bookings }: { bookings: AdminBooking[] }) {
+  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const firstWeekday = new Date(`${month}-01T00:00:00.000Z`).getUTCDay();
+  const days = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
+  return (
+    <div className="surface-card mt-5 border p-4" data-testid="provider-bookings-calendar">
+      <div className="flex items-center justify-between gap-3">
+        <button className="btn btn-ghost btn-icon" type="button" aria-label="Previous month" onClick={() => setMonth(shiftMonth(month, -1))}><ChevronLeft size={16} /></button>
+        <p className="font-semibold">{monthTitle(month)}</p>
+        <button className="btn btn-ghost btn-icon" type="button" aria-label="Next month" onClick={() => setMonth(shiftMonth(month, 1))}><ChevronRight size={16} /></button>
+      </div>
+      <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-muted-foreground">
+        {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((day) => <span key={day}>{day}</span>)}
+      </div>
+      <div className="mt-2 grid grid-cols-7 gap-1">
+        {Array.from({ length: firstWeekday }).map((_, index) => <span key={`blank-${index}`} />)}
+        {Array.from({ length: days }, (_, index) => index + 1).map((day) => {
+          const date = `${month}-${String(day).padStart(2, '0')}`;
+          const dayBookings = bookings.filter((booking) => booking.date === date);
+          const hasActiveBooking = dayBookings.some(
+            (booking) => !["completed", "cancelled"].includes(booking.status),
+          );
+          return (
+            <div key={date} className={`min-h-24 rounded-lg border p-2 ${hasActiveBooking ? 'border-primary/40 bg-accent/40' : 'border-border bg-background'}`}>
+              <p className="text-xs font-bold">{day}</p>
+              {dayBookings.map((booking) => (
+                <div key={booking.id} className={`mt-1 rounded border px-1 py-1 text-[9px] ${["completed", "cancelled"].includes(booking.status) ? "border-border bg-muted text-muted-foreground" : "border-primary/30 bg-background"}`} title={`${booking.customerName ?? "Customer"} · ${booking.petName} · ${booking.serviceName} · ${booking.time}–${booking.endTime ?? booking.time} · ${statusLabel(booking.status)}`}>
+                  <p className="truncate font-semibold">{booking.time}–{booking.endTime ?? booking.time}</p>
+                  <p className="truncate">{booking.customerName ?? "Customer"} · {booking.petName}</p>
+                  <p className="truncate">{booking.serviceName} · {statusLabel(booking.status)}</p>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 text-xs text-muted-foreground">Active bookings are highlighted. Completed and cancelled bookings remain visible with their current status.</p>
+    </div>
+  );
+}
+
 function ProviderManagementPage() {
   const { user } = useAuth();
   const isProvider = user?.role === "provider";
@@ -3029,6 +3191,7 @@ function ProviderManagementPage() {
     enabled:
       isProvider &&
       (providerSection === "bookings" || providerSection === "records"),
+    refetchInterval: providerSection === "bookings" ? 3000 : false,
   });
   const updateBooking = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
@@ -3036,8 +3199,10 @@ function ProviderManagementPage() {
         method: "PATCH",
         body: JSON.stringify({ status }),
       }),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["provider", "bookings"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["provider", "bookings"] });
+      queryClient.invalidateQueries({ queryKey: ["availability"] });
+    },
   });
   const addService = useMutation({
     mutationFn: () =>
@@ -4115,24 +4280,28 @@ function ProviderManagementPage() {
                 <LoadingState label="Loading your booking requests" />
               </div>
             ) : bookingsQuery.data?.length ? (
+              <>
+              <ProviderBookingsCalendar bookings={bookingsQuery.data} />
               <div className="table-wrap mt-5">
                 <table className="data-table">
                   <thead>
                     <tr>
+                      <th>Customer</th>
                       <th>Service</th>
                       <th>Pet</th>
-                      <th>Schedule</th>
+                      <th>Date</th>
+                      <th>Time</th>
                       <th>Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {bookingsQuery.data.map((booking) => (
                       <tr key={booking.id}>
+                        <td>{booking.customerName ?? "Customer"}</td>
                         <td>{booking.serviceName}</td>
                         <td>{booking.petName}</td>
-                        <td>
-                          {formatDate(booking.date)} at {booking.time}
-                        </td>
+                        <td>{formatDate(booking.date)}</td>
+                        <td>{booking.time}–{booking.endTime ?? booking.time}</td>
                         <td>
                           <span className={`status status-${booking.status}`}>
                             {statusLabel(booking.status)}
@@ -4239,6 +4408,7 @@ function ProviderManagementPage() {
                   </tbody>
                 </table>
               </div>
+              </>
             ) : (
               <p className="mt-5 text-sm text-muted-foreground">
                 No booking requests yet.
