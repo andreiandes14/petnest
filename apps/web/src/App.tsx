@@ -49,6 +49,7 @@ import type {
   ProviderDetail,
   ProviderProduct,
   ProviderService,
+  Order,
 } from "@workspace/api-client-react";
 import {
   ArrowRight,
@@ -446,15 +447,6 @@ function AppShell({ children }: { children: ReactNode }) {
                   data-testid="link-top-pets"
                 >
                   <PawPrint size={15} /> My pets
-                </Link>
-              ) : null}
-              {!presentationMode ? (
-                <Link
-                  href="/account"
-                  className="grid h-9 w-9 place-items-center rounded-full bg-secondary font-mono text-xs font-bold text-secondary-foreground"
-                  data-testid="link-top-account"
-                >
-                  AR
                 </Link>
               ) : null}
               {isSignedIn ? (
@@ -1626,7 +1618,7 @@ function ProviderDetailPage() {
     );
   };
   return (
-    <div className="animate-in">
+    <div className={`animate-in ${suppliesOnly ? "pet-supplies-page" : ""}`}>
       <Link
         href={
           selectedCategory
@@ -1638,7 +1630,7 @@ function ProviderDetailPage() {
       >
         ← All providers
       </Link>
-      <div className="detail-hero">
+      <div className={`detail-hero ${suppliesOnly ? "pet-supplies-hero" : ""}`}>
         {provider.imageUrl ? (
           <img
             className="detail-image"
@@ -1698,7 +1690,7 @@ function ProviderDetailPage() {
           <Check size={16} /> {notice}
         </div>
       ) : null}
-      <div className="detail-panels">
+      <div className={`detail-panels ${suppliesOnly ? "pet-supplies-panels" : ""}`}>
         {!suppliesOnly ? (
           <section className="surface-card p-5">
             <div className="mb-4 flex items-end justify-between">
@@ -1745,7 +1737,7 @@ function ProviderDetailPage() {
           </section>
         ) : null}
         {suppliesOnly || !selectedCategory ? (
-          <section className="surface-card p-5">
+          <section className="surface-card pet-supplies-panel">
             <div className="mb-4 flex items-end justify-between">
               <div>
                 <p className="eyebrow">From their shelves</p>
@@ -1757,10 +1749,10 @@ function ProviderDetailPage() {
                 </span>
               ) : null}
             </div>
-            <div className="list-stack">
+            <div className="pet-supplies-grid">
               {visibleProducts.map((product) => (
                 <div
-                  className="product-row"
+                  className="product-row pet-supply-card"
                   key={product.id}
                   data-testid={`row-product-${product.id}`}
                 >
@@ -1792,39 +1784,41 @@ function ProviderDetailPage() {
                         : "Out of stock"}
                     </p>
                   </div>
-                  <input
-                    className="input w-16"
-                    type="number"
-                    min="1"
-                    max={product.stock}
-                    defaultValue="1"
-                    aria-label={`Quantity for ${product.name}`}
-                    id={`quantity-${product.id}`}
-                  />
-                  <button
-                    className="btn btn-ghost shrink-0"
-                    onClick={() => {
-                      const input = document.getElementById(
-                        `quantity-${product.id}`,
-                      ) as HTMLInputElement | null;
-                      const amount = Math.max(
-                        1,
-                        Math.min(product.stock, Number(input?.value) || 1),
-                      );
-                      for (let count = 0; count < amount; count += 1)
-                        addProduct(product);
-                    }}
-                    disabled={product.stock < 1}
-                    data-testid={`button-add-product-${product.id}`}
-                  >
-                    {product.stock > 0 ? (
-                      <>
-                        <Plus size={14} /> Add
-                      </>
-                    ) : (
-                      "Out of Stock"
-                    )}
-                  </button>
+                  <div className="pet-supply-actions">
+                    <input
+                      className="input product-quantity"
+                      type="number"
+                      min="1"
+                      max={product.stock}
+                      defaultValue="1"
+                      aria-label={`Quantity for ${product.name}`}
+                      id={`quantity-${product.id}`}
+                    />
+                    <button
+                      className="btn btn-ghost shrink-0"
+                      onClick={() => {
+                        const input = document.getElementById(
+                          `quantity-${product.id}`,
+                        ) as HTMLInputElement | null;
+                        const amount = Math.max(
+                          1,
+                          Math.min(product.stock, Number(input?.value) || 1),
+                        );
+                        for (let count = 0; count < amount; count += 1)
+                          addProduct(product);
+                      }}
+                      disabled={product.stock < 1}
+                      data-testid={`button-add-product-${product.id}`}
+                    >
+                      {product.stock > 0 ? (
+                        <>
+                          <Plus size={14} /> Add
+                        </>
+                      ) : (
+                        "Out of Stock"
+                      )}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -2940,6 +2934,23 @@ function ProviderManagementPage() {
       ),
     enabled: isProvider,
   });
+  const confirmOrder = useMutation({
+    mutationFn: (orderId: number) =>
+      adminRequest<Order>(`/api/provider/orders/${orderId}/confirm`, {
+        method: "PATCH",
+      }),
+    onSuccess: (confirmedOrder) => {
+      queryClient.setQueryData<Order[]>(
+        ["provider", "orders"],
+        (orders = []) =>
+          orders.map((order) =>
+            order.id === confirmedOrder.id ? confirmedOrder : order,
+          ),
+      );
+      queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+      setNotice(`Order #${confirmedOrder.id} confirmed.`);
+    },
+  });
   const recordsQuery = useQuery({
     queryKey: ["provider", "records"],
     queryFn: () => adminRequest<ProviderRecord[]>("/api/provider/records"),
@@ -3789,8 +3800,16 @@ function ProviderManagementPage() {
             <p className="eyebrow">Product orders</p>
             <h2 className="section-title mt-1">Provider Orders</h2>
             {providerOrdersQuery.data?.length ? (
-              <div className="table-wrap mt-5">
-                <table className="data-table">
+              <>
+                {confirmOrder.isError ? (
+                  <p className="mt-4 text-sm font-semibold text-destructive" role="alert">
+                    {confirmOrder.error instanceof Error
+                      ? confirmOrder.error.message
+                      : "The order could not be confirmed."}
+                  </p>
+                ) : null}
+                <div className="table-wrap mt-5">
+                  <table className="data-table">
                   <thead>
                     <tr>
                       <th>Order</th>
@@ -3800,6 +3819,7 @@ function ProviderManagementPage() {
                       <th>Date</th>
                       <th>Status</th>
                       <th>Total</th>
+                      <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3821,15 +3841,33 @@ function ProviderManagementPage() {
                           <span
                             className={`status status-${order.status.toLowerCase()}`}
                           >
-                            {order.status}
+                            {statusLabel(order.status)}
                           </span>
                         </td>
                         <td>{money(order.total)}</td>
+                        <td>
+                          {order.status.toUpperCase() === "PENDING" ? (
+                            <button
+                              className="btn btn-primary h-9 min-h-0 px-4 text-xs"
+                              onClick={() => confirmOrder.mutate(order.id)}
+                              disabled={confirmOrder.isPending}
+                              data-testid={`button-confirm-order-${order.id}`}
+                            >
+                              {confirmOrder.isPending &&
+                              confirmOrder.variables === order.id
+                                ? "Confirming…"
+                                : "Confirm"}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
-                </table>
-              </div>
+                  </table>
+                </div>
+              </>
             ) : (
               <p className="mt-5 text-sm text-muted-foreground">
                 No product orders yet.
@@ -5074,7 +5112,7 @@ function OrdersPage() {
                       <span
                         className={`status status-${order.status.toLowerCase()}`}
                       >
-                        {order.status}
+                        {statusLabel(order.status)}
                       </span>
                     </td>
                     <td className="text-right font-mono">

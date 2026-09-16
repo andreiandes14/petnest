@@ -1933,6 +1933,48 @@ textarea.input {
   background: hsl(var(--muted));
 }
 
+/* Customer pet-supplies detail: keep the shop content comfortably bounded and
+   give product, provider, and cart sections a consistent responsive rhythm. */
+.pet-supplies-page {
+  max-width: 1180px;
+  margin-inline: auto;
+  padding-bottom: 24px;
+}
+.pet-supplies-hero {
+  margin-top: 4px;
+}
+.pet-supplies-panels {
+  display: block;
+  margin-top: 32px;
+}
+.pet-supplies-panel {
+  padding: clamp(20px, 2.5vw, 32px);
+}
+.pet-supplies-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 18px;
+}
+.pet-supply-card {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  min-height: 156px;
+  padding: 20px;
+}
+.pet-supply-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+}
+.product-quantity {
+  width: 72px;
+}
+
 /* --- States --- */
 .empty-state {
   text-align: center;
@@ -2450,6 +2492,30 @@ textarea.input {
   }
   .main-content {
     padding: 22px 18px 100px;
+  }
+  .pet-supplies-page {
+    padding-bottom: 12px;
+  }
+  .pet-supplies-panels {
+    margin-top: 22px;
+  }
+  .pet-supplies-panel {
+    padding: 18px;
+  }
+  .pet-supplies-grid {
+    gap: 14px;
+  }
+  .pet-supply-card {
+    grid-template-columns: 64px minmax(0, 1fr);
+    min-height: 0;
+    padding: 16px;
+  }
+  .pet-supply-card .product-thumb {
+    width: 64px;
+    height: 64px;
+  }
+  .pet-supply-actions .btn {
+    flex: 1;
   }
   .mobile-nav {
     position: fixed;

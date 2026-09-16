@@ -2433,6 +2433,48 @@ router.get("/provider/orders", async (req, res) => {
   res.json(ListOrdersResponse.parse(orders));
 });
 
+router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const orderId = Number(req.params.orderId);
+  if (!Number.isInteger(orderId) || orderId < 1) {
+    res.status(400).json({ error: "Choose a valid order." });
+    return;
+  }
+  await initializePetnestData();
+  const result = await orderCollection.updateOne(
+    {
+      id: orderId,
+      providerId: access.providerId,
+      status: "PENDING",
+    },
+    { $set: { status: "CONFIRMED" } },
+  );
+  if (!result.modifiedCount) {
+    const ownedOrder = await orderCollection.findOne({
+      id: orderId,
+      providerId: access.providerId,
+    });
+    if (!ownedOrder) {
+      res.status(404).json({ error: "Order not found." });
+      return;
+    }
+    res.status(409).json({
+      error: `Only pending orders can be confirmed. This order is ${ownedOrder.status.toLowerCase()}.`,
+    });
+    return;
+  }
+  const order = await orderCollection.findOne(
+    { id: orderId, providerId: access.providerId },
+    { projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!order) {
+    res.status(404).json({ error: "Order not found." });
+    return;
+  }
+  res.json(CreateOrderResponse.parse(order));
+});
+
 router.post("/orders", async (req, res) => {
   const access = await requireCustomer(req, res);
   if (!access) return;
