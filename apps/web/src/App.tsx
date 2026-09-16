@@ -357,9 +357,17 @@ function AppShell({ children }: { children: ReactNode }) {
       ? [
           { href: "/admin/providers", label: "Providers", icon: ShieldCheck },
           { href: "/admin/bookings", label: "Bookings", icon: CalendarDays },
+          { href: "/admin/accounts", label: "Accounts", icon: UserRound },
+          { href: "/admin/logs", label: "Logs", icon: FileText },
         ]
       : role === "provider"
-        ? [{ href: "/provider", label: "Provider", icon: Pencil }]
+        ? [
+            { href: "/provider", label: "Dashboard", icon: Pencil },
+            { href: "/provider/bookings", label: "Bookings", icon: CalendarDays },
+            { href: "/provider/records", label: "Pet Records", icon: PawPrint },
+            { href: "/provider/services", label: "Services", icon: Sparkles },
+            { href: "/provider/retail", label: "Pet Supplies", icon: ShoppingBag },
+          ]
         : [
             ...visibleNavItems,
             { href: "/profile", label: "Profile", icon: UserRound },
@@ -367,7 +375,9 @@ function AppShell({ children }: { children: ReactNode }) {
   const [location] = useLocation();
   const pathname = location.split("?")[0];
   const activePath = pathname.startsWith("/admin/")
-    ? "/admin/bookings"
+    ? pathname
+    : pathname.startsWith("/provider/")
+      ? pathname
     : pathname === "/"
       ? "/"
       : `/${pathname.split("/")[1]}`;
@@ -2193,6 +2203,23 @@ function BookingsPage() {
 }
 
 type AdminBooking = Booking & { customerId: string };
+type AdminAccount = {
+  id: string;
+  name: string;
+  email: string;
+  role: "customer" | "provider";
+  providerId?: number;
+  isActive: boolean;
+  createdAt: string;
+};
+type AdminLogCategory = "grooming" | "vaccination" | "pet-supplies";
+type AdminActivityLog = {
+  id: string;
+  category: AdminLogCategory;
+  kind: "booking" | "order" | "provider" | "service" | "product";
+  message: string;
+  occurredAt: string;
+};
 type ProviderRecord = CareRecord & {
   petId: number;
   ownerId: string;
@@ -2215,6 +2242,199 @@ async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok)
     throw new Error(body?.error ?? `Request failed (${response.status})`);
   return body as T;
+}
+
+function AdminAccountsPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [removeTarget, setRemoveTarget] = useState<AdminAccount | null>(null);
+  const [removeNotice, setRemoveNotice] = useState("");
+  const query = useQuery({
+    queryKey: ["admin", "accounts"],
+    queryFn: () => adminRequest<AdminAccount[]>("/api/admin/accounts"),
+    enabled: isAdmin,
+  });
+  const removeAccount = useMutation({
+    mutationFn: (id: string) => {
+      if (!id) throw new Error("This account is missing its user ID. Refresh and try again.");
+      return adminRequest<AdminAccount>(
+        `/api/admin/accounts/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      );
+    },
+    onSuccess: async (removed) => {
+      await query.refetch();
+      queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+      setRemoveNotice(`${removed.name} was removed and can no longer sign in.`);
+      setRemoveTarget(null);
+    },
+  });
+  if (!isAdmin) return <NotFound />;
+  if (query.isLoading) return <LoadingState label="Loading registered accounts" />;
+  if (query.isError)
+    return (
+      <ErrorState
+        onRetry={() => query.refetch()}
+        message="Registered accounts could not be loaded."
+      />
+    );
+  return (
+    <div className="animate-in">
+      <p className="eyebrow">Admin workspace</p>
+      <h1 className="page-title">Account management.</h1>
+      <p className="page-subtitle">
+        Deactivate customer and provider access while preserving historical records.
+      </p>
+      <section className="surface-card mt-8 p-6">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="section-title">Registered accounts</h2>
+          <span className="tag">{query.data?.length ?? 0} active</span>
+        </div>
+        {removeNotice ? (
+          <p className="mt-4 text-sm font-semibold text-primary" role="status">
+            {removeNotice}
+          </p>
+        ) : null}
+        {query.data?.length ? (
+          <div className="table-wrap mt-5">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  <th>Registered</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {query.data.map((account) => (
+                  <tr key={account.id} data-testid={`row-admin-account-${account.id}`}>
+                    <td className="font-semibold">{account.name}</td>
+                    <td>{account.email}</td>
+                    <td>{statusLabel(account.role)}</td>
+                    <td>{formatDate(account.createdAt)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-ghost text-destructive"
+                        onClick={() => {
+                          removeAccount.reset();
+                          setRemoveNotice("");
+                          setRemoveTarget(account);
+                        }}
+                        disabled={removeAccount.isPending}
+                        data-testid={`button-remove-account-${account.id}`}
+                      >
+                        Remove Account
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="mt-5 text-sm text-muted-foreground">No active customer or provider accounts.</p>
+        )}
+      </section>
+      {removeTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="remove-account-title">
+            <h2 id="remove-account-title" className="modal-title">Remove account?</h2>
+            <p className="mt-3 text-sm text-muted-foreground">
+              {removeTarget.name} will lose access immediately. Their historical bookings,
+              orders, pets, services, and records will remain intact.
+            </p>
+            <div className="mt-6 flex gap-2">
+              <button type="button" className="btn btn-ghost" onClick={() => setRemoveTarget(null)}>Cancel</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={removeAccount.isPending}
+                onClick={() => removeAccount.mutate(removeTarget.id)}
+              >
+                {removeAccount.isPending ? "Removing…" : "Remove account"}
+              </button>
+            </div>
+            {removeAccount.isError ? (
+              <p className="mt-4 text-sm font-semibold text-destructive" role="alert">
+                {removeAccount.error.message}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AdminLogsPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [category, setCategory] = useState<AdminLogCategory>("grooming");
+  const query = useQuery({
+    queryKey: ["admin", "activity-logs", category],
+    queryFn: () =>
+      adminRequest<AdminActivityLog[]>(
+        `/api/admin/activity-logs?category=${encodeURIComponent(category)}`,
+      ),
+    enabled: isAdmin,
+  });
+  if (!isAdmin) return <NotFound />;
+  const labels: Record<AdminLogCategory, string> = {
+    grooming: "Grooming",
+    vaccination: "Vaccination",
+    "pet-supplies": "Pet Supplies",
+  };
+  return (
+    <div className="animate-in">
+      <p className="eyebrow">Admin workspace</p>
+      <h1 className="page-title">Category activity logs.</h1>
+      <p className="page-subtitle">
+        Review activity grouped by the category stored on each booking, service, product, order, and provider.
+      </p>
+      <div className="mt-6 flex flex-wrap gap-2" role="tablist" aria-label="Activity category">
+        {(Object.keys(labels) as AdminLogCategory[]).map((value) => (
+          <button
+            key={value}
+            className={`filter-chip ${category === value ? "active" : ""}`}
+            role="tab"
+            aria-selected={category === value}
+            onClick={() => setCategory(value)}
+            data-testid={`button-log-category-${value}`}
+          >
+            {labels[value]}
+          </button>
+        ))}
+      </div>
+      <section className="surface-card mt-6 p-6" data-testid={`admin-logs-${category}`}>
+        <h2 className="section-title">{labels[category]} Logs</h2>
+        {query.isLoading ? (
+          <div className="mt-5"><LoadingState label={`Loading ${labels[category]} logs`} /></div>
+        ) : query.isError ? (
+          <div className="mt-5"><ErrorState onRetry={() => query.refetch()} message="Activity logs could not be loaded." /></div>
+        ) : query.data?.length ? (
+          <div className="list-stack mt-5">
+            {query.data.map((log) => (
+              <div className="service-row" key={log.id} data-testid={`admin-log-${log.id}`}>
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold">{log.message}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {statusLabel(log.kind)} · {formatDate(log.occurredAt)}
+                  </p>
+                </div>
+                <span className="tag">{labels[log.category]}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-5 text-sm text-muted-foreground">No {labels[category]} activity yet.</p>
+        )}
+      </section>
+    </div>
+  );
 }
 
 function AdminBookingsPage() {
@@ -2736,6 +2956,16 @@ function CustomerProfilePage() {
 function ProviderManagementPage() {
   const { user } = useAuth();
   const isProvider = user?.role === "provider";
+  const [providerLocation] = useLocation();
+  const providerSection = providerLocation.endsWith("/bookings")
+    ? "bookings"
+    : providerLocation.endsWith("/records")
+      ? "records"
+      : providerLocation.endsWith("/services")
+        ? "services"
+        : providerLocation.endsWith("/retail")
+          ? "retail"
+          : "dashboard";
   const query = useQuery({
     queryKey: ["provider", "profile"],
     queryFn: () => adminRequest<ProviderDetail>("/api/provider/profile"),
@@ -2775,9 +3005,7 @@ function ProviderManagementPage() {
   >(null);
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
   const [notice, setNotice] = useState("");
-  const [providerTab, setProviderTab] = useState<"workspace" | "records">(
-    "workspace",
-  );
+  const providerTab = providerSection === "records" ? "records" : "workspace";
   const [selectedProviderPet, setSelectedProviderPet] =
     useState<ProviderPet | null>(null);
   useEffect(() => {
@@ -2798,7 +3026,9 @@ function ProviderManagementPage() {
   const bookingsQuery = useQuery({
     queryKey: ["provider", "bookings"],
     queryFn: () => adminRequest<AdminBooking[]>("/api/provider/bookings"),
-    enabled: isProvider,
+    enabled:
+      isProvider &&
+      (providerSection === "bookings" || providerSection === "records"),
   });
   const updateBooking = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
@@ -2932,7 +3162,7 @@ function ProviderManagementPage() {
       adminRequest<import("@workspace/api-client-react").Order[]>(
         "/api/provider/orders",
       ),
-    enabled: isProvider,
+    enabled: isProvider && providerSection === "retail",
   });
   const confirmOrder = useMutation({
     mutationFn: (orderId: number) =>
@@ -2954,7 +3184,7 @@ function ProviderManagementPage() {
   const recordsQuery = useQuery({
     queryKey: ["provider", "records"],
     queryFn: () => adminRequest<ProviderRecord[]>("/api/provider/records"),
-    enabled: isProvider,
+    enabled: isProvider && providerSection === "records",
   });
   const providerPetsQuery = useQuery({
     queryKey: ["provider", "pets"],
@@ -3051,30 +3281,33 @@ function ProviderManagementPage() {
   return (
     <div className="animate-in">
       <p className="eyebrow">Provider workspace</p>
-      <h1 className="page-title">Manage your services.</h1>
+      <h1 className="page-title">
+        {providerSection === "retail"
+          ? "Pet Supplies / Retail."
+          : providerSection === "bookings"
+            ? "Service bookings."
+            : providerSection === "records"
+              ? "Pet records."
+              : providerSection === "services"
+                ? "Manage your services."
+                : "Provider dashboard."}
+      </h1>
       <p className="page-subtitle">
-        Update the provider information, services, and products customers can
-        view.
+        {providerSection === "retail"
+          ? "Manage your Pet Supply products and customer retail orders in one place."
+          : providerSection === "bookings"
+            ? "Manage Grooming and Vaccination booking requests."
+            : providerSection === "records"
+              ? "Review pets and maintain Grooming and Vaccination history."
+              : providerSection === "services"
+                ? "Manage the Grooming and Vaccination services customers can book."
+                : "Update your provider profile and storefront information."}
       </p>
       {notice ? (
         <p className="mt-4 text-sm font-semibold text-primary" role="status">
           {notice}
         </p>
       ) : null}
-      <div className="mt-6 flex gap-2">
-        <button
-          className={`filter-chip ${providerTab === "workspace" ? "active" : ""}`}
-          onClick={() => setProviderTab("workspace")}
-        >
-          Workspace
-        </button>
-        <button
-          className={`filter-chip ${providerTab === "records" ? "active" : ""}`}
-          onClick={() => setProviderTab("records")}
-        >
-          Pet Records
-        </button>
-      </div>
       {providerTab === "records" ? (
         <section className="surface-card mt-6 p-6">
           <p className="eyebrow">Provider records</p>
@@ -3163,7 +3396,7 @@ function ProviderManagementPage() {
       ) : null}
       {providerTab === "records" ? null : (
         <>
-          <section className="surface-card mt-6 p-6">
+          <section className={providerSection === "dashboard" ? "surface-card mt-6 p-6" : "hidden"}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="eyebrow">Store background</p>
@@ -3240,8 +3473,8 @@ function ProviderManagementPage() {
               </div>
             ) : null}
           </section>
-          <div className="surface-card mt-8 p-6">
-            <div className="form-grid">
+          <div className={providerSection === "dashboard" || providerSection === "services" || providerSection === "retail" ? "surface-card mt-8 p-6" : "hidden"}>
+            <div className={providerSection === "dashboard" ? "form-grid" : "hidden"}>
               <div className="form-field">
                 <label className="form-label">Provider name</label>
                 <input
@@ -3290,7 +3523,7 @@ function ProviderManagementPage() {
                 />
               </div>
             </div>
-            <div className="mt-8 flex items-center justify-between gap-3">
+            <div className={providerSection === "services" ? "flex items-center justify-between gap-3" : "hidden"}>
               <h2 className="section-title">My services</h2>
               <button
                 className="btn btn-secondary"
@@ -3299,7 +3532,7 @@ function ProviderManagementPage() {
                 + Add a service
               </button>
             </div>
-            {showServiceForm ? (
+            {providerSection === "services" && showServiceForm ? (
               <div
                 className="modal-backdrop"
                 role="presentation"
@@ -3418,7 +3651,7 @@ function ProviderManagementPage() {
                 </div>
               </div>
             ) : null}
-            <div className="list-stack mt-4">
+            <div className={providerSection === "services" ? "list-stack mt-4" : "hidden"}>
               {draft.services.map((service) => (
                 <div key={service.id}>
                   <div className="service-row">
@@ -3456,7 +3689,7 @@ function ProviderManagementPage() {
                 </div>
               ))}
             </div>
-            <section className="surface-card mt-8 border p-5">
+            <section className={providerSection === "retail" ? "surface-card border p-5" : "hidden"}>
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="eyebrow">Shop inventory</p>
@@ -3796,7 +4029,7 @@ function ProviderManagementPage() {
               ) : null}
             </section>
           </div>
-          <section className="surface-card mt-6 p-6">
+          <section className={providerSection === "retail" ? "surface-card mt-6 p-6" : "hidden"}>
             <p className="eyebrow">Product orders</p>
             <h2 className="section-title mt-1">Provider Orders</h2>
             {providerOrdersQuery.data?.length ? (
@@ -3874,7 +4107,7 @@ function ProviderManagementPage() {
               </p>
             )}
           </section>
-          <section className="surface-card mt-6 p-6">
+          <section className={providerSection === "bookings" ? "surface-card mt-6 p-6" : "hidden"}>
             <p className="eyebrow">Booking requests</p>
             <h2 className="section-title mt-1">Your provider bookings</h2>
             {bookingsQuery.isLoading ? (
@@ -4014,7 +4247,7 @@ function ProviderManagementPage() {
           </section>
         </>
       )}
-      <section className="surface-card mt-6 p-6">
+      <section className={providerSection === "records" ? "surface-card mt-6 p-6" : "hidden"}>
         <p className="eyebrow">Provider records</p>
         <h2 className="section-title mt-1">Grooming and vaccination history</h2>
         <div className="mt-4 flex flex-wrap gap-3">
@@ -5698,6 +5931,8 @@ function MainRouter() {
         <Switch>
           <Route path="/admin/providers" component={AdminProvidersPage} />
           <Route path="/admin/bookings" component={AdminBookingsPage} />
+          <Route path="/admin/accounts" component={AdminAccountsPage} />
+          <Route path="/admin/logs" component={AdminLogsPage} />
           <Route>
             <Redirect to="/admin/providers" />
           </Route>
@@ -5709,6 +5944,10 @@ function MainRouter() {
     return (
       <AppShell>
         <Switch>
+          <Route path="/provider/bookings" component={ProviderManagementPage} />
+          <Route path="/provider/records" component={ProviderManagementPage} />
+          <Route path="/provider/services" component={ProviderManagementPage} />
+          <Route path="/provider/retail" component={ProviderManagementPage} />
           <Route path="/provider" component={ProviderManagementPage} />
           <Route>
             <Redirect to="/provider" />

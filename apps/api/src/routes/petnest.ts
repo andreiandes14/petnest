@@ -451,6 +451,7 @@ type Role = "customer" | "provider" | "admin";
 type Access = { userId: string; role: Role; providerId?: number };
 type UserProfile = {
   id: string;
+  clerkUserId?: string;
   name: string;
   firstName: string;
   lastName: string;
@@ -458,6 +459,8 @@ type UserProfile = {
   role: Role;
   providerId?: number;
   passwordHash?: string;
+  isActive?: boolean;
+  deactivatedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -573,7 +576,10 @@ async function getAccess(req: Request, res: Response): Promise<Access | null> {
     res.status(401).json({ error: "Authentication required" });
     return null;
   }
-  const user = await userCollection.findOne({ id: session.userId });
+  const user = await userCollection.findOne({
+    id: session.userId,
+    isActive: { $ne: false },
+  });
   if (!user) {
     res.clearCookie(sessionCookie, { path: "/" });
     res.status(401).json({ error: "Authentication required" });
@@ -652,6 +658,32 @@ export function initializePetnestData(): Promise<void> {
     // treats every local account (which has no clerkUserId) as a duplicate.
     if (await userCollection.indexExists("clerkUserId_1")) {
       await userCollection.dropIndex("clerkUserId_1");
+    }
+    // Legacy Clerk accounts predate the local `id` field. Account-management
+    // actions use this field, so preserve their existing identity as the ID
+    // before the unique index and Admin account list are initialized.
+    const legacyUsers = await userCollection
+      .find(
+        {
+          $or: [{ id: { $exists: false } }, { id: "" }],
+        },
+        { projection: { _id: 1, clerkUserId: 1 } },
+      )
+      .toArray();
+    for (const legacyUser of legacyUsers) {
+      await userCollection.updateOne(
+        { _id: legacyUser._id },
+        {
+          $set: {
+            id:
+              typeof legacyUser.clerkUserId === "string" &&
+              legacyUser.clerkUserId
+                ? legacyUser.clerkUserId
+                : randomUUID(),
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      );
     }
     await seedCollection(providerCollection, seedProviders);
     await seedCollection(
@@ -857,6 +889,13 @@ async function ensureCompletedBookingRecord(
 const providerCategories = ["grooming", "vaccination", "pet-supplies"] as const;
 type ProviderCategory = (typeof providerCategories)[number];
 
+function statusLabelForLog(value: string) {
+  return value
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 function validCategories(value: unknown): value is ProviderCategory[] {
   return (
     Array.isArray(value) &&
@@ -971,7 +1010,7 @@ router.post("/auth/login", async (req, res) => {
   const password =
     typeof req.body?.password === "string" ? req.body.password : "";
   await initializePetnestData();
-  const user = await userCollection.findOne({ email });
+  const user = await userCollection.findOne({ email, isActive: { $ne: false } });
   if (
     !user?.passwordHash ||
     !(await verifyPassword(password, user.passwordHash))
@@ -999,6 +1038,153 @@ router.get("/auth/me", async (req, res) => {
   const user = await userCollection.findOne({ id: access.userId });
   if (!user) return;
   res.json({ user: publicUser(user) });
+});
+
+router.get("/admin/accounts", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  await initializePetnestData();
+  const accounts = await userCollection
+    .find(
+      {
+        role: { $in: ["customer", "provider"] },
+        isActive: { $ne: false },
+      },
+      {
+        projection: {
+          _id: 0,
+          passwordHash: 0,
+        },
+      },
+    )
+    .sort({ createdAt: -1, name: 1 })
+    .toArray();
+  res.json(accounts.map((account) => ({ ...account, isActive: true })));
+});
+
+router.delete("/admin/accounts/:userId", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  const userId = req.params.userId;
+  if (userId === access.userId) {
+    res.status(403).json({ error: "You cannot remove your own Admin account." });
+    return;
+  }
+  await initializePetnestData();
+  const now = new Date().toISOString();
+  const account = await userCollection.findOneAndUpdate(
+    {
+      id: userId,
+      role: { $in: ["customer", "provider"] },
+      isActive: { $ne: false },
+    },
+    {
+      $set: { isActive: false, deactivatedAt: now, updatedAt: now },
+    },
+    { returnDocument: "after", projection: { _id: 0, passwordHash: 0 } },
+  );
+  if (!account) {
+    res.status(404).json({ error: "Active customer or provider account not found." });
+    return;
+  }
+  await sessionCollection.deleteMany({ userId: account.id });
+  if (account.role === "provider" && account.providerId) {
+    await providerCollection.updateOne(
+      { id: account.providerId },
+      { $set: { active: false, updatedAt: now } },
+    );
+  }
+  res.json({ ...account, isActive: false });
+});
+
+router.get("/admin/activity-logs", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  const category = req.query.category;
+  if (
+    category !== "grooming" &&
+    category !== "vaccination" &&
+    category !== "pet-supplies"
+  ) {
+    res.status(400).json({ error: "Choose a valid activity category." });
+    return;
+  }
+  await initializePetnestData();
+  const providers = await providerCollection
+    .find(
+      { categories: category },
+      {
+        projection: {
+          _id: 0,
+          id: 1,
+          name: 1,
+          categories: 1,
+          services: 1,
+          products: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      },
+    )
+    .toArray();
+  const providerLogs = providers.map((provider) => ({
+    id: `provider-${category}-${provider.id}`,
+    category,
+    kind: "provider",
+    message: `${provider.name} is registered for ${category === "pet-supplies" ? "Pet Supplies" : statusLabelForLog(category)}.`,
+    occurredAt: provider.updatedAt ?? provider.createdAt ?? "",
+  }));
+  const catalogLogs = providers.flatMap((provider) =>
+    category === "pet-supplies"
+      ? provider.products
+          .filter((product) => product.category === category)
+          .map((product) => ({
+            id: `product-${product.id}`,
+            category,
+            kind: "product",
+            message: `${provider.name} listed ${product.name}.`,
+            occurredAt: provider.updatedAt ?? provider.createdAt ?? "",
+          }))
+      : provider.services
+          .filter((service) => service.category === category)
+          .map((service) => ({
+            id: `service-${service.id}`,
+            category,
+            kind: "service",
+            message: `${provider.name} offers ${service.name}.`,
+            occurredAt: provider.updatedAt ?? provider.createdAt ?? "",
+          })),
+  );
+  const activityLogs =
+    category === "pet-supplies"
+      ? (await orderCollection
+          .find({}, { projection: { _id: 0 } })
+          .sort({ createdAt: -1 })
+          .toArray()).map((order) => ({
+          id: `order-${order.id}`,
+          category,
+          kind: "order",
+          message: `${order.customerName} ordered ${order.items.map((item) => item.productName).join(", ")} from ${order.providerName} (${statusLabelForLog(order.status)}).`,
+          occurredAt: order.createdAt,
+        }))
+      : (await bookingCollection
+          .find(
+            { serviceCategory: category },
+            { projection: { _id: 0 } },
+          )
+          .sort({ createdAt: -1, date: -1 })
+          .toArray()).map((booking) => ({
+          id: `booking-${booking.id}`,
+          category,
+          kind: "booking",
+          message: `${booking.petName} booked ${booking.serviceName} with ${booking.providerName} (${statusLabelForLog(booking.status)}).`,
+          occurredAt: booking.createdAt ?? booking.date,
+        }));
+  res.json(
+    [...activityLogs, ...catalogLogs, ...providerLogs].sort((left, right) =>
+      right.occurredAt.localeCompare(left.occurredAt),
+    ),
+  );
 });
 
 router.patch("/customer/profile", async (req, res) => {
