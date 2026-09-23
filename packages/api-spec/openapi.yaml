@@ -362,6 +362,7 @@ components:
         date: { type: string }
         status: { type: string }
         notes: { type: string }
+        nextDue: { type: [string, "null"] }
         bookingId: { type: number }
         serviceCategory: { type: string, enum: [grooming, vaccination] }
     PetRecords:

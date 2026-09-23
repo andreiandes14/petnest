@@ -987,6 +987,24 @@ function validText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isIsoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
+    return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+async function syncPetNextVaccination(petId: number, ownerId: string) {
+  const latest = await recordCollection.findOne(
+    { petId, ownerId, type: "vaccination", nextDue: { $type: "string" } },
+    { sort: { date: -1, id: -1 }, projection: { nextDue: 1 } },
+  );
+  await petCollection.updateOne(
+    { id: petId, ownerId },
+    { $set: { nextVaccine: latest?.nextDue ?? null, updatedAt: new Date().toISOString() } },
+  );
+}
+
 function providerInput(body: Record<string, unknown>, existing?: Provider) {
   const categories = body.categories ?? existing?.categories;
   if (
@@ -2242,8 +2260,9 @@ router.get("/provider/pets", async (req, res) => {
   const bookings = await bookingCollection
     .find(
       { providerId: access.providerId },
-      { projection: { petId: 1, ownerId: 1 } },
+      { projection: { petId: 1, ownerId: 1, serviceName: 1, date: 1, time: 1 } },
     )
+    .sort({ date: -1, time: -1, id: -1 })
     .toArray();
   const petIds = [...new Set(bookings.map((booking) => booking.petId))];
   const pets = await petCollection
@@ -2257,14 +2276,15 @@ router.get("/provider/pets", async (req, res) => {
     .toArray();
   res.json(
     pets.map((pet) => {
-      const ownerId = bookings.find(
-        (booking) => booking.petId === pet.id,
-      )?.ownerId;
+      const latestBooking = bookings.find((booking) => booking.petId === pet.id);
+      const ownerId = latestBooking?.ownerId;
       const owner = owners.find((candidate) => candidate.id === ownerId);
       return {
         ...pet,
         ownerName: owner?.name ?? "Customer",
         ownerEmail: owner?.email ?? "",
+        lastService: latestBooking?.serviceName ?? "Service",
+        lastBooking: latestBooking?.date ?? null,
       };
     }),
   );
@@ -2274,6 +2294,10 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
   const petId = Number(req.params.petId);
+  if (!Number.isInteger(petId) || petId <= 0) {
+    res.status(400).json({ error: "A valid pet is required." });
+    return;
+  }
   await initializePetnestData();
   const relationship = await bookingCollection.findOne({
     providerId: access.providerId,
@@ -2326,16 +2350,21 @@ router.post("/provider/records", async (req, res) => {
   const petId = Number(body.petId);
   const serviceId =
     body.serviceId === undefined ? undefined : Number(body.serviceId);
+  const nextDue: string | null =
+    typeof body.nextDue === "string" && body.nextDue ? body.nextDue : null;
   if (
     !type ||
     !Number.isInteger(petId) ||
     petId <= 0 ||
-    !validText(body.date) ||
-    !validText(body.notes)
+    !isIsoDate(body.date) ||
+    (type === "vaccination" && (!isIsoDate(nextDue) || nextDue < body.date)) ||
+    (body.notes !== undefined && typeof body.notes !== "string")
   ) {
     res
       .status(400)
-      .json({ error: "Record type, pet, date, and notes are required." });
+      .json({ error: type === "vaccination"
+        ? "Choose valid vaccination and next vaccination dates. The next date cannot be earlier."
+        : "Record type, pet, and a valid date are required." });
     return;
   }
   await initializePetnestData();
@@ -2344,7 +2373,7 @@ router.post("/provider/records", async (req, res) => {
     providerId: access.providerId,
     petId,
     serviceCategory: type,
-    status: { $nin: ["cancelled"] },
+    status: "completed",
   });
   if (!provider || !booking) {
     res.status(400).json({
@@ -2377,15 +2406,17 @@ router.post("/provider/records", async (req, res) => {
     ownerId: booking.ownerId,
     date: body.date.trim(),
     status: "completed",
-    notes: body.notes.trim(),
-    nextDue:
-      type === "vaccination" && typeof body.nextDue === "string"
-        ? body.nextDue
-        : null,
+    notes: typeof body.notes === "string" ? body.notes.trim() : "",
+    nextDue: type === "vaccination" ? nextDue : null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  await recordCollection.insertOne(record);
+  const inserted = await recordCollection.insertOne(record);
+  if (!inserted.acknowledged) {
+    res.status(500).json({ error: "Vaccination record could not be saved." });
+    return;
+  }
+  if (type === "vaccination") await syncPetNextVaccination(petId, booking.ownerId);
   res.status(201).json(record);
 });
 
@@ -2394,15 +2425,36 @@ router.patch("/provider/records/:recordId", async (req, res) => {
   if (!access?.providerId) return;
   const recordId = Number(req.params.recordId);
   const body = (req.body ?? {}) as Record<string, unknown>;
+  if (!Number.isInteger(recordId) || recordId <= 0) {
+    res.status(400).json({ error: "A valid history record is required." });
+    return;
+  }
   const changes: Record<string, unknown> = {
     updatedAt: new Date().toISOString(),
   };
   if (validText(body.title)) changes.title = body.title.trim();
-  if (validText(body.date)) changes.date = body.date.trim();
-  if (validText(body.notes)) changes.notes = body.notes.trim();
-  if (body.nextDue === null || typeof body.nextDue === "string")
-    changes.nextDue = body.nextDue;
+  if (body.date !== undefined) {
+    if (!isIsoDate(body.date)) {
+      res.status(400).json({ error: "Choose a valid vaccination date." });
+      return;
+    }
+    changes.date = body.date;
+  }
+  if (typeof body.notes === "string") changes.notes = body.notes.trim();
   await initializePetnestData();
+  const existing = await recordCollection.findOne({ id: recordId, providerId: access.providerId });
+  if (!existing) {
+    res.status(404).json({ error: "History record not found" });
+    return;
+  }
+  const effectiveDate = (changes.date as string | undefined) ?? existing.date;
+  if (body.nextDue !== undefined) {
+    if (existing.type !== "vaccination" || !isIsoDate(body.nextDue) || body.nextDue < effectiveDate) {
+      res.status(400).json({ error: "Choose a valid next vaccination date that is not earlier than the vaccination date." });
+      return;
+    }
+    changes.nextDue = body.nextDue;
+  }
   const record = await recordCollection.findOneAndUpdate(
     { id: recordId, providerId: access.providerId },
     { $set: changes },
@@ -2412,6 +2464,7 @@ router.patch("/provider/records/:recordId", async (req, res) => {
     res.status(404).json({ error: "History record not found" });
     return;
   }
+  if (record.type === "vaccination") await syncPetNextVaccination(record.petId, record.ownerId);
   res.json(record);
 });
 

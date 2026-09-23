@@ -2346,7 +2346,12 @@ type ProviderRecord = CareRecord & {
   ownerId: string;
   nextDue?: string | null;
 };
-type ProviderPet = Pet & { ownerName: string; ownerEmail: string };
+type ProviderPet = Pet & {
+  ownerName: string;
+  ownerEmail: string;
+  lastService: string;
+  lastBooking: string | null;
+};
 
 async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -3171,6 +3176,8 @@ function ProviderManagementPage() {
   const [showRecordForm, setShowRecordForm] = useState<
     "grooming" | "vaccination" | null
   >(null);
+  const [scheduleRecord, setScheduleRecord] = useState<ProviderRecord | null>(null);
+  const [scheduleDate, setScheduleDate] = useState("");
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
   const [notice, setNotice] = useState("");
   const providerTab = providerSection === "records" ? "records" : "workspace";
@@ -3382,7 +3389,7 @@ function ProviderManagementPage() {
           nextDue: recordForm.nextDue || null,
         }),
       }),
-    onSuccess: () => {
+    onSuccess: (record) => {
       setRecordForm({
         type: "grooming",
         petId: "",
@@ -3393,16 +3400,27 @@ function ProviderManagementPage() {
       });
       setShowRecordForm(null);
       recordsQuery.refetch();
-      setNotice("History record added.");
+      queryClient.invalidateQueries({ queryKey: ["provider", "pet-records", record.petId] });
+      queryClient.invalidateQueries({ queryKey: getGetPetRecordsQueryKey(record.petId) });
+      queryClient.invalidateQueries({ queryKey: getListPetsQueryKey() });
+      setNotice(record.type === "vaccination" ? "Vaccination and next schedule saved." : "History record added.");
     },
   });
   const updateRecord = useMutation({
-    mutationFn: ({ id, notes }: { id: number; notes: string }) =>
+    mutationFn: ({ id, changes }: { id: number; changes: { notes?: string; nextDue?: string } }) =>
       adminRequest<ProviderRecord>(`/api/provider/records/${id}`, {
         method: "PATCH",
-        body: JSON.stringify({ notes }),
+        body: JSON.stringify(changes),
       }),
-    onSuccess: () => recordsQuery.refetch(),
+    onSuccess: (record, variables) => {
+      setScheduleRecord(null);
+      setScheduleDate("");
+      recordsQuery.refetch();
+      queryClient.invalidateQueries({ queryKey: ["provider", "pet-records", record.petId] });
+      queryClient.invalidateQueries({ queryKey: getGetPetRecordsQueryKey(record.petId) });
+      queryClient.invalidateQueries({ queryKey: getListPetsQueryKey() });
+      setNotice(variables.changes.nextDue ? "Next vaccination schedule saved." : "History record updated.");
+    },
   });
   if (!isProvider) return <NotFound />;
   if (query.isError)
@@ -3493,8 +3511,9 @@ function ProviderManagementPage() {
               message={providerPetsQuery.error.message}
             />
           ) : (
-            <div className="list-stack mt-5">
-              {(providerPetsQuery.data ?? []).map((pet) => (
+            (providerPetsQuery.data ?? []).length ? (
+              <div className="list-stack mt-5">
+                {(providerPetsQuery.data ?? []).map((pet) => (
                 <button
                   className="service-row text-left"
                   key={pet.id}
@@ -3505,11 +3524,19 @@ function ProviderManagementPage() {
                     <p className="text-xs text-muted-foreground">
                       {pet.species} · {pet.breed} · Owner: {pet.ownerName}
                     </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Last service: {pet.lastService} · Last booking: {formatDate(pet.lastBooking)}
+                    </p>
                   </div>
                   <ArrowRight size={16} />
                 </button>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-5 text-sm text-muted-foreground">
+                No pets are connected to this Provider's bookings yet.
+              </p>
+            )
           )}
           {selectedProviderPet && selectedProviderPetQuery.data ? (
             <div className="modal-backdrop" role="presentation">
@@ -3528,22 +3555,27 @@ function ProviderManagementPage() {
                     <p className="mt-1 text-sm text-muted-foreground">
                       Owner: {selectedProviderPetQuery.data.owner.name}
                     </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Last service: {selectedProviderPet.lastService} · Last booking: {formatDate(selectedProviderPet.lastBooking)}
+                    </p>
                   </div>
-                  <button
-                    className="modal-close"
-                    onClick={() => setSelectedProviderPet(null)}
-                    aria-label="Close pet records"
-                  >
-                    <X size={17} />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button className="btn btn-secondary" onClick={() => {
+                      setRecordForm({ type: "vaccination", petId: String(selectedProviderPet.id), title: "", date: "", nextDue: "", notes: "" });
+                      setSelectedProviderPet(null);
+                      setShowRecordForm("vaccination");
+                    }}>Set Next Vaccination</button>
+                    <button className="modal-close" onClick={() => setSelectedProviderPet(null)} aria-label="Close pet records">
+                      <X size={17} />
+                    </button>
+                  </div>
                 </div>
-                <div className="list-stack mt-5">
-                  {selectedProviderPetQuery.data.records.length ? (
-                    selectedProviderPetQuery.data.records.map((record) => (
+                <div className="mt-6">
+                  <h3 className="font-display text-xl">Grooming History</h3>
+                  <div className="list-stack mt-3">
+                    {selectedProviderPetQuery.data.records.filter((record) => record.type === "grooming").length ? (
+                      selectedProviderPetQuery.data.records.filter((record) => record.type === "grooming").map((record) => (
                       <div className="record-item" key={record.id}>
-                        <p className="eyebrow">
-                          {record.serviceCategory ?? record.type}
-                        </p>
                         <p className="font-semibold">{record.title}</p>
                         <p className="text-xs text-muted-foreground">
                           {record.providerName} · {formatDate(record.date)} ·{" "}
@@ -3553,12 +3585,29 @@ function ProviderManagementPage() {
                           {record.notes}
                         </p>
                       </div>
-                    ))
-                  ) : (
-                    <p className="text-sm text-muted-foreground">
-                      No completed records for this pet yet.
-                    </p>
-                  )}
+                      ))
+                    ) : <p className="text-sm text-muted-foreground">No completed grooming services yet.</p>}
+                  </div>
+                </div>
+                <div className="mt-6">
+                  <h3 className="font-display text-xl">Vaccination History</h3>
+                  <div className="list-stack mt-3">
+                    {selectedProviderPetQuery.data.records.filter((record) => record.type === "vaccination").length ? (
+                      selectedProviderPetQuery.data.records.filter((record) => record.type === "vaccination").map((record) => (
+                        <div className="record-item" key={record.id}>
+                          <p className="font-semibold">{record.title}</p>
+                          <p className="text-xs text-muted-foreground">Given: {formatDate(record.date)} · {record.providerName} · {statusLabel(record.status)}</p>
+                          {record.notes ? <p className="mt-2 text-sm text-muted-foreground">{record.notes}</p> : null}
+                          <p className="mt-2 text-sm font-semibold text-primary">Next Vaccination: {formatDate(record.nextDue)}</p>
+                          <button className="btn btn-ghost mt-3" onClick={() => {
+                            setScheduleRecord(record);
+                            setScheduleDate(record.nextDue ?? "");
+                            updateRecord.reset();
+                          }}>Update Next Vaccination</button>
+                        </div>
+                      ))
+                    ) : <p className="text-sm text-muted-foreground">No completed vaccination services yet.</p>}
+                  </div>
                 </div>
               </div>
             </div>
@@ -4492,6 +4541,7 @@ function ProviderManagementPage() {
                 <input
                   className="input"
                   placeholder="Title or vaccine/service"
+                  aria-label="Vaccination type or service"
                   value={recordForm.title}
                   onChange={(event) =>
                     setRecordForm({ ...recordForm, title: event.target.value })
@@ -4500,6 +4550,8 @@ function ProviderManagementPage() {
                 <input
                   className="input"
                   type="date"
+                  aria-label="Vaccination date"
+                  required
                   value={recordForm.date}
                   onChange={(event) =>
                     setRecordForm({ ...recordForm, date: event.target.value })
@@ -4509,7 +4561,9 @@ function ProviderManagementPage() {
                   <input
                     className="input"
                     type="date"
-                    placeholder="Next due"
+                    aria-label="Next vaccination date"
+                    min={recordForm.date || undefined}
+                    required
                     value={recordForm.nextDue}
                     onChange={(event) =>
                       setRecordForm({
@@ -4521,7 +4575,7 @@ function ProviderManagementPage() {
                 ) : null}
                 <textarea
                   className="input h-20 py-3"
-                  placeholder="Notes"
+                  placeholder="Optional notes"
                   value={recordForm.notes}
                   onChange={(event) =>
                     setRecordForm({ ...recordForm, notes: event.target.value })
@@ -4555,17 +4609,25 @@ function ProviderManagementPage() {
                 <p className="mt-1 text-sm text-muted-foreground">
                   {record.notes}
                 </p>
+                {record.type === "vaccination" ? (
+                  <p className="mt-2 text-sm font-semibold text-primary">
+                    Next Vaccination Schedule: {formatDate(record.nextDue)}
+                  </p>
+                ) : null}
               </div>
-              <button
-                className="btn btn-ghost"
-                onClick={() => {
+              <div className="flex flex-wrap gap-2">
+                <button className="btn btn-ghost" onClick={() => {
                   const notes = window.prompt("Update notes", record.notes);
-                  if (notes !== null)
-                    updateRecord.mutate({ id: record.id, notes });
-                }}
-              >
-                Edit notes
-              </button>
+                  if (notes !== null) updateRecord.mutate({ id: record.id, changes: { notes } });
+                }}>Edit notes</button>
+                {record.type === "vaccination" ? (
+                  <button className="btn btn-ghost" onClick={() => {
+                    setScheduleRecord(record);
+                    setScheduleDate(record.nextDue ?? "");
+                    updateRecord.reset();
+                  }}>Set Next Vaccination</button>
+                ) : null}
+              </div>
             </div>
           ))}
         </div>
@@ -4575,6 +4637,25 @@ function ProviderManagementPage() {
           </p>
         ) : null}
       </section>
+      {scheduleRecord ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="schedule-title">
+            <h2 id="schedule-title" className="modal-title">Set Next Vaccination</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {scheduleRecord.title} · Vaccinated {formatDate(scheduleRecord.date)}
+            </p>
+            <label className="form-label mt-5" htmlFor="next-vaccination-date">Next vaccination date</label>
+            <input id="next-vaccination-date" className="input mt-2" type="date" min={scheduleRecord.date} value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
+            {updateRecord.isError ? <p className="mt-3 text-sm font-semibold text-destructive" role="alert">{updateRecord.error.message}</p> : null}
+            <div className="mt-6 flex gap-2">
+              <button className="btn btn-ghost" disabled={updateRecord.isPending} onClick={() => setScheduleRecord(null)}>Cancel</button>
+              <button className="btn btn-primary" disabled={updateRecord.isPending || !scheduleDate || scheduleDate < scheduleRecord.date} onClick={() => updateRecord.mutate({ id: scheduleRecord.id, changes: { nextDue: scheduleDate } })}>
+                {updateRecord.isPending ? "Saving…" : "Save schedule"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {editingService ? (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -5061,6 +5142,12 @@ function RecordsPanel({ pet }: { pet: Pet }) {
                   <p className="mt-4 text-sm leading-6 text-muted-foreground">
                     {record.notes}
                   </p>
+                ) : null}
+                {record.type === "vaccination" ? (
+                  <div className="mt-4 rounded-xl bg-primary/5 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Next Vaccination Schedule</p>
+                    <p className="mt-1 font-semibold text-primary">{formatDate(record.nextDue)}</p>
+                  </div>
                 ) : null}
               </div>
             ))}

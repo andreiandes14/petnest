@@ -183,6 +183,7 @@ export const GetPetRecordsResponse = zod.object({
   "date": zod.string(),
   "status": zod.string(),
   "notes": zod.string().optional(),
+  "nextDue": zod.string().nullish(),
   "bookingId": zod.number().optional(),
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 })),
@@ -194,6 +195,7 @@ export const GetPetRecordsResponse = zod.object({
   "date": zod.string(),
   "status": zod.string(),
   "notes": zod.string().optional(),
+  "nextDue": zod.string().nullish(),
   "bookingId": zod.number().optional(),
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))
@@ -345,6 +347,7 @@ export const GetDashboardSummaryResponse = zod.object({
   "date": zod.string(),
   "status": zod.string(),
   "notes": zod.string().optional(),
+  "nextDue": zod.string().nullish(),
   "bookingId": zod.number().optional(),
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))

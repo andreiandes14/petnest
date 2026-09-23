@@ -113,6 +113,8 @@ export interface CareRecord {
   date: string;
   status: string;
   notes?: string;
+  /** @nullable */
+  nextDue?: string | null;
   bookingId?: number;
   serviceCategory?: CareRecordServiceCategory;
 }
