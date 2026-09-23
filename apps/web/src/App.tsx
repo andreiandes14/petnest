@@ -2377,14 +2377,20 @@ function AdminAccountsPage() {
   });
   const removeAccount = useMutation({
     mutationFn: (id: string) => {
-      if (!id) throw new Error("This account is missing its user ID. Refresh and try again.");
+      if (typeof id !== "string" || !id.trim() || id !== id.trim() ||
+          ["undefined", "null"].includes(id.toLowerCase())) {
+        throw new Error("This account is missing a valid user ID. Refresh and try again.");
+      }
       return adminRequest<AdminAccount>(
         `/api/admin/accounts/${encodeURIComponent(id)}`,
         { method: "DELETE" },
       );
     },
     onSuccess: async (removed) => {
-      await query.refetch();
+      const refreshed = await query.refetch();
+      if (refreshed.isError) {
+        throw new Error("The account was deactivated, but the account list could not be refreshed. Please retry.");
+      }
       queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
       queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
       setRemoveNotice(`${removed.name} was removed and can no longer sign in.`);
@@ -2393,7 +2399,7 @@ function AdminAccountsPage() {
   });
   if (!isAdmin) return <NotFound />;
   if (query.isLoading) return <LoadingState label="Loading registered accounts" />;
-  if (query.isError)
+  if (query.isError && !query.data)
     return (
       <ErrorState
         onRetry={() => query.refetch()}
@@ -2469,7 +2475,7 @@ function AdminAccountsPage() {
               orders, pets, services, and records will remain intact.
             </p>
             <div className="mt-6 flex gap-2">
-              <button type="button" className="btn btn-ghost" onClick={() => setRemoveTarget(null)}>Cancel</button>
+              <button type="button" className="btn btn-ghost" disabled={removeAccount.isPending} onClick={() => setRemoveTarget(null)}>Cancel</button>
               <button
                 type="button"
                 className="btn btn-primary"

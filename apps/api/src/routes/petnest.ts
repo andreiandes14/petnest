@@ -469,6 +469,11 @@ type BookingLock = { _id: string; token: string; expiresAt: Date };
 
 const legacyOwnerId = "legacy-seed-data";
 
+function isValidAccountId(id: unknown): id is string {
+  return typeof id === "string" && id.trim().length > 0 &&
+    id === id.trim() && !["undefined", "null"].includes(id.toLowerCase());
+}
+
 function isValidBookingDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -734,24 +739,22 @@ export function initializePetnestData(): Promise<void> {
     // Legacy Clerk accounts predate the local `id` field. Account-management
     // actions use this field, so preserve their existing identity as the ID
     // before the unique index and Admin account list are initialized.
-    const legacyUsers = await userCollection
-      .find(
-        {
-          $or: [{ id: { $exists: false } }, { id: "" }],
-        },
-        { projection: { _id: 1, clerkUserId: 1 } },
-      )
-      .toArray();
-    for (const legacyUser of legacyUsers) {
+    const legacyUsers = userCollection.find(
+      {},
+      { projection: { _id: 1, id: 1, clerkUserId: 1 } },
+    );
+    for await (const legacyUser of legacyUsers) {
+      if (isValidAccountId(legacyUser.id)) continue;
+      const candidate = isValidAccountId(legacyUser.clerkUserId)
+        ? legacyUser.clerkUserId
+        : randomUUID();
+      // Never alias a legacy document to another user's application identity.
+      const collision = await userCollection.findOne({ id: candidate });
       await userCollection.updateOne(
-        { _id: legacyUser._id },
+        { _id: legacyUser._id, id: legacyUser.id ?? null },
         {
           $set: {
-            id:
-              typeof legacyUser.clerkUserId === "string" &&
-              legacyUser.clerkUserId
-                ? legacyUser.clerkUserId
-                : randomUUID(),
+            id: collision ? randomUUID() : candidate,
             updatedAt: new Date().toISOString(),
           },
         },
@@ -1142,35 +1145,42 @@ router.delete("/admin/accounts/:userId", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
   const userId = req.params.userId;
+  if (!isValidAccountId(userId)) {
+    res.status(400).json({ error: "A valid account ID is required." });
+    return;
+  }
   if (userId === access.userId) {
     res.status(403).json({ error: "You cannot remove your own Admin account." });
     return;
   }
   await initializePetnestData();
   const now = new Date().toISOString();
-  const account = await userCollection.findOneAndUpdate(
-    {
-      id: userId,
-      role: { $in: ["customer", "provider"] },
-      isActive: { $ne: false },
-    },
-    {
-      $set: { isActive: false, deactivatedAt: now, updatedAt: now },
-    },
-    { returnDocument: "after", projection: { _id: 0, passwordHash: 0 } },
-  );
-  if (!account) {
-    res.status(404).json({ error: "Active customer or provider account not found." });
-    return;
-  }
-  await sessionCollection.deleteMany({ userId: account.id });
-  if (account.role === "provider" && account.providerId) {
-    await providerCollection.updateOne(
-      { id: account.providerId },
-      { $set: { active: false, updatedAt: now } },
+  try {
+    // Include inactive accounts so retries can finish session/profile cleanup.
+    const account = await userCollection.findOneAndUpdate(
+      { id: userId, role: { $in: ["customer", "provider"] } },
+      [{ $set: {
+        isActive: false,
+        deactivatedAt: { $ifNull: ["$deactivatedAt", now] },
+        updatedAt: now,
+      } }],
+      { returnDocument: "after", projection: { _id: 0, passwordHash: 0 } },
     );
+    if (!account) {
+      res.status(404).json({ error: "Customer or provider account not found." });
+      return;
+    }
+    await sessionCollection.deleteMany({ userId: account.id });
+    if (account.role === "provider" && account.providerId) {
+      await providerCollection.updateOne(
+        { id: account.providerId },
+        { $set: { active: false, updatedAt: now } },
+      );
+    }
+    res.json({ ...account, isActive: false });
+  } catch {
+    res.status(500).json({ error: "Account removal could not be completed. Please retry." });
   }
-  res.json({ ...account, isActive: false });
 });
 
 router.get("/admin/activity-logs", async (req, res) => {
