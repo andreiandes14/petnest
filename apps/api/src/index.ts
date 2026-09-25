@@ -1,6 +1,6 @@
-import app from "./app";
-import { logger } from "./lib/logger";
-import { initializePetnestData } from "./routes/petnest";
+import app from "./app.js";
+import { logger } from "./lib/logger.js";
+import { initializePetnestData } from "./routes/petnest.js";
 
 const rawPort = process.env["PORT"];
 
