@@ -5,8 +5,8 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { CareRecordServiceCategory } from './careRecordServiceCategory';
-import type { CareRecordType } from './careRecordType';
+import type { CareRecordServiceCategory } from './careRecordServiceCategory.js';
+import type { CareRecordType } from './careRecordType.js';
 
 export interface CareRecord {
   id: number;

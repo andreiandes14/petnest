@@ -5,8 +5,8 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { BookingCancellationDecision } from './bookingCancellationDecision';
-import type { BookingServiceCategory } from './bookingServiceCategory';
+import type { BookingCancellationDecision } from './bookingCancellationDecision.js';
+import type { BookingServiceCategory } from './bookingServiceCategory.js';
 
 export interface Booking {
   id: number;

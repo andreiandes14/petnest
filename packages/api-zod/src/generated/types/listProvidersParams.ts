@@ -5,7 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { ListProvidersCategory } from './listProvidersCategory';
+import type { ListProvidersCategory } from './listProvidersCategory.js';
 
 export type ListProvidersParams = {
 category?: ListProvidersCategory;

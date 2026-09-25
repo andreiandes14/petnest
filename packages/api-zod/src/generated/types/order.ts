@@ -5,7 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { OrderItemsItem } from './orderItemsItem';
+import type { OrderItemsItem } from './orderItemsItem.js';
 
 export interface Order {
   id: number;

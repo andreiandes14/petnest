@@ -5,8 +5,8 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { Booking } from './booking';
-import type { CareRecord } from './careRecord';
+import type { Booking } from './booking.js';
+import type { CareRecord } from './careRecord.js';
 
 export interface DashboardSummary {
   petCount: number;

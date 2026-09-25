@@ -5,9 +5,9 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { Provider } from './provider';
-import type { ProviderProduct } from './providerProduct';
-import type { ProviderService } from './providerService';
+import type { Provider } from './provider.js';
+import type { ProviderProduct } from './providerProduct.js';
+import type { ProviderService } from './providerService.js';
 
 export type ProviderDetail = Provider & {
   contact: string;
