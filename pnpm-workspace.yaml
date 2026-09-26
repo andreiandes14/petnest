@@ -27,9 +27,8 @@
 # ============================================================================
 minimumReleaseAge: 1440
 
-# pnpm 11 reads installation layout settings from the workspace config. Keep
-# its package graph outside OneDrive to avoid sync locks during rename/linking.
-storeDir: ${LOCALAPPDATA}/PetNest-pnpm/store
+# Keep the virtual store inside the workspace so deployment tracing can include
+# runtime dependencies. pnpm chooses a platform-native content store by default.
 virtualStoreDir: node_modules/.pnpm
 
 # Scripts are launched through Corepack on this Windows environment. pnpm's
