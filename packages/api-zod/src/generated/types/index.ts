@@ -14,6 +14,7 @@ export * from './careRecord.js';
 export * from './careRecordServiceCategory.js';
 export * from './careRecordType.js';
 export * from './dashboardSummary.js';
+export * from './deliveryAddress.js';
 export * from './fulfillmentMethod.js';
 export * from './healthStatus.js';
 export * from './listProvidersCategory.js';

@@ -204,6 +204,7 @@ export const GetPetRecordsResponse = zod.object({
 })
 
 
+
 /**
  * @summary List the customer's bookings
  */
@@ -272,7 +273,16 @@ export const ListOrdersResponseItem = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
+  "deliveryAddress": zod.object({
+  "recipientName": zod.string(),
+  "contactNumber": zod.string(),
+  "streetAddress": zod.string(),
+  "barangay": zod.string(),
+  "cityMunicipality": zod.string(),
+  "instructions": zod.string().optional()
+}).optional(),
   "itemCount": zod.number(),
   "items": zod.array(zod.object({
   "productId": zod.number(),
@@ -292,6 +302,14 @@ export const ListOrdersResponse = zod.array(ListOrdersResponseItem)
 export const CreateOrderBody = zod.object({
   "providerId": zod.number(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']),
+  "deliveryAddress": zod.object({
+  "recipientName": zod.string(),
+  "contactNumber": zod.string(),
+  "streetAddress": zod.string(),
+  "barangay": zod.string(),
+  "cityMunicipality": zod.string(),
+  "instructions": zod.string().optional()
+}).optional(),
   "items": zod.array(zod.object({
   "productId": zod.number(),
   "quantity": zod.number()
@@ -306,7 +324,16 @@ export const CreateOrderResponse = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
+  "deliveryAddress": zod.object({
+  "recipientName": zod.string(),
+  "contactNumber": zod.string(),
+  "streetAddress": zod.string(),
+  "barangay": zod.string(),
+  "cityMunicipality": zod.string(),
+  "instructions": zod.string().optional()
+}).optional(),
   "itemCount": zod.number(),
   "items": zod.array(zod.object({
   "productId": zod.number(),
@@ -357,5 +384,3 @@ export const GetDashboardSummaryResponse = zod.object({
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))
 })
-
-

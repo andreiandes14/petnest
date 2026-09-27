@@ -1,4 +1,5 @@
 import {
+  Fragment,
   createContext,
   useContext,
   useEffect,
@@ -53,9 +54,11 @@ import type {
   ProviderService,
   Order,
   FulfillmentMethod,
+  DeliveryAddress,
 } from "@workspace/api-client-react";
 import {
   ArrowRight,
+  Bell,
   CalendarDays,
   Check,
   ChevronLeft,
@@ -105,6 +108,39 @@ const fulfillmentLabel = (method?: FulfillmentMethod) =>
     : method === "DELIVERY"
       ? "Delivery"
       : "Not specified";
+const emptyDeliveryAddress = (): DeliveryAddress => ({
+  recipientName: "",
+  contactNumber: "",
+  streetAddress: "",
+  barangay: "",
+  cityMunicipality: "",
+  instructions: "",
+});
+const deliveryAddressComplete = (address?: DeliveryAddress) =>
+  Boolean(
+    address &&
+      [
+        address.recipientName,
+        address.contactNumber,
+        address.streetAddress,
+        address.barangay,
+        address.cityMunicipality,
+      ].every((value) => value.trim()),
+  );
+
+function DeliveryAddressDetails({ address }: { address: DeliveryAddress }) {
+  return (
+    <div className="mt-2 text-xs leading-5 text-muted-foreground">
+      <p className="font-semibold text-foreground">Delivery Address</p>
+      <p>Full Name: {address.recipientName}</p>
+      <p>Contact Number: {address.contactNumber}</p>
+      <p>Street / House No. / Building: {address.streetAddress}</p>
+      <p>Barangay: {address.barangay}</p>
+      <p>City / Municipality: {address.cityMunicipality}</p>
+      {address.instructions ? <p>Delivery Instructions: {address.instructions}</p> : null}
+    </div>
+  );
+}
 type UserRole = "customer" | "provider" | "admin";
 type AuthUser = {
   id: string;
@@ -369,9 +405,120 @@ const visibleNavItems = presentationMode
   : navItems;
 const visibleCategories = Object.entries(categoryMeta);
 
+type AppNotification = {
+  id: string;
+  type: string;
+  message: string;
+  relatedRecordId?: string;
+  relatedRecordType?: string;
+  href?: string;
+  read: boolean;
+  createdAt: string;
+};
+
+function NotificationBell({ userId }: { userId: string }) {
+  const [, setLocation] = useLocation();
+  const [open, setOpen] = useState(false);
+  const query = useQuery({
+    queryKey: ["notifications", userId],
+    queryFn: () => adminRequest<AppNotification[]>("/api/notifications"),
+    refetchInterval: 15_000,
+  });
+  const notifications = query.data ?? [];
+  const unreadCount = notifications.filter((notification) => !notification.read).length;
+  const markAllRead = useMutation({
+    mutationFn: () =>
+      adminRequest<{ success: boolean }>("/api/notifications/read-all", {
+        method: "PATCH",
+      }),
+    onSuccess: () =>
+      queryClient.setQueryData<AppNotification[]>(["notifications", userId], (current = []) =>
+        current.map((notification) => ({ ...notification, read: true })),
+      ),
+  });
+  const openNotification = async (notification: AppNotification) => {
+    if (!notification.read) {
+      const updated = await adminRequest<AppNotification>(
+        `/api/notifications/${encodeURIComponent(notification.id)}/read`,
+        { method: "PATCH" },
+      );
+      queryClient.setQueryData<AppNotification[]>(["notifications", userId], (current = []) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+    }
+    setOpen(false);
+    if (notification.href) setLocation(notification.href);
+  };
+  return (
+    <div className="relative">
+      <button
+        className="btn btn-ghost btn-icon relative"
+        type="button"
+        aria-label="Notifications"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Bell size={18} />
+        {unreadCount ? (
+          <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-destructive px-1 text-center text-[10px] font-bold leading-5 text-white">
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="surface-card absolute right-0 z-50 mt-2 w-[min(24rem,calc(100vw-2rem))] p-4 shadow-xl">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="font-display text-xl">Notifications</h2>
+            <button
+              className="text-xs font-bold text-primary hover:underline"
+              type="button"
+              disabled={!unreadCount || markAllRead.isPending}
+              onClick={() => markAllRead.mutate()}
+            >
+              Mark all as read
+            </button>
+          </div>
+          <div className="mt-3 max-h-96 space-y-2 overflow-y-auto">
+            {query.isLoading ? (
+              <p className="py-4 text-sm text-muted-foreground">Loading notifications…</p>
+            ) : notifications.length ? (
+              notifications.map((notification) => (
+                <button
+                  className={`w-full rounded-xl border p-3 text-left ${notification.read ? "bg-background" : "border-primary/30 bg-primary/5"}`}
+                  type="button"
+                  key={notification.id}
+                  onClick={() => void openNotification(notification)}
+                >
+                  <p className={`text-sm ${notification.read ? "" : "font-semibold"}`}>
+                    {notification.message}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {new Date(notification.createdAt).toLocaleString()}
+                  </p>
+                </button>
+              ))
+            ) : (
+              <p className="py-4 text-sm text-muted-foreground">No notifications yet.</p>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AppShell({ children }: { children: ReactNode }) {
   const { isSignedIn, user } = useAuth();
   const role = user?.role;
+  const providerProfileQuery = useQuery({
+    queryKey: ["provider", "profile"],
+    queryFn: () => adminRequest<ProviderDetail>("/api/provider/profile"),
+    enabled: isSignedIn && role === "provider",
+  });
+  const providerCategories = providerProfileQuery.data?.categories ?? [];
+  const hasCareService = providerCategories.some((category) =>
+    category === "grooming" || category === "vaccination",
+  );
   const shellNavItems = !isSignedIn
     ? visibleNavItems.filter(({ href }) => href === "/")
     : role === "admin"
@@ -385,10 +532,17 @@ function AppShell({ children }: { children: ReactNode }) {
       : role === "provider"
         ? [
             { href: "/provider", label: "Dashboard", icon: Pencil },
-            { href: "/provider/bookings", label: "Bookings", icon: CalendarDays },
-            { href: "/provider/records", label: "Pet Records", icon: PawPrint },
-            { href: "/provider/services", label: "Services", icon: Sparkles },
-            { href: "/provider/retail", label: "Pet Supplies", icon: ShoppingBag },
+            ...(hasCareService
+              ? [
+                  { href: "/provider/bookings", label: "Bookings", icon: CalendarDays },
+                  { href: "/provider/records", label: "Pet Records", icon: PawPrint },
+                  { href: "/provider/services", label: "Services", icon: Sparkles },
+                ]
+              : []),
+            ...(providerCategories.includes("pet-supplies")
+              ? [{ href: "/provider/retail", label: "Pet Supplies", icon: ShoppingBag }]
+              : []),
+            { href: "/provider/archive", label: "Archive", icon: Package },
           ]
         : [
             ...visibleNavItems,
@@ -472,6 +626,7 @@ function AppShell({ children }: { children: ReactNode }) {
               <PawPrint size={14} className="text-primary" /> Local pet care
             </div>
             <div className="ml-auto flex items-center gap-2">
+              {isSignedIn && user?.id ? <NotificationBell userId={user.id} /> : null}
               {isSignedIn && role !== "admin" && role !== "provider" ? (
                 <Link
                   href="/pets"
@@ -1064,7 +1219,12 @@ function LegacyBookingModal({
           notes,
         },
       },
-      { onSuccess: () => setComplete(true) },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: ["notifications"] });
+          setComplete(true);
+        },
+      },
     );
   };
   return (
@@ -1359,6 +1519,7 @@ function BookingModal({
             queryKey: getGetDashboardSummaryQueryKey(),
           });
           queryClient.invalidateQueries({ queryKey: ["availability", provider.id] });
+          queryClient.invalidateQueries({ queryKey: ["notifications"] });
           setSavedBooking(booking);
           setComplete(true);
         },
@@ -2169,6 +2330,11 @@ function BookingsPage() {
               Cancellation request rejected. Your booking remains active.
             </p>
           ) : null}
+          {booking.status.toLowerCase() === "cancelled" && booking.cancellationReason ? (
+            <p className="booking-note">
+              <strong>Cancellation Reason:</strong> {booking.cancellationReason}
+            </p>
+          ) : null}
         </div>
         <div className="booking-side">
           <span className={`status status-${booking.status.toLowerCase()}`}>
@@ -2323,6 +2489,15 @@ type AdminBooking = Booking & {
   customerId: string;
   customerName?: string;
   endTime?: string;
+  archived?: boolean;
+};
+type ProviderOrder = import("@workspace/api-client-react").Order & {
+  archived?: boolean;
+};
+type ProviderArchive = {
+  orders: ProviderOrder[];
+  bookings: AdminBooking[];
+  vaccinations: AdminBooking[];
 };
 type AdminAccount = {
   id: string;
@@ -2728,7 +2903,7 @@ const emptyProviderForm = {
   description: "",
   contact: "",
   hours: "",
-  categories: ["grooming"] as string[],
+  categories: [] as string[],
 };
 
 function AdminProvidersPage() {
@@ -2774,6 +2949,8 @@ function AdminProvidersPage() {
       setForm(emptyProviderForm);
       setEditing(null);
       queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
+      queryClient.invalidateQueries({ queryKey: ["provider", "profile"] });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
     },
   });
   const deactivate = useMutation({
@@ -3216,6 +3393,8 @@ function ProviderManagementPage() {
         ? "services"
         : providerLocation.endsWith("/retail")
           ? "retail"
+          : providerLocation.endsWith("/archive")
+            ? "archive"
           : "dashboard";
   const query = useQuery({
     queryKey: ["provider", "profile"],
@@ -3257,12 +3436,63 @@ function ProviderManagementPage() {
   const [scheduleRecord, setScheduleRecord] = useState<ProviderRecord | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmNewPassword: "",
+  });
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordSuccess, setPasswordSuccess] = useState("");
   const [notice, setNotice] = useState("");
+  const [expandedOrderIds, setExpandedOrderIds] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const [bookingCategory, setBookingCategory] = useState<"grooming" | "vaccination">("grooming");
+  const [archiveCategory, setArchiveCategory] = useState<"orders" | "bookings" | "vaccinations">("orders");
+  const [archiveTarget, setArchiveTarget] = useState<{
+    kind: "order" | "booking";
+    id: number;
+    label: string;
+    archived: boolean;
+  } | null>(null);
+  const [cancelOrderTarget, setCancelOrderTarget] =
+    useState<ProviderOrder | null>(null);
+  const [providerCancellationReason, setProviderCancellationReason] = useState("");
+  const [providerCancellationError, setProviderCancellationError] = useState("");
+  const [cancelBookingTarget, setCancelBookingTarget] =
+    useState<AdminBooking | null>(null);
+  const [providerBookingCancellationReason, setProviderBookingCancellationReason] =
+    useState("");
+  const [providerBookingCancellationError, setProviderBookingCancellationError] =
+    useState("");
   const providerTab = providerSection === "records" ? "records" : "workspace";
   const [selectedProviderPet, setSelectedProviderPet] =
     useState<ProviderPet | null>(null);
   useEffect(() => {
-    if (query.data) setDraft(query.data);
+    if (query.data) {
+      setDraft(query.data);
+      const firstCareCategory = query.data.categories.find(
+        (category) => category === "grooming" || category === "vaccination",
+      );
+      if (firstCareCategory) {
+        setBookingCategory((current) =>
+          query.data.categories.includes(current) ? current : firstCareCategory,
+        );
+        setServiceForm((current) => ({
+          ...current,
+          category: query.data.categories.includes(current.category)
+            ? current.category
+            : firstCareCategory,
+        }));
+        setRecordForm((current) => ({
+          ...current,
+          type: query.data.categories.includes(current.type)
+            ? current.type
+            : firstCareCategory,
+        }));
+      }
+    }
   }, [query.data]);
   const updateProfile = useMutation({
     mutationFn: (profile: ProviderDetail) =>
@@ -3327,7 +3557,9 @@ function ProviderManagementPage() {
         description: "",
         price: "",
         durationMinutes: "60",
-        category: "grooming",
+        category: query.data?.categories.find(
+          (category) => category === "grooming" || category === "vaccination",
+        ) ?? "grooming",
         imageUrl: "",
       });
       setShowServiceForm(false);
@@ -3387,9 +3619,6 @@ function ProviderManagementPage() {
         current
           ? {
               ...current,
-              categories: current.categories.includes("pet-supplies")
-                ? current.categories
-                : [...current.categories, "pet-supplies"],
               products: [...current.products, product],
             }
           : current,
@@ -3431,10 +3660,34 @@ function ProviderManagementPage() {
   const providerOrdersQuery = useQuery({
     queryKey: ["provider", "orders"],
     queryFn: () =>
-      adminRequest<import("@workspace/api-client-react").Order[]>(
+      adminRequest<ProviderOrder[]>(
         "/api/provider/orders",
       ),
     enabled: isProvider && providerSection === "retail",
+  });
+  const providerArchiveQuery = useQuery({
+    queryKey: ["provider", "archive"],
+    queryFn: () => adminRequest<ProviderArchive>("/api/provider/archive"),
+    enabled: isProvider && providerSection === "archive",
+  });
+  const setArchiveState = useMutation({
+    mutationFn: (target: NonNullable<typeof archiveTarget>) =>
+      adminRequest(
+        target.kind === "order"
+          ? `/api/provider/orders/${target.id}/archive`
+          : `/api/provider/bookings/${target.id}/archive`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ archived: target.archived }),
+        },
+      ),
+    onSuccess: (_, target) => {
+      setArchiveTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["provider", "orders"] });
+      queryClient.invalidateQueries({ queryKey: ["provider", "bookings"] });
+      queryClient.invalidateQueries({ queryKey: ["provider", "archive"] });
+      setNotice(target.archived ? "Record archived." : "Record restored.");
+    },
   });
   const confirmOrder = useMutation({
     mutationFn: (orderId: number) =>
@@ -3451,6 +3704,76 @@ function ProviderManagementPage() {
       );
       queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
       setNotice(`Order #${confirmedOrder.id} confirmed.`);
+    },
+  });
+  const cancelProviderBooking = useMutation({
+    mutationFn: ({ bookingId, reason }: { bookingId: number; reason: string }) =>
+      adminRequest<AdminBooking>(`/api/provider/bookings/${bookingId}/cancel`, {
+        method: "PATCH",
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: (cancelledBooking) => {
+      setCancelBookingTarget(null);
+      setProviderBookingCancellationReason("");
+      setProviderBookingCancellationError("");
+      queryClient.setQueryData<AdminBooking[]>(
+        ["provider", "bookings"],
+        (bookings = []) =>
+          bookings.map((booking) =>
+            booking.id === cancelledBooking.id
+              ? { ...booking, ...cancelledBooking }
+              : booking,
+          ),
+      );
+      queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: ["availability"] });
+      setNotice(`Booking #${cancelledBooking.id} cancelled.`);
+    },
+  });
+  const changeProviderPassword = useMutation({
+    mutationFn: ({
+      currentPassword,
+      newPassword,
+    }: {
+      currentPassword: string;
+      newPassword: string;
+    }) =>
+      adminRequest<{ message: string }>("/api/provider/password", {
+        method: "PATCH",
+        body: JSON.stringify({ currentPassword, newPassword }),
+      }),
+    onSuccess: (result) => {
+      setShowChangePassword(false);
+      setPasswordForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmNewPassword: "",
+      });
+      setPasswordError("");
+      setPasswordSuccess(result.message);
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    },
+  });
+  const cancelProviderOrder = useMutation({
+    mutationFn: ({ orderId, reason }: { orderId: number; reason: string }) =>
+      adminRequest<ProviderOrder>(`/api/provider/orders/${orderId}/cancel`, {
+        method: "PATCH",
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: (cancelledOrder) => {
+      setCancelOrderTarget(null);
+      setProviderCancellationReason("");
+      setProviderCancellationError("");
+      queryClient.setQueryData<ProviderOrder[]>(
+        ["provider", "orders"],
+        (orders = []) =>
+          orders.map((order) =>
+            order.id === cancelledOrder.id ? cancelledOrder : order,
+          ),
+      );
+      queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      setNotice(`Order #${cancelledOrder.id} cancelled.`);
     },
   });
   const recordsQuery = useQuery({
@@ -3530,6 +3853,17 @@ function ProviderManagementPage() {
     );
   if (query.isLoading || !draft)
     return <LoadingState label="Loading provider information" />;
+  const assignedCareCategories = draft.categories.filter(
+    (category): category is "grooming" | "vaccination" =>
+      category === "grooming" || category === "vaccination",
+  );
+  if (
+    (providerSection === "retail" && !draft.categories.includes("pet-supplies")) ||
+    (["bookings", "records", "services"].includes(providerSection) &&
+      assignedCareCategories.length === 0)
+  ) {
+    return <NotFound />;
+  }
   const change = (
     key: "name" | "location" | "description" | "contact" | "hours",
     value: string,
@@ -3563,6 +3897,9 @@ function ProviderManagementPage() {
   );
   const configuredFulfillmentMethods = getFulfillmentMethods(draft);
   const hasActiveProducts = draft.products.some((product) => product.active);
+  const visibleBookings = (bookingsQuery.data ?? []).filter(
+    (booking) => booking.serviceCategory === bookingCategory,
+  );
   const toggleFulfillmentMethod = (
     method: FulfillmentMethod,
     enabled: boolean,
@@ -3577,7 +3914,9 @@ function ProviderManagementPage() {
     <div className="animate-in">
       <p className="eyebrow">Provider workspace</p>
       <h1 className="page-title">
-        {providerSection === "retail"
+        {providerSection === "archive"
+          ? "Archive."
+          : providerSection === "retail"
           ? "Pet Supplies / Retail."
           : providerSection === "bookings"
             ? "Service bookings."
@@ -3588,7 +3927,9 @@ function ProviderManagementPage() {
                 : "Provider dashboard."}
       </h1>
       <p className="page-subtitle">
-        {providerSection === "retail"
+        {providerSection === "archive"
+          ? "Review and restore archived Pet Supplies orders, bookings, and vaccinations."
+          : providerSection === "retail"
           ? "Manage your Pet Supply products and customer retail orders in one place."
           : providerSection === "bookings"
             ? "Manage Grooming and Vaccination booking requests."
@@ -3666,16 +4007,19 @@ function ProviderManagementPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button className="btn btn-secondary" onClick={() => {
-                      setRecordForm({ type: "vaccination", petId: String(selectedProviderPet.id), title: "", date: "", nextDue: "", notes: "" });
-                      setSelectedProviderPet(null);
-                      setShowRecordForm("vaccination");
-                    }}>Set Next Vaccination</button>
+                    {assignedCareCategories.includes("vaccination") ? (
+                      <button className="btn btn-secondary" onClick={() => {
+                        setRecordForm({ type: "vaccination", petId: String(selectedProviderPet.id), title: "", date: "", nextDue: "", notes: "" });
+                        setSelectedProviderPet(null);
+                        setShowRecordForm("vaccination");
+                      }}>Set Next Vaccination</button>
+                    ) : null}
                     <button className="modal-close" onClick={() => setSelectedProviderPet(null)} aria-label="Close pet records">
                       <X size={17} />
                     </button>
                   </div>
                 </div>
+                {assignedCareCategories.includes("grooming") ? (
                 <div className="mt-6">
                   <h3 className="font-display text-xl">Grooming History</h3>
                   <div className="list-stack mt-3">
@@ -3695,6 +4039,8 @@ function ProviderManagementPage() {
                     ) : <p className="text-sm text-muted-foreground">No completed grooming services yet.</p>}
                   </div>
                 </div>
+                ) : null}
+                {assignedCareCategories.includes("vaccination") ? (
                 <div className="mt-6">
                   <h3 className="font-display text-xl">Vaccination History</h3>
                   <div className="list-stack mt-3">
@@ -3715,6 +4061,7 @@ function ProviderManagementPage() {
                     ) : <p className="text-sm text-muted-foreground">No completed vaccination services yet.</p>}
                   </div>
                 </div>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -3796,6 +4143,129 @@ function ProviderManagementPage() {
                     </button>
                   </div>
                 </div>
+              </div>
+            ) : null}
+          </section>
+          <section className={providerSection === "dashboard" ? "surface-card mt-6 p-6" : "hidden"}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="eyebrow">Account security</p>
+                <h2 className="section-title mt-1">Password</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Replace your temporary or current password with one only you know.
+                </p>
+              </div>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => {
+                  changeProviderPassword.reset();
+                  setPasswordError("");
+                  setPasswordSuccess("");
+                  setShowChangePassword(true);
+                }}
+              >
+                Change Password
+              </button>
+            </div>
+            {passwordSuccess ? (
+              <p className="mt-4 text-sm font-semibold text-primary" role="status">
+                {passwordSuccess}
+              </p>
+            ) : null}
+            {showChangePassword ? (
+              <div className="modal-backdrop" role="presentation">
+                <form
+                  className="modal animate-in"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    setPasswordError("");
+                    setPasswordSuccess("");
+                    if (!passwordForm.currentPassword || !passwordForm.newPassword.trim()) {
+                      setPasswordError("Current password and new password are required.");
+                      return;
+                    }
+                    if (passwordForm.newPassword !== passwordForm.confirmNewPassword) {
+                      setPasswordError("New passwords do not match.");
+                      return;
+                    }
+                    changeProviderPassword.mutate({
+                      currentPassword: passwordForm.currentPassword,
+                      newPassword: passwordForm.newPassword,
+                    });
+                  }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="change-password-title"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="eyebrow">Account security</p>
+                      <h2 id="change-password-title" className="modal-title">
+                        Change Password
+                      </h2>
+                    </div>
+                    <button
+                      className="modal-close"
+                      type="button"
+                      aria-label="Close change password form"
+                      disabled={changeProviderPassword.isPending}
+                      onClick={() => {
+                        setShowChangePassword(false);
+                        setPasswordForm({
+                          currentPassword: "",
+                          newPassword: "",
+                          confirmNewPassword: "",
+                        });
+                        setPasswordError("");
+                        changeProviderPassword.reset();
+                      }}
+                    >
+                      <X size={17} />
+                    </button>
+                  </div>
+                  <div className="mt-5 space-y-4">
+                    {([
+                      ["currentPassword", "Current Password", "current-password"],
+                      ["newPassword", "New Password", "new-password"],
+                      ["confirmNewPassword", "Confirm New Password", "new-password"],
+                    ] as const).map(([field, label, autoComplete]) => (
+                      <label className="form-field" key={field}>
+                        <span className="form-label">{label} *</span>
+                        <input
+                          className="input"
+                          type="password"
+                          autoComplete={autoComplete}
+                          required
+                          value={passwordForm[field]}
+                          onChange={(event) => {
+                            setPasswordForm((current) => ({
+                              ...current,
+                              [field]: event.target.value,
+                            }));
+                            setPasswordError("");
+                            changeProviderPassword.reset();
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  {passwordError || changeProviderPassword.isError ? (
+                    <p className="mt-4 text-sm font-semibold text-destructive" role="alert">
+                      {passwordError ||
+                        (changeProviderPassword.error instanceof Error
+                          ? changeProviderPassword.error.message
+                          : "The password could not be changed.")}
+                    </p>
+                  ) : null}
+                  <button
+                    className="btn btn-primary mt-6 w-full"
+                    type="submit"
+                    disabled={changeProviderPassword.isPending}
+                  >
+                    {changeProviderPassword.isPending ? "Changing…" : "Change Password"}
+                  </button>
+                </form>
               </div>
             ) : null}
           </section>
@@ -3945,8 +4415,12 @@ function ProviderManagementPage() {
                         })
                       }
                     >
-                      <option value="grooming">Grooming</option>
-                      <option value="vaccination">Vaccination</option>
+                      {assignedCareCategories.includes("grooming") ? (
+                        <option value="grooming">Grooming</option>
+                      ) : null}
+                      {assignedCareCategories.includes("vaccination") ? (
+                        <option value="vaccination">Vaccination</option>
+                      ) : null}
                     </select>
                     <input
                       className="input"
@@ -3978,7 +4452,9 @@ function ProviderManagementPage() {
               </div>
             ) : null}
             <div className={providerSection === "services" ? "list-stack mt-4" : "hidden"}>
-              {draft.services.map((service) => (
+              {draft.services
+                .filter((service) => draft.categories.includes(service.category))
+                .map((service) => (
                 <div key={service.id}>
                   <div className="service-row">
                     <div className="flex-1">
@@ -4429,9 +4905,38 @@ function ProviderManagementPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {providerOrdersQuery.data.map((order) => (
-                      <tr key={order.id}>
-                        <td>#{order.id}</td>
+                    {providerOrdersQuery.data.map((order) => {
+                      const isDelivery = order.fulfillmentMethod === "DELIVERY";
+                      const isExpanded = expandedOrderIds.has(order.id);
+                      return (
+                      <Fragment key={order.id}>
+                      <tr>
+                        <td>
+                          <div className="flex items-center gap-2">
+                            {isDelivery ? (
+                              <button
+                                className="btn btn-ghost h-8 min-h-0 px-2"
+                                type="button"
+                                aria-label={`${isExpanded ? "Collapse" : "Expand"} delivery address for order ${order.id}`}
+                                aria-expanded={isExpanded}
+                                onClick={() =>
+                                  setExpandedOrderIds((current) => {
+                                    const next = new Set(current);
+                                    if (next.has(order.id)) next.delete(order.id);
+                                    else next.add(order.id);
+                                    return next;
+                                  })
+                                }
+                              >
+                                <ChevronRight
+                                  size={15}
+                                  className={`transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                                />
+                              </button>
+                            ) : null}
+                            <span>#{order.id}</span>
+                          </div>
+                        </td>
                         <td>{order.customerName}</td>
                         <td>
                           {order.items
@@ -4450,14 +4955,24 @@ function ProviderManagementPage() {
                           >
                             {statusLabel(order.status)}
                           </span>
+                          {order.cancellationReason ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                              <span className="font-semibold text-foreground">
+                                Cancellation Reason:
+                              </span>{" "}
+                              {order.cancellationReason}
+                            </p>
+                          ) : null}
                         </td>
                         <td>{money(order.total)}</td>
                         <td>
+                          <div className="flex flex-wrap gap-2">
                           {order.status.toUpperCase() === "PENDING" ? (
+                            <>
                             <button
                               className="btn btn-primary h-9 min-h-0 px-4 text-xs"
                               onClick={() => confirmOrder.mutate(order.id)}
-                              disabled={confirmOrder.isPending}
+                              disabled={confirmOrder.isPending || cancelProviderOrder.isPending}
                               data-testid={`button-confirm-order-${order.id}`}
                             >
                               {confirmOrder.isPending &&
@@ -4465,12 +4980,50 @@ function ProviderManagementPage() {
                                 ? "Confirming…"
                                 : "Confirm"}
                             </button>
+                            <button
+                              className="btn btn-ghost h-9 min-h-0 px-4 text-xs"
+                              type="button"
+                              disabled={confirmOrder.isPending || cancelProviderOrder.isPending}
+                              onClick={() => {
+                                cancelProviderOrder.reset();
+                                setProviderCancellationReason("");
+                                setProviderCancellationError("");
+                                setCancelOrderTarget(order);
+                              }}
+                            >
+                              Cancel Order
+                            </button>
+                            </>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
+                          {["completed", "cancelled"].includes(order.status.trim().toLowerCase()) ? (
+                            <button
+                              className="btn btn-ghost h-9 min-h-0 px-4 text-xs"
+                              onClick={() => setArchiveTarget({ kind: "order", id: order.id, label: `order #${order.id}`, archived: true })}
+                            >
+                              Archive
+                            </button>
+                          ) : null}
+                          </div>
                         </td>
                       </tr>
-                    ))}
+                      {isDelivery && isExpanded ? (
+                        <tr>
+                          <td colSpan={9} className="bg-muted/30 px-6 py-4">
+                            {order.deliveryAddress ? (
+                              <DeliveryAddressDetails address={order.deliveryAddress} />
+                            ) : (
+                              <p className="text-sm text-muted-foreground">
+                                Delivery address unavailable.
+                              </p>
+                            )}
+                          </td>
+                        </tr>
+                      ) : null}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                   </table>
                 </div>
@@ -4484,13 +5037,21 @@ function ProviderManagementPage() {
           <section className={providerSection === "bookings" ? "surface-card mt-6 p-6" : "hidden"}>
             <p className="eyebrow">Booking requests</p>
             <h2 className="section-title mt-1">Your provider bookings</h2>
+            <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Booking category">
+              {assignedCareCategories.includes("grooming") ? (
+                <button className={`btn ${bookingCategory === "grooming" ? "btn-primary" : "btn-ghost"}`} onClick={() => setBookingCategory("grooming")}>Grooming</button>
+              ) : null}
+              {assignedCareCategories.includes("vaccination") ? (
+                <button className={`btn ${bookingCategory === "vaccination" ? "btn-primary" : "btn-ghost"}`} onClick={() => setBookingCategory("vaccination")}>Vaccination</button>
+              ) : null}
+            </div>
             {bookingsQuery.isLoading ? (
               <div className="mt-5">
                 <LoadingState label="Loading your booking requests" />
               </div>
-            ) : bookingsQuery.data?.length ? (
+            ) : visibleBookings.length ? (
               <>
-              <ProviderBookingsCalendar bookings={bookingsQuery.data} />
+              <ProviderBookingsCalendar bookings={visibleBookings} />
               <div className="table-wrap mt-5">
                 <table className="data-table">
                   <thead>
@@ -4501,10 +5062,11 @@ function ProviderManagementPage() {
                       <th>Date</th>
                       <th>Time</th>
                       <th>Status</th>
+                      <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {bookingsQuery.data.map((booking) => (
+                    {visibleBookings.map((booking) => (
                       <tr key={booking.id}>
                         <td>{booking.customerName ?? "Customer"}</td>
                         <td>{booking.serviceName}</td>
@@ -4515,6 +5077,14 @@ function ProviderManagementPage() {
                           <span className={`status status-${booking.status}`}>
                             {statusLabel(booking.status)}
                           </span>
+                          {booking.cancellationReason ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                              <span className="font-semibold text-foreground">
+                                Cancellation Reason:
+                              </span>{" "}
+                              {booking.cancellationReason}
+                            </p>
+                          ) : null}
                           {booking.status === "cancellation_pending" ? (
                             <div className="mt-2 flex gap-2">
                               <button
@@ -4569,21 +5139,20 @@ function ProviderManagementPage() {
                               </button>
                               <button
                                 className="btn btn-ghost h-9 min-h-0 text-xs"
-                                disabled={updateBooking.isPending}
-                                onClick={() =>
-                                  window.confirm("Cancel this booking?") &&
-                                  updateBooking.mutate({
-                                    id: booking.id,
-                                    status: "cancelled",
-                                  })
-                                }
+                                disabled={updateBooking.isPending || cancelProviderBooking.isPending}
+                                onClick={() => {
+                                  cancelProviderBooking.reset();
+                                  setProviderBookingCancellationReason("");
+                                  setProviderBookingCancellationError("");
+                                  setCancelBookingTarget(booking);
+                                }}
                               >
-                                Cancel
+                                Cancel Booking
                               </button>
                             </div>
                           ) : null}
                           {booking.status === "confirmed" ? (
-                            <div className="mt-2 flex gap-2">
+                            <div className="mt-2">
                               <button
                                 className="btn btn-secondary h-9 min-h-0 text-xs"
                                 disabled={updateBooking.isPending}
@@ -4596,20 +5165,17 @@ function ProviderManagementPage() {
                               >
                                 Complete service
                               </button>
-                              <button
-                                className="btn btn-ghost h-9 min-h-0 text-xs"
-                                disabled={updateBooking.isPending}
-                                onClick={() =>
-                                  window.confirm("Cancel this booking?") &&
-                                  updateBooking.mutate({
-                                    id: booking.id,
-                                    status: "cancelled",
-                                  })
-                                }
-                              >
-                                Cancel
-                              </button>
                             </div>
+                          ) : null}
+                        </td>
+                        <td>
+                          {["completed", "cancelled"].includes(booking.status.trim().toLowerCase()) ? (
+                            <button
+                              className="btn btn-ghost h-9 min-h-0 text-xs"
+                              onClick={() => setArchiveTarget({ kind: "booking", id: booking.id, label: `${booking.serviceName} booking`, archived: true })}
+                            >
+                              Archive
+                            </button>
                           ) : null}
                         </td>
                       </tr>
@@ -4620,9 +5186,62 @@ function ProviderManagementPage() {
               </>
             ) : (
               <p className="mt-5 text-sm text-muted-foreground">
-                No booking requests yet.
+                No {bookingCategory} bookings yet.
               </p>
             )}
+          </section>
+          <section className={providerSection === "archive" ? "surface-card mt-6 p-6" : "hidden"}>
+            <p className="eyebrow">Archive</p>
+            <h2 className="section-title mt-1">Archived provider records</h2>
+            <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Archive category">
+              <button className={`btn ${archiveCategory === "orders" ? "btn-primary" : "btn-ghost"}`} onClick={() => setArchiveCategory("orders")}>Pet Supplies Orders</button>
+              <button className={`btn ${archiveCategory === "bookings" ? "btn-primary" : "btn-ghost"}`} onClick={() => setArchiveCategory("bookings")}>Bookings</button>
+              <button className={`btn ${archiveCategory === "vaccinations" ? "btn-primary" : "btn-ghost"}`} onClick={() => setArchiveCategory("vaccinations")}>Vaccinations</button>
+            </div>
+            {providerArchiveQuery.isLoading ? (
+              <LoadingState label="Loading archived records" />
+            ) : providerArchiveQuery.isError ? (
+              <ErrorState onRetry={() => providerArchiveQuery.refetch()} message={providerArchiveQuery.error.message} />
+            ) : archiveCategory === "orders" ? (
+              providerArchiveQuery.data?.orders.length ? (
+                <div className="list-stack mt-5">
+                  {providerArchiveQuery.data.orders.map((order) => (
+                    <div className="service-row" key={`archive-order-${order.id}`}>
+                      <div className="flex-1">
+                        <p className="font-semibold">Order #{order.id} · {order.customerName}</p>
+                        <p className="text-xs text-muted-foreground">{order.items.map((item) => `${item.productName} × ${item.quantity}`).join(", ")} · {fulfillmentLabel(order.fulfillmentMethod)}</p>
+                        {order.fulfillmentMethod === "DELIVERY" && order.deliveryAddress ? (
+                          <DeliveryAddressDetails address={order.deliveryAddress} />
+                        ) : null}
+                        <p className="mt-1 text-sm text-muted-foreground">{formatDate(order.createdAt)} · {statusLabel(order.status)} · {money(order.total)}</p>
+                      </div>
+                      <button className="btn btn-ghost" onClick={() => setArchiveTarget({ kind: "order", id: order.id, label: `order #${order.id}`, archived: false })}>Restore</button>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="mt-5 text-sm text-muted-foreground">No archived Pet Supplies orders.</p>
+            ) : (providerArchiveQuery.data?.[archiveCategory] ?? []).length ? (
+              <div className="list-stack mt-5">
+                {(providerArchiveQuery.data?.[archiveCategory] ?? []).map((booking) => (
+                  <div className="service-row" key={`archive-booking-${booking.id}`}>
+                    <div className="flex-1">
+                      <p className="font-semibold">{booking.serviceName} · {booking.petName}</p>
+                      <p className="text-xs text-muted-foreground">{booking.customerName ?? "Customer"} · {formatDate(booking.date)} · {booking.time}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{statusLabel(booking.status)} · {money(booking.price)}</p>
+                      {booking.cancellationReason ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          <span className="font-semibold text-foreground">
+                            Cancellation Reason:
+                          </span>{" "}
+                          {booking.cancellationReason}
+                        </p>
+                      ) : null}
+                    </div>
+                    <button className="btn btn-ghost" onClick={() => setArchiveTarget({ kind: "booking", id: booking.id, label: `${booking.serviceName} booking`, archived: false })}>Restore</button>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="mt-5 text-sm text-muted-foreground">No archived {archiveCategory === "bookings" ? "bookings" : "vaccinations"}.</p>}
           </section>
         </>
       )}
@@ -4630,28 +5249,32 @@ function ProviderManagementPage() {
         <p className="eyebrow">Provider records</p>
         <h2 className="section-title mt-1">Grooming and vaccination history</h2>
         <div className="mt-4 flex flex-wrap gap-3">
-          <button
-            className="btn btn-secondary"
-            onClick={() => {
-              setRecordForm({ ...recordForm, type: "vaccination" });
-              setShowRecordForm(
-                showRecordForm === "vaccination" ? null : "vaccination",
-              );
-            }}
-          >
-            + Add vaccination record
-          </button>
-          <button
-            className="btn btn-secondary"
-            onClick={() => {
-              setRecordForm({ ...recordForm, type: "grooming" });
-              setShowRecordForm(
-                showRecordForm === "grooming" ? null : "grooming",
-              );
-            }}
-          >
-            + Add grooming record
-          </button>
+          {assignedCareCategories.includes("vaccination") ? (
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setRecordForm({ ...recordForm, type: "vaccination" });
+                setShowRecordForm(
+                  showRecordForm === "vaccination" ? null : "vaccination",
+                );
+              }}
+            >
+              + Add vaccination record
+            </button>
+          ) : null}
+          {assignedCareCategories.includes("grooming") ? (
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setRecordForm({ ...recordForm, type: "grooming" });
+                setShowRecordForm(
+                  showRecordForm === "grooming" ? null : "grooming",
+                );
+              }}
+            >
+              + Add grooming record
+            </button>
+          ) : null}
         </div>
         {showRecordForm ? (
           <div className="modal-backdrop" role="presentation">
@@ -4672,8 +5295,12 @@ function ProviderManagementPage() {
                     setRecordForm({ ...recordForm, type: event.target.value })
                   }
                 >
-                  <option value="grooming">Grooming</option>
-                  <option value="vaccination">Vaccination</option>
+                  {assignedCareCategories.includes("grooming") ? (
+                    <option value="grooming">Grooming</option>
+                  ) : null}
+                  {assignedCareCategories.includes("vaccination") ? (
+                    <option value="vaccination">Vaccination</option>
+                  ) : null}
                 </select>
                 <select
                   className="input select"
@@ -4810,6 +5437,189 @@ function ProviderManagementPage() {
           </div>
         </div>
       ) : null}
+      {archiveTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="archive-confirm-title">
+            <h2 id="archive-confirm-title" className="modal-title">
+              {archiveTarget.archived ? "Archive record?" : "Restore record?"}
+            </h2>
+            <p className="mt-3 text-sm text-muted-foreground">
+              {archiveTarget.archived
+                ? "Are you sure you want to archive this record?"
+                : `Restore ${archiveTarget.label} to its normal section?`}
+            </p>
+            {setArchiveState.isError ? <p className="mt-3 text-sm font-semibold text-destructive">{setArchiveState.error.message}</p> : null}
+            <div className="mt-6 flex gap-2">
+              <button className="btn btn-ghost" disabled={setArchiveState.isPending} onClick={() => setArchiveTarget(null)}>Cancel</button>
+              <button className="btn btn-primary" disabled={setArchiveState.isPending} onClick={() => setArchiveState.mutate(archiveTarget)}>
+                {archiveTarget.archived ? "Archive" : "Restore"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {cancelOrderTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="provider-cancel-order-title"
+            aria-describedby="provider-cancel-order-description"
+          >
+            <h2 id="provider-cancel-order-title" className="modal-title">
+              Cancel order?
+            </h2>
+            <p
+              id="provider-cancel-order-description"
+              className="mt-3 text-sm text-muted-foreground"
+            >
+              Please provide a reason for cancelling this customer's order.
+            </p>
+            <label className="form-field mt-5" htmlFor="provider-cancellation-reason">
+              <span className="form-label">Cancellation Reason *</span>
+              <textarea
+                id="provider-cancellation-reason"
+                className="input h-24 py-3"
+                required
+                value={providerCancellationReason}
+                onChange={(event) => {
+                  setProviderCancellationReason(event.target.value);
+                  setProviderCancellationError("");
+                }}
+              />
+            </label>
+            {providerCancellationError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {providerCancellationError}
+              </p>
+            ) : null}
+            {cancelProviderOrder.isError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {cancelProviderOrder.error instanceof Error
+                  ? cancelProviderOrder.error.message
+                  : "The order could not be cancelled."}
+              </p>
+            ) : null}
+            <div className="mt-6 flex gap-2">
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={cancelProviderOrder.isPending}
+                onClick={() => {
+                  cancelProviderOrder.reset();
+                  setProviderCancellationReason("");
+                  setProviderCancellationError("");
+                  setCancelOrderTarget(null);
+                }}
+              >
+                Keep Order
+              </button>
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={cancelProviderOrder.isPending}
+                onClick={() => {
+                  const reason = providerCancellationReason.trim();
+                  if (!reason) {
+                    setProviderCancellationError("Please provide a cancellation reason.");
+                    return;
+                  }
+                  setProviderCancellationError("");
+                  cancelProviderOrder.mutate({
+                    orderId: cancelOrderTarget.id,
+                    reason,
+                  });
+                }}
+              >
+                {cancelProviderOrder.isPending ? "Cancelling…" : "Cancel Order"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {cancelBookingTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="provider-cancel-booking-title"
+            aria-describedby="provider-cancel-booking-description"
+          >
+            <h2 id="provider-cancel-booking-title" className="modal-title">
+              Cancel booking?
+            </h2>
+            <p
+              id="provider-cancel-booking-description"
+              className="mt-3 text-sm text-muted-foreground"
+            >
+              Please provide a reason for cancelling this customer's booking.
+            </p>
+            <label className="form-field mt-5" htmlFor="provider-booking-cancellation-reason">
+              <span className="form-label">Cancellation Reason *</span>
+              <textarea
+                id="provider-booking-cancellation-reason"
+                className="input h-24 py-3"
+                required
+                value={providerBookingCancellationReason}
+                onChange={(event) => {
+                  setProviderBookingCancellationReason(event.target.value);
+                  setProviderBookingCancellationError("");
+                }}
+              />
+            </label>
+            {providerBookingCancellationError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {providerBookingCancellationError}
+              </p>
+            ) : null}
+            {cancelProviderBooking.isError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {cancelProviderBooking.error instanceof Error
+                  ? cancelProviderBooking.error.message
+                  : "The booking could not be cancelled."}
+              </p>
+            ) : null}
+            <div className="mt-6 flex gap-2">
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={cancelProviderBooking.isPending}
+                onClick={() => {
+                  cancelProviderBooking.reset();
+                  setProviderBookingCancellationReason("");
+                  setProviderBookingCancellationError("");
+                  setCancelBookingTarget(null);
+                }}
+              >
+                Keep Booking
+              </button>
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={cancelProviderBooking.isPending}
+                onClick={() => {
+                  const reason = providerBookingCancellationReason.trim();
+                  if (!reason) {
+                    setProviderBookingCancellationError(
+                      "Please provide a cancellation reason.",
+                    );
+                    return;
+                  }
+                  setProviderBookingCancellationError("");
+                  cancelProviderBooking.mutate({
+                    bookingId: cancelBookingTarget.id,
+                    reason,
+                  });
+                }}
+              >
+                {cancelProviderBooking.isPending ? "Cancelling…" : "Cancel Booking"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {editingService ? (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -4879,8 +5689,12 @@ function ProviderManagementPage() {
                   })
                 }
               >
-                <option value="grooming">Grooming</option>
-                <option value="vaccination">Vaccination</option>
+                {assignedCareCategories.includes("grooming") ? (
+                  <option value="grooming">Grooming</option>
+                ) : null}
+                {assignedCareCategories.includes("vaccination") ? (
+                  <option value="vaccination">Vaccination</option>
+                ) : null}
               </select>
               <input
                 className="input"
@@ -5415,6 +6229,7 @@ function OrdersPage() {
   const { user } = useAuth();
   const query = useListOrders({ query: { queryKey: getListOrdersQueryKey() } });
   const orders = query.data ?? [];
+  const [cancelOrderTarget, setCancelOrderTarget] = useState<Order | null>(null);
   type CartLine = {
     providerId: number;
     providerName: string;
@@ -5459,7 +6274,27 @@ function OrdersPage() {
   const [fulfillmentSelections, setFulfillmentSelections] = useState<
     Record<number, FulfillmentMethod | undefined>
   >({});
+  const [deliveryAddresses, setDeliveryAddresses] = useState<
+    Record<number, DeliveryAddress>
+  >({});
   const [cartError, setCartError] = useState("");
+  const cancelOrder = useMutation({
+    mutationFn: (orderId: number) =>
+      adminRequest<Order>(`/api/orders/${orderId}/cancel`, {
+        method: "PATCH",
+      }),
+    onSuccess: (cancelledOrder) => {
+      setCancelOrderTarget(null);
+      queryClient.setQueryData<Order[]>(
+        getListOrdersQueryKey(),
+        (current = []) =>
+          current.map((order) =>
+            order.id === cancelledOrder.id ? cancelledOrder : order,
+          ),
+      );
+      queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+    },
+  });
   useEffect(() => {
     const providerIds = [...new Set(cart.map((item) => item.providerId))];
     void Promise.all(
@@ -5528,6 +6363,18 @@ function OrdersPage() {
       ? supported[0]
       : fulfillmentSelections[providerId];
   };
+  const updateDeliveryAddress = (
+    providerId: number,
+    field: keyof DeliveryAddress,
+    value: string,
+  ) =>
+    setDeliveryAddresses((current) => ({
+      ...current,
+      [providerId]: {
+        ...(current[providerId] ?? emptyDeliveryAddress()),
+        [field]: value,
+      },
+    }));
   const fulfillmentSelectionComplete = selectedProviderIds.every(
     (providerId) => selectedMethodForProvider(providerId) !== undefined,
   );
@@ -5554,6 +6401,9 @@ function OrdersPage() {
             body: JSON.stringify({
               providerId,
               fulfillmentMethod: selectedMethodForProvider(providerId),
+              ...(selectedMethodForProvider(providerId) === "DELIVERY"
+                ? { deliveryAddress: deliveryAddresses[providerId] }
+                : {}),
               items: lines.map((item) => ({
                 productId: item.product.id,
                 quantity: item.quantity,
@@ -5587,6 +6437,19 @@ function OrdersPage() {
       );
     },
   });
+  const placeSelectedOrders = () => {
+    const incompleteDelivery = selectedProviderIds.some(
+      (providerId) =>
+        selectedMethodForProvider(providerId) === "DELIVERY" &&
+        !deliveryAddressComplete(deliveryAddresses[providerId]),
+    );
+    if (incompleteDelivery) {
+      setCartError("Complete all required delivery address fields.");
+      return;
+    }
+    setCartError("");
+    checkout.mutate();
+  };
   return (
     <div className="animate-in">
       <p className="eyebrow">Good things, on the way</p>
@@ -5793,6 +6656,7 @@ function OrdersPage() {
                   <th>Fulfillment</th>
                   <th>Status</th>
                   <th className="text-right">Total</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -5824,16 +6688,43 @@ function OrdersPage() {
                         </div>
                       ) : null}
                     </td>
-                    <td>{fulfillmentLabel(order.fulfillmentMethod)}</td>
+                    <td>
+                      {fulfillmentLabel(order.fulfillmentMethod)}
+                      {order.fulfillmentMethod === "DELIVERY" && order.deliveryAddress ? (
+                        <DeliveryAddressDetails address={order.deliveryAddress} />
+                      ) : null}
+                    </td>
                     <td>
                       <span
                         className={`status status-${order.status.toLowerCase()}`}
                       >
                         {statusLabel(order.status)}
                       </span>
+                      {order.cancellationReason ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          <span className="font-semibold text-foreground">
+                            Cancellation Reason:
+                          </span>{" "}
+                          {order.cancellationReason}
+                        </p>
+                      ) : null}
                     </td>
                     <td className="text-right font-mono">
                       {money(order.total)}
+                    </td>
+                    <td>
+                      {order.status.trim().toUpperCase() === "PENDING" ? (
+                        <button
+                          className="btn btn-ghost h-9 min-h-0 px-3 text-xs"
+                          type="button"
+                          onClick={() => {
+                            cancelOrder.reset();
+                            setCancelOrderTarget(order);
+                          }}
+                        >
+                          Cancel Order
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -5857,6 +6748,52 @@ function OrdersPage() {
           />
         )}
       </div>
+      {cancelOrderTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="cancel-order-title"
+            aria-describedby="cancel-order-description"
+          >
+            <h2 className="modal-title" id="cancel-order-title">
+              Cancel order?
+            </h2>
+            <p className="mt-3 text-sm text-muted-foreground" id="cancel-order-description">
+              Are you sure you want to cancel this order?
+            </p>
+            {cancelOrder.isError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {cancelOrder.error instanceof Error
+                  ? cancelOrder.error.message
+                  : "We could not cancel this order."}
+              </p>
+            ) : null}
+            <div className="mt-6 flex gap-3">
+              <button
+                className="btn btn-ghost flex-1"
+                type="button"
+                disabled={cancelOrder.isPending}
+                onClick={() => {
+                  cancelOrder.reset();
+                  setCancelOrderTarget(null);
+                }}
+              >
+                Keep Order
+              </button>
+              <button
+                className="btn btn-primary flex-1"
+                type="button"
+                disabled={cancelOrder.isPending}
+                onClick={() => cancelOrder.mutate(cancelOrderTarget.id)}
+              >
+                {cancelOrder.isPending ? "Cancelling…" : "Cancel Order"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {checkoutOpen ? (
         <div className="modal-backdrop" role="presentation">
           <div className="modal animate-in" role="dialog" aria-modal="true">
@@ -5915,12 +6852,13 @@ function OrdersPage() {
                               type="radio"
                               name={`fulfillment-${providerId}`}
                               checked={fulfillmentSelections[providerId] === method}
-                              onChange={() =>
+                              onChange={() => {
+                                setCartError("");
                                 setFulfillmentSelections((current) => ({
                                   ...current,
                                   [providerId]: method,
-                                }))
-                              }
+                                }));
+                              }}
                             />
                             {fulfillmentLabel(method)}
                           </label>
@@ -5931,6 +6869,38 @@ function OrdersPage() {
                         Fulfillment Method: {fulfillmentLabel(supported[0])}
                       </p>
                     )}
+                    {selectedMethodForProvider(providerId) === "DELIVERY" ? (
+                      <div className="mt-4 border-t pt-4">
+                        <p className="eyebrow">Delivery Address</p>
+                        <div className="form-grid mt-3">
+                          {([
+                            ["recipientName", "Full Name"],
+                            ["contactNumber", "Contact Number"],
+                            ["streetAddress", "Street / House No. / Building"],
+                            ["barangay", "Barangay"],
+                            ["cityMunicipality", "City / Municipality"],
+                          ] as const).map(([field, label]) => (
+                            <label className="form-field" key={field}>
+                              <span className="form-label">{label}</span>
+                              <input
+                                className="input"
+                                required
+                                value={deliveryAddresses[providerId]?.[field] ?? ""}
+                                onChange={(event) => updateDeliveryAddress(providerId, field, event.target.value)}
+                              />
+                            </label>
+                          ))}
+                          <label className="form-field">
+                            <span className="form-label">Delivery Instructions (Optional)</span>
+                            <textarea
+                              className="input h-20 py-3"
+                              value={deliveryAddresses[providerId]?.instructions ?? ""}
+                              onChange={(event) => updateDeliveryAddress(providerId, "instructions", event.target.value)}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ) : null}
                   </fieldset>
                 );
               })}
@@ -5942,10 +6912,15 @@ function OrdersPage() {
             <button
               className="btn btn-primary mt-5 w-full"
               disabled={checkout.isPending || !fulfillmentSelectionComplete}
-              onClick={() => checkout.mutate()}
+              onClick={placeSelectedOrders}
             >
               {checkout.isPending ? "Placing order…" : "Place Order"}
             </button>
+            {cartError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {cartError}
+              </p>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -6483,6 +7458,7 @@ function MainRouter() {
           <Route path="/provider/records" component={ProviderManagementPage} />
           <Route path="/provider/services" component={ProviderManagementPage} />
           <Route path="/provider/retail" component={ProviderManagementPage} />
+          <Route path="/provider/archive" component={ProviderManagementPage} />
           <Route path="/provider" component={ProviderManagementPage} />
           <Route>
             <Redirect to="/provider" />

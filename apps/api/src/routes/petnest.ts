@@ -141,7 +141,16 @@ type Order = {
   customerId: string;
   total: number;
   status: string;
+  cancellationReason?: string;
   fulfillmentMethod?: FulfillmentMethod;
+  deliveryAddress?: {
+    recipientName: string;
+    contactNumber: string;
+    streetAddress: string;
+    barangay: string;
+    cityMunicipality: string;
+    instructions?: string;
+  };
   itemCount: number;
   items: Array<{
     productId: number;
@@ -450,10 +459,11 @@ type StoredCareRecord = CareRecord & {
 };
 type StoredBooking = Booking & {
   ownerId: string;
+  archived?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
-type StoredOrder = Order & { ownerId: string };
+type StoredOrder = Order & { ownerId: string; archived?: boolean };
 type Counter = { _id: string; value: number };
 type Role = "customer" | "provider" | "admin";
 type Access = { userId: string; role: Role; providerId?: number };
@@ -474,6 +484,19 @@ type UserProfile = {
 };
 type StoredSession = { _id: string; userId: string; expiresAt: Date };
 type BookingLock = { _id: string; token: string; expiresAt: Date };
+type NotificationRole = Role;
+type StoredNotification = {
+  _id: string;
+  recipientUserId: string;
+  recipientRole: NotificationRole;
+  type: string;
+  message: string;
+  relatedRecordId?: string;
+  relatedRecordType?: string;
+  href?: string;
+  read: boolean;
+  createdAt: string;
+};
 
 const legacyOwnerId = "legacy-seed-data";
 
@@ -571,6 +594,86 @@ const sessionCollection: Collection<StoredSession> =
 const counterCollection: Collection<Counter> = database.collection("counters");
 const bookingLockCollection: Collection<BookingLock> =
   database.collection("bookingLocks");
+const notificationCollection: Collection<StoredNotification> =
+  database.collection("notifications");
+
+async function createNotification(input: {
+  eventKey: string;
+  recipientUserId: string;
+  recipientRole: NotificationRole;
+  type: string;
+  message: string;
+  relatedRecordId?: string | number;
+  relatedRecordType?: string;
+  href?: string;
+}) {
+  const notification: StoredNotification = {
+    _id: `${input.recipientUserId}:${input.eventKey}`,
+    recipientUserId: input.recipientUserId,
+    recipientRole: input.recipientRole,
+    type: input.type,
+    message: input.message,
+    ...(input.relatedRecordId !== undefined
+      ? { relatedRecordId: String(input.relatedRecordId) }
+      : {}),
+    ...(input.relatedRecordType ? { relatedRecordType: input.relatedRecordType } : {}),
+    ...(input.href ? { href: input.href } : {}),
+    read: false,
+    createdAt: new Date().toISOString(),
+  };
+  const { _id, ...notificationFields } = notification;
+  try {
+    await notificationCollection.updateOne(
+      { _id },
+      { $setOnInsert: notificationFields },
+      { upsert: true },
+    );
+  } catch {
+    // A notification must never roll back an already-successful business action.
+  }
+}
+
+async function notifyProvider(
+  providerId: number,
+  notification: Omit<Parameters<typeof createNotification>[0], "recipientUserId" | "recipientRole">,
+) {
+  try {
+    const account = await userCollection.findOne({
+      role: "provider",
+      providerId,
+      isActive: { $ne: false },
+    });
+    if (account)
+      await createNotification({
+        ...notification,
+        recipientUserId: account.id,
+        recipientRole: "provider",
+      });
+  } catch {
+    // Notification delivery must not change the completed transaction result.
+  }
+}
+
+async function notifyAdmins(
+  notification: Omit<Parameters<typeof createNotification>[0], "recipientUserId" | "recipientRole">,
+) {
+  try {
+    const admins = await userCollection
+      .find({ role: "admin", isActive: { $ne: false } }, { projection: { id: 1 } })
+      .toArray();
+    await Promise.all(
+      admins.map((admin) =>
+        createNotification({
+          ...notification,
+          recipientUserId: admin.id,
+          recipientRole: "admin",
+        }),
+      ),
+    );
+  } catch {
+    // Notification delivery must not change the completed transaction result.
+  }
+}
 
 async function acquireBookingLock(providerId: number, date: string) {
   const id = `${providerId}:${date}`;
@@ -1175,6 +1278,14 @@ async function register(req: Request, res: Response) {
     pendingUserId = user.id;
     await userCollection.insertOne(user);
     await startSession(res, user.id);
+    await notifyAdmins({
+      eventKey: `customer:${user.id}:registered`,
+      type: "customer_registered",
+      message: `New customer account registered: ${user.name}.`,
+      relatedRecordId: user.id,
+      relatedRecordType: "account",
+      href: "/admin/accounts",
+    });
     res.status(201).json({ user: publicUser(user) });
   } catch (error) {
     await Promise.all([
@@ -1237,6 +1348,50 @@ router.get("/auth/me", async (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+router.get("/notifications", async (req, res) => {
+  const access = await getAccess(req, res);
+  if (!access) return;
+  const notifications = await notificationCollection
+    .find(
+      { recipientUserId: access.userId, recipientRole: access.role },
+      { projection: { recipientUserId: 0, recipientRole: 0 } },
+    )
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .toArray();
+  res.json(notifications.map(({ _id, ...notification }) => ({ id: _id, ...notification })));
+});
+
+router.patch("/notifications/read-all", async (req, res) => {
+  const access = await getAccess(req, res);
+  if (!access) return;
+  await notificationCollection.updateMany(
+    { recipientUserId: access.userId, recipientRole: access.role, read: false },
+    { $set: { read: true } },
+  );
+  res.json({ success: true });
+});
+
+router.patch("/notifications/:notificationId/read", async (req, res) => {
+  const access = await getAccess(req, res);
+  if (!access) return;
+  const notification = await notificationCollection.findOneAndUpdate(
+    {
+      _id: req.params.notificationId,
+      recipientUserId: access.userId,
+      recipientRole: access.role,
+    },
+    { $set: { read: true } },
+    { returnDocument: "after", projection: { recipientUserId: 0, recipientRole: 0 } },
+  );
+  if (!notification) {
+    res.status(404).json({ error: "Notification not found." });
+    return;
+  }
+  const { _id, ...publicNotification } = notification;
+  res.json({ id: _id, ...publicNotification });
+});
+
 router.get("/admin/accounts", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
@@ -1293,6 +1448,14 @@ router.delete("/admin/accounts/:userId", async (req, res) => {
         { $set: { active: false, updatedAt: now } },
       );
     }
+    await notifyAdmins({
+      eventKey: `account:${account.id}:deactivated:${account.deactivatedAt ?? now}`,
+      type: "account_deactivated",
+      message: `${statusLabelForLog(account.role)} account deactivated: ${account.name}.`,
+      relatedRecordId: account.id,
+      relatedRecordType: "account",
+      href: "/admin/accounts",
+    });
     res.json({ ...account, isActive: false });
   } catch {
     res.status(500).json({ error: "Account removal could not be completed. Please retry." });
@@ -1429,12 +1592,7 @@ router.get("/providers", async (req, res) => {
   const filter: Record<string, unknown> = {};
   filter.active = { $ne: false };
   if (category) {
-    filter[category === "pet-supplies" ? "products" : "services"] = {
-      $elemMatch:
-        category === "pet-supplies"
-          ? { category, active: true }
-          : { category, available: true },
-    };
+    filter.categories = category;
   }
   if (search) {
     filter.$or = ["name", "location", "description"].map((field) => ({
@@ -1478,13 +1636,6 @@ router.get("/providers/:providerId", async (req, res) => {
           { $match: { id: parsed.data.providerId, active: { $ne: false } } },
           {
             $set: {
-              categories: {
-                $concatArrays: [
-                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$services", as: "service", cond: { $and: [{ $eq: ["$$service.category", "grooming"] }, { $eq: ["$$service.available", true] }] } } } }, 0] }, ["grooming"], []] },
-                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$services", as: "service", cond: { $and: [{ $eq: ["$$service.category", "vaccination"] }, { $eq: ["$$service.available", true] }] } } } }, 0] }, ["vaccination"], []] },
-                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$products", as: "product", cond: { $and: [{ $eq: ["$$product.category", "pet-supplies"] }, { $eq: ["$$product.active", true] }] } } } }, 0] }, ["pet-supplies"], []] },
-                ],
-              },
               services: [],
               products: [],
             },
@@ -1499,6 +1650,7 @@ router.get("/providers/:providerId", async (req, res) => {
             $match: {
               id: parsed.data.providerId,
               active: { $ne: false },
+              categories: requestedCategory,
               [requestedCategory === "pet-supplies" ? "products" : "services"]:
                 {
                   $elemMatch:
@@ -1559,7 +1711,17 @@ router.get("/providers/:providerId", async (req, res) => {
     res.status(404).json({ error: "Provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse(provider));
+  res.json(
+    GetProviderResponse.parse({
+      ...provider,
+      services: provider.services.filter((service) =>
+        provider.categories.includes(service.category),
+      ),
+      products: provider.categories.includes("pet-supplies")
+        ? provider.products
+        : [],
+    }),
+  );
 });
 
 router.get("/providers/:providerId/availability", async (req, res) => {
@@ -1573,7 +1735,7 @@ router.get("/providers/:providerId/availability", async (req, res) => {
   const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false } });
   const service = provider?.services.find((item) => item.id === serviceId && item.available);
   const schedule = provider ? providerSchedule(provider.hours) : null;
-  if (!provider || !service || !schedule || !["grooming", "vaccination"].includes(service.category)) {
+  if (!provider || !service || !provider.categories.includes(service.category) || !schedule || !["grooming", "vaccination"].includes(service.category)) {
     res.status(404).json({ error: "Availability is not configured for this service." });
     return;
   }
@@ -1641,13 +1803,14 @@ router.get("/services", async (req, res) => {
     return;
   }
   const providers = await providerCollection
-    .aggregate<Pick<Provider, "id" | "name" | "services">>([
+    .aggregate<Pick<Provider, "id" | "name" | "categories" | "services">>([
       {
         $match: {
           active: { $ne: false },
           ...(providerId === undefined ? {} : { id: providerId }),
           ...(category
             ? {
+                categories: category,
                 services: {
                   $elemMatch: { category, available: { $ne: false } },
                 },
@@ -1660,6 +1823,7 @@ router.get("/services", async (req, res) => {
           _id: 0,
           id: 1,
           name: 1,
+          categories: 1,
           services: category
             ? {
                 $filter: {
@@ -1680,7 +1844,11 @@ router.get("/services", async (req, res) => {
     .toArray();
   const services = providers.flatMap((provider) =>
     provider.services
-      .filter((service) => !category || service.category === category)
+      .filter(
+        (service) =>
+          provider.categories.includes(service.category) &&
+          (!category || service.category === category),
+      )
       .map((service) => ({
         ...service,
         providerId: provider.id,
@@ -1697,7 +1865,7 @@ router.get("/services/:serviceId", async (req, res) => {
     active: { $ne: false },
   });
   const service = provider?.services.find((item) => item.id === serviceId);
-  if (!provider || !service) {
+  if (!provider || !service || !provider.categories.includes(service.category)) {
     res.status(404).json({ error: "Service not found" });
     return;
   }
@@ -1722,6 +1890,57 @@ router.get("/provider/profile", async (req, res) => {
   res.json(GetProviderResponse.parse(provider));
 });
 
+router.patch("/provider/password", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const currentPassword =
+    typeof req.body?.currentPassword === "string" ? req.body.currentPassword : "";
+  const newPassword =
+    typeof req.body?.newPassword === "string" ? req.body.newPassword : "";
+  if (!currentPassword || !newPassword.trim()) {
+    res.status(400).json({ error: "Current password and new password are required." });
+    return;
+  }
+  const user = await userCollection.findOne({
+    id: access.userId,
+    role: "provider",
+    providerId: access.providerId,
+    isActive: { $ne: false },
+  });
+  if (
+    !user?.passwordHash ||
+    !(await verifyPassword(currentPassword, user.passwordHash))
+  ) {
+    res.status(401).json({ error: "Current password is incorrect." });
+    return;
+  }
+  const passwordHash = await hashPassword(newPassword);
+  const result = await userCollection.updateOne(
+    {
+      id: access.userId,
+      role: "provider",
+      providerId: access.providerId,
+      passwordHash: user.passwordHash,
+    },
+    { $set: { passwordHash } },
+  );
+  if (!result.modifiedCount) {
+    res.status(409).json({ error: "Password changed elsewhere. Please try again." });
+    return;
+  }
+  await createNotification({
+    eventKey: `provider:${access.userId}:password-changed:${randomUUID()}`,
+    recipientUserId: access.userId,
+    recipientRole: "provider",
+    type: "password_changed",
+    message: "Your Provider account password was changed successfully.",
+    relatedRecordId: access.userId,
+    relatedRecordType: "account",
+    href: "/provider",
+  });
+  res.json({ message: "Password changed successfully." });
+});
+
 router.patch("/provider/profile", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -1741,7 +1960,7 @@ router.patch("/provider/profile", async (req, res) => {
   if (
     !hasValidFulfillmentConfiguration(
       providerInput.fulfillmentMethods,
-      providerInput.products.some((product) => product.active),
+      existing.products.some((product) => product.active),
     )
   ) {
     res.status(400).json({
@@ -1756,19 +1975,10 @@ router.patch("/provider/profile", async (req, res) => {
       ? { fulfillmentMethods: supportedFulfillmentMethods(providerInput.fulfillmentMethods) }
       : {}),
     imageUrl: providerInput.imageUrl ?? existing.imageUrl,
+    categories: existing.categories,
     verified: existing.verified,
-    services: providerInput.services.map((service) => ({
-      ...service,
-      available: service.available ?? true,
-      updatedAt: new Date().toISOString(),
-    })),
-    products: providerInput.products.map((product) => ({
-      ...product,
-      imageUrl:
-        product.imageUrl ??
-        existing.products.find((item) => item.id === product.id)?.imageUrl ??
-        "",
-    })),
+    services: existing.services,
+    products: existing.products,
     updatedAt: new Date().toISOString(),
   };
   const provider = await providerCollection.findOneAndUpdate(
@@ -1853,6 +2063,26 @@ router.post("/admin/providers", async (req, res) => {
     }
     throw error;
   }
+  await Promise.all([
+    createNotification({
+      eventKey: `provider:${providerId}:account-created`,
+      recipientUserId: user.id,
+      recipientRole: "provider",
+      type: "provider_account_created",
+      message: "Your PetNest Provider account was created.",
+      relatedRecordId: providerId,
+      relatedRecordType: "provider",
+      href: "/provider",
+    }),
+    notifyAdmins({
+      eventKey: `provider:${providerId}:account-created`,
+      type: "provider_account_created",
+      message: `Provider account created: ${provider.name}.`,
+      relatedRecordId: providerId,
+      relatedRecordType: "provider",
+      href: "/admin/providers",
+    }),
+  ]);
   res.status(201).json(GetProviderResponse.parse(provider));
 });
 
@@ -1886,6 +2116,31 @@ router.patch("/admin/providers/:providerId", async (req, res) => {
     },
     { returnDocument: "after", projection: { _id: 0 } },
   );
+  if (
+    provider &&
+    JSON.stringify([...existing.categories].sort()) !==
+      JSON.stringify([...provider.categories].sort())
+  ) {
+    const categories = provider.categories.map(statusLabelForLog).join(", ");
+    await Promise.all([
+      notifyProvider(providerId, {
+        eventKey: `provider:${providerId}:services:${provider.updatedAt}`,
+        type: "provider_services_changed",
+        message: `Admin updated your assigned services: ${categories}.`,
+        relatedRecordId: providerId,
+        relatedRecordType: "provider",
+        href: "/provider/services",
+      }),
+      notifyAdmins({
+        eventKey: `provider:${providerId}:services:${provider.updatedAt}`,
+        type: "provider_services_changed",
+        message: `Assigned services changed for ${provider.name}: ${categories}.`,
+        relatedRecordId: providerId,
+        relatedRecordType: "provider",
+        href: "/admin/providers",
+      }),
+    ]);
+  }
   res.json(provider);
 });
 
@@ -1909,6 +2164,50 @@ router.delete("/admin/providers/:providerId", async (req, res) => {
   }
   res.json(provider);
 });
+
+async function requireProviderModule(
+  req: Request,
+  res: Response,
+  categories: readonly ProviderCategory[],
+): Promise<Provider | null> {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return null;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider) {
+    res.status(404).json({ error: "Assigned provider not found" });
+    return null;
+  }
+  if (!categories.some((category) => provider.categories.includes(category))) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
+    return null;
+  }
+  return provider;
+}
+
+function assignedCareCategories(
+  provider: Pick<Provider, "categories"> | null | undefined,
+): Array<"grooming" | "vaccination"> {
+  return (["grooming", "vaccination"] as const).filter((category) =>
+    provider?.categories.includes(category),
+  );
+}
+
+router.use(
+  ["/provider/products", "/provider/orders"],
+  async (req, res, next) => {
+    if (!(await requireProviderModule(req, res, ["pet-supplies"]))) return;
+    next();
+  },
+);
+
+router.use(
+  ["/provider/bookings", "/provider/records", "/provider/pets"],
+  async (req, res, next) => {
+    if (!(await requireProviderModule(req, res, ["grooming", "vaccination"])))
+      return;
+    next();
+  },
+);
 
 router.post("/provider/services", async (req, res) => {
   const access = await requireProvider(req, res);
@@ -2009,6 +2308,19 @@ router.delete("/provider/services/:serviceId", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
   const serviceId = Number(req.params.serviceId);
+  const provider = await providerCollection.findOne({
+    id: access.providerId,
+    "services.id": serviceId,
+  });
+  const service = provider?.services.find((item) => item.id === serviceId);
+  if (!provider || !service) {
+    res.status(404).json({ error: "Service not found" });
+    return;
+  }
+  if (!provider.categories.includes(service.category)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
+    return;
+  }
   const result = await providerCollection.updateOne(
     { id: access.providerId, "services.id": serviceId },
     {
@@ -2082,7 +2394,6 @@ router.post("/provider/products", async (req, res) => {
     { id: provider.id },
     {
       $push: { products: product },
-      $addToSet: { categories: "pet-supplies" },
       $set: { updatedAt: new Date().toISOString() },
     },
     { returnDocument: "after", projection: { _id: 0, products: 1 } },
@@ -2350,13 +2661,19 @@ router.get("/provider/records", async (req, res) => {
     req.query.type === "vaccination" || req.query.type === "grooming"
       ? req.query.type
       : undefined;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
+  if (type && !assignedCare.includes(type)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
+    return;
+  }
   const completedBookings = await bookingCollection
-    .find({ providerId: access.providerId, status: "completed" })
+    .find({ providerId: access.providerId, status: "completed", serviceCategory: { $in: assignedCare } })
     .toArray();
   await Promise.all(completedBookings.map(ensureCompletedBookingRecord));
   const records = await recordCollection
     .find(
-      { providerId: access.providerId, ...(type ? { type } : {}) },
+      { providerId: access.providerId, type: type ?? { $in: assignedCare } },
       { projection: { _id: 0 } },
     )
     .sort({ date: -1 })
@@ -2367,9 +2684,15 @@ router.get("/provider/records", async (req, res) => {
 router.get("/provider/pets", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
   const bookings = await bookingCollection
     .find(
-      { providerId: access.providerId },
+      {
+        providerId: access.providerId,
+        serviceCategory: { $in: assignedCare },
+        archived: { $ne: true },
+      },
       { projection: { petId: 1, ownerId: 1, serviceName: 1, date: 1, time: 1 } },
     )
     .sort({ date: -1, time: -1, id: -1 })
@@ -2403,6 +2726,8 @@ router.get("/provider/pets", async (req, res) => {
 router.get("/provider/pets/:petId/records", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
   const petId = Number(req.params.petId);
   if (!Number.isInteger(petId) || petId <= 0) {
     res.status(400).json({ error: "A valid pet is required." });
@@ -2411,6 +2736,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
   const relationship = await bookingCollection.findOne({
     providerId: access.providerId,
     petId,
+    serviceCategory: { $in: assignedCare },
   });
   if (!relationship) {
     res
@@ -2419,7 +2745,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
     return;
   }
   const completedBookings = await bookingCollection
-    .find({ providerId: access.providerId, petId, status: "completed" })
+    .find({ providerId: access.providerId, petId, status: "completed", serviceCategory: { $in: assignedCare } })
     .toArray();
   await Promise.all(completedBookings.map(ensureCompletedBookingRecord));
   const [pet, records] = await Promise.all([
@@ -2429,7 +2755,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
     ),
     recordCollection
       .find(
-        { petId, providerId: access.providerId },
+        { petId, providerId: access.providerId, type: { $in: assignedCare } },
         { projection: { _id: 0 } },
       )
       .sort({ date: -1 })
@@ -2477,6 +2803,10 @@ router.post("/provider/records", async (req, res) => {
     return;
   }
   const provider = await providerCollection.findOne({ id: access.providerId });
+  if (provider && !provider.categories.includes(type)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
+    return;
+  }
   const booking = await bookingCollection.findOne({
     providerId: access.providerId,
     petId,
@@ -2552,6 +2882,11 @@ router.patch("/provider/records/:recordId", async (req, res) => {
   const existing = await recordCollection.findOne({ id: recordId, providerId: access.providerId });
   if (!existing) {
     res.status(404).json({ error: "History record not found" });
+    return;
+  }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider?.categories.includes(existing.type)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
     return;
   }
   const effectiveDate = (changes.date as string | undefined) ?? existing.date;
@@ -2750,6 +3085,27 @@ router.post("/bookings", async (req, res) => {
     updatedAt: new Date().toISOString(),
   };
   await bookingCollection.insertOne(booking);
+  const bookingKind = service.category === "grooming" ? "Grooming" : "Vaccination";
+  await Promise.all([
+    createNotification({
+      eventKey: `booking:${booking.id}:submitted:customer`,
+      recipientUserId: access.userId,
+      recipientRole: "customer",
+      type: "booking_submitted",
+      message: `Your ${bookingKind} booking was submitted successfully.`,
+      relatedRecordId: booking.id,
+      relatedRecordType: "booking",
+      href: "/bookings",
+    }),
+    notifyProvider(provider.id, {
+      eventKey: `booking:${booking.id}:submitted:provider`,
+      type: "new_booking",
+      message: `New ${bookingKind} booking received.`,
+      relatedRecordId: booking.id,
+      relatedRecordType: "booking",
+      href: "/provider/bookings",
+    }),
+  ]);
   res.status(201).json(CreateBookingResponse.parse(booking));
   } finally {
     await releaseLock();
@@ -2802,19 +3158,35 @@ router.post("/bookings/:bookingId/cancellation-request", async (req, res) => {
     },
     { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
   );
+  if (updated) {
+    await notifyProvider(updated.providerId, {
+      eventKey: `booking:${bookingId}:cancellation-requested`,
+      type: "booking_cancellation_requested",
+      message: `A customer requested cancellation of a ${statusLabelForLog(updated.serviceCategory)} booking. Reason: ${reason}`,
+      relatedRecordId: bookingId,
+      relatedRecordType: "booking",
+      href: "/provider/bookings",
+    });
+  }
   res.status(200).json(updated);
 });
 
 router.get("/provider/bookings", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
-  const [bookings, provider] = await Promise.all([
-    bookingCollection
-      .find({ providerId: access.providerId }, { projection: { _id: 0 } })
-      .sort({ date: 1, time: 1 })
-      .toArray(),
-    providerCollection.findOne({ id: access.providerId }),
-  ]);
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
+  const bookings = await bookingCollection
+    .find(
+      {
+        providerId: access.providerId,
+        serviceCategory: { $in: assignedCare },
+        archived: { $ne: true },
+      },
+      { projection: { _id: 0 } },
+    )
+    .sort({ date: 1, time: 1 })
+    .toArray();
   const owners = await userCollection
     .find(
       { id: { $in: [...new Set(bookings.map((booking) => booking.ownerId))] } },
@@ -2843,6 +3215,71 @@ router.get("/provider/bookings", async (req, res) => {
   );
 });
 
+router.patch("/provider/bookings/:bookingId/cancel", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const bookingId = Number(req.params.bookingId);
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (!Number.isInteger(bookingId) || bookingId <= 0) {
+    res.status(400).json({ error: "Choose a valid booking." });
+    return;
+  }
+  if (!reason) {
+    res.status(400).json({ error: "Please provide a cancellation reason." });
+    return;
+  }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
+  const booking = await bookingCollection.findOneAndUpdate(
+    {
+      id: bookingId,
+      providerId: access.providerId,
+      serviceCategory: { $in: assignedCare },
+      status: "pending",
+      archived: { $ne: true },
+    },
+    {
+      $set: {
+        status: "cancelled",
+        cancellationReason: reason,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    { returnDocument: "after", projection: { _id: 0 } },
+  );
+  if (!booking) {
+    const ownedBooking = await bookingCollection.findOne({
+      id: bookingId,
+      providerId: access.providerId,
+    });
+    if (!ownedBooking) {
+      res.status(404).json({ error: "Booking not found" });
+      return;
+    }
+    if (!assignedCare.includes(ownedBooking.serviceCategory)) {
+      res.status(403).json({
+        error: "This service is not assigned to your provider account.",
+      });
+      return;
+    }
+    res.status(409).json({ error: "Only pending bookings can be cancelled." });
+    return;
+  }
+  const bookingKind = booking.serviceCategory === "grooming" ? "Grooming" : "Vaccination";
+  await createNotification({
+    eventKey: `booking:${booking.id}:cancelled-by-provider`,
+    recipientUserId: booking.ownerId,
+    recipientRole: "customer",
+    type: "booking_cancelled",
+    message: `Your ${bookingKind} booking was cancelled by the Provider. Reason: ${reason}`,
+    relatedRecordId: booking.id,
+    relatedRecordType: "booking",
+    href: "/bookings",
+  });
+  const { ownerId, ...publicBooking } = booking;
+  res.json({ ...publicBooking, customerId: ownerId });
+});
+
 router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -2851,7 +3288,6 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
     typeof req.body?.status === "string" ? req.body.status.toLowerCase() : "";
   const allowedStatuses = [
     "confirmed",
-    "cancelled",
     "completed",
     "approve_cancellation",
     "reject_cancellation",
@@ -2867,9 +3303,15 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
   const current = await bookingCollection.findOne({
     id: bookingId,
     providerId: access.providerId,
+    archived: { $ne: true },
   });
   if (!current) {
     res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider?.categories.includes(current.serviceCategory)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
     return;
   }
   let update: Record<string, unknown>;
@@ -2948,8 +3390,81 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
       });
     }
   }
+  const bookingKind = booking.serviceCategory === "grooming" ? "Grooming" : "Vaccination";
+  if (status === "confirmed" || status === "completed") {
+    await createNotification({
+      eventKey: `booking:${booking.id}:${status}`,
+      recipientUserId: booking.ownerId,
+      recipientRole: "customer",
+      type: `booking_${status}`,
+      message:
+        status === "confirmed"
+          ? `Your ${bookingKind} booking has been confirmed.`
+          : `Your ${bookingKind} booking has been completed.`,
+      relatedRecordId: booking.id,
+      relatedRecordType: "booking",
+      href: "/bookings",
+    });
+  } else if (status === "approve_cancellation" || status === "reject_cancellation") {
+    const approved = status === "approve_cancellation";
+    await createNotification({
+      eventKey: `booking:${booking.id}:cancellation-${approved ? "approved" : "rejected"}`,
+      recipientUserId: booking.ownerId,
+      recipientRole: "customer",
+      type: approved ? "booking_cancelled" : "booking_cancellation_rejected",
+      message: approved
+        ? `Your ${bookingKind} booking cancellation was approved.`
+        : `Your ${bookingKind} booking cancellation was rejected.`,
+      relatedRecordId: booking.id,
+      relatedRecordType: "booking",
+      href: "/bookings",
+    });
+  }
   const { ownerId, ...publicBooking } = booking;
   res.json({ ...publicBooking, customerId: ownerId });
+});
+
+router.patch("/provider/bookings/:bookingId/archive", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const bookingId = Number(req.params.bookingId);
+  if (!Number.isInteger(bookingId) || bookingId < 1 || typeof req.body?.archived !== "boolean") {
+    res.status(400).json({ error: "Choose a valid booking archive state." });
+    return;
+  }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
+  const existing = await bookingCollection.findOne({
+    id: bookingId,
+    providerId: access.providerId,
+    serviceCategory: { $in: assignedCare },
+  });
+  if (!existing) {
+    res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  if (
+    req.body.archived &&
+    !["completed", "cancelled"].includes(existing.status.trim().toLowerCase())
+  ) {
+    res.status(409).json({ error: "Only completed or cancelled bookings can be archived." });
+    return;
+  }
+  const booking = await bookingCollection.findOneAndUpdate(
+    {
+      id: bookingId,
+      providerId: access.providerId,
+      serviceCategory: { $in: assignedCare },
+      status: existing.status,
+    },
+    { $set: { archived: req.body.archived, updatedAt: new Date().toISOString() } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!booking) {
+    res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  res.json(booking);
 });
 
 router.get("/admin/bookings", async (req, res) => {
@@ -2985,17 +3500,103 @@ router.get("/orders", async (req, res) => {
   res.json(ListOrdersResponse.parse(orders));
 });
 
+router.patch("/orders/:orderId/cancel", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const orderId = Number(req.params.orderId);
+  if (!Number.isInteger(orderId) || orderId < 1) {
+    res.status(400).json({ error: "Choose a valid order." });
+    return;
+  }
+  const order = await orderCollection.findOneAndUpdate(
+    { id: orderId, ownerId: access.userId, status: "PENDING" },
+    { $set: { status: "CANCELLED" } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!order) {
+    const ownedOrder = await orderCollection.findOne({
+      id: orderId,
+      ownerId: access.userId,
+    });
+    if (!ownedOrder) {
+      res.status(404).json({ error: "Order not found." });
+      return;
+    }
+    res.status(409).json({ error: "Only pending orders can be cancelled." });
+    return;
+  }
+  await Promise.all([
+    createNotification({
+      eventKey: `order:${order.id}:cancelled-by-customer:customer`,
+      recipientUserId: access.userId,
+      recipientRole: "customer",
+      type: "order_cancelled",
+      message: `Your order #${order.id} was cancelled successfully.`,
+      relatedRecordId: order.id,
+      relatedRecordType: "order",
+      href: "/orders",
+    }),
+    notifyProvider(order.providerId, {
+      eventKey: `order:${order.id}:cancelled-by-customer:provider`,
+      type: "order_cancelled_by_customer",
+      message: `Customer cancelled Pet Supplies order #${order.id}.`,
+      relatedRecordId: order.id,
+      relatedRecordType: "order",
+      href: "/provider/retail",
+    }),
+  ]);
+  res.json(CreateOrderResponse.parse(order));
+});
+
 router.get("/provider/orders", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
   const orders = await orderCollection
     .find(
-      { providerId: access.providerId },
+      { providerId: access.providerId, archived: { $ne: true } },
       { projection: { _id: 0, ownerId: 0 } },
     )
     .sort({ id: -1 })
     .toArray();
   res.json(ListOrdersResponse.parse(orders));
+});
+
+router.get("/provider/archive", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider) {
+    res.status(404).json({ error: "Assigned provider not found" });
+    return;
+  }
+  const careCategories = assignedCareCategories(provider);
+  const [orders, bookings] = await Promise.all([
+    provider.categories.includes("pet-supplies")
+      ? orderCollection
+          .find(
+            { providerId: access.providerId, archived: true },
+            { projection: { _id: 0, ownerId: 0 } },
+          )
+          .sort({ id: -1 })
+          .toArray()
+      : [],
+    bookingCollection
+      .find(
+        {
+          providerId: access.providerId,
+          archived: true,
+          serviceCategory: { $in: careCategories },
+        },
+        { projection: { _id: 0, ownerId: 0 } },
+      )
+      .sort({ date: -1, id: -1 })
+      .toArray(),
+  ]);
+  res.json({
+    orders,
+    bookings: bookings.filter((booking) => booking.serviceCategory === "grooming"),
+    vaccinations: bookings.filter((booking) => booking.serviceCategory === "vaccination"),
+  });
 });
 
 router.get("/admin/orders", async (req, res) => {
@@ -3006,6 +3607,49 @@ router.get("/admin/orders", async (req, res) => {
     .sort({ id: -1 })
     .toArray();
   res.json(ListOrdersResponse.parse(orders));
+});
+
+router.patch("/provider/orders/:orderId/cancel", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const orderId = Number(req.params.orderId);
+  if (!Number.isInteger(orderId) || orderId < 1) {
+    res.status(400).json({ error: "Choose a valid order." });
+    return;
+  }
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (!reason) {
+    res.status(400).json({ error: "Please provide a cancellation reason." });
+    return;
+  }
+  const order = await orderCollection.findOneAndUpdate(
+    { id: orderId, providerId: access.providerId, status: "PENDING" },
+    { $set: { status: "CANCELLED", cancellationReason: reason } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!order) {
+    const ownedOrder = await orderCollection.findOne({
+      id: orderId,
+      providerId: access.providerId,
+    });
+    if (!ownedOrder) {
+      res.status(404).json({ error: "Order not found." });
+      return;
+    }
+    res.status(409).json({ error: "Only pending orders can be cancelled." });
+    return;
+  }
+  await createNotification({
+    eventKey: `order:${order.id}:cancelled-by-provider`,
+    recipientUserId: order.customerId,
+    recipientRole: "customer",
+    type: "order_cancelled",
+    message: `Your order #${order.id} was cancelled by the Provider. Reason: ${reason}`,
+    relatedRecordId: order.id,
+    relatedRecordType: "order",
+    href: "/orders",
+  });
+  res.json(CreateOrderResponse.parse(order));
 });
 
 router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
@@ -3021,6 +3665,7 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
       id: orderId,
       providerId: access.providerId,
       status: "PENDING",
+      archived: { $ne: true },
     },
     { $set: { status: "CONFIRMED" } },
   );
@@ -3046,7 +3691,52 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     res.status(404).json({ error: "Order not found." });
     return;
   }
+  await createNotification({
+    eventKey: `order:${order.id}:confirmed`,
+    recipientUserId: order.customerId,
+    recipientRole: "customer",
+    type: "order_confirmed",
+    message: `Your order #${order.id} was confirmed by the Provider.`,
+    relatedRecordId: order.id,
+    relatedRecordType: "order",
+    href: "/orders",
+  });
   res.json(CreateOrderResponse.parse(order));
+});
+
+router.patch("/provider/orders/:orderId/archive", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const orderId = Number(req.params.orderId);
+  if (!Number.isInteger(orderId) || orderId < 1 || typeof req.body?.archived !== "boolean") {
+    res.status(400).json({ error: "Choose a valid order archive state." });
+    return;
+  }
+  const existing = await orderCollection.findOne({
+    id: orderId,
+    providerId: access.providerId,
+  });
+  if (!existing) {
+    res.status(404).json({ error: "Order not found." });
+    return;
+  }
+  if (
+    req.body.archived &&
+    !["completed", "cancelled"].includes(existing.status.trim().toLowerCase())
+  ) {
+    res.status(409).json({ error: "Only completed or cancelled orders can be archived." });
+    return;
+  }
+  const order = await orderCollection.findOneAndUpdate(
+    { id: orderId, providerId: access.providerId, status: existing.status },
+    { $set: { archived: req.body.archived } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!order) {
+    res.status(404).json({ error: "Order not found." });
+    return;
+  }
+  res.json(order);
 });
 
 router.post("/orders", async (req, res) => {
@@ -3065,6 +3755,10 @@ router.post("/orders", async (req, res) => {
     res.status(400).json({ error: "Choose a valid provider." });
     return;
   }
+  if (!provider.categories.includes("pet-supplies")) {
+    res.status(400).json({ error: "This provider does not offer pet supplies." });
+    return;
+  }
   if (
     !supportsFulfillmentMethod(
       provider.fulfillmentMethods,
@@ -3074,6 +3768,21 @@ router.post("/orders", async (req, res) => {
     res.status(400).json({
       error: "This provider does not support the selected fulfillment method.",
     });
+    return;
+  }
+  const deliveryAddress = parsed.data.deliveryAddress;
+  if (
+    parsed.data.fulfillmentMethod === "DELIVERY" &&
+    (!deliveryAddress ||
+      ![
+        deliveryAddress.recipientName,
+        deliveryAddress.contactNumber,
+        deliveryAddress.streetAddress,
+        deliveryAddress.barangay,
+        deliveryAddress.cityMunicipality,
+      ].every((value) => value.trim().length > 0))
+  ) {
+    res.status(400).json({ error: "Complete all required delivery address fields." });
     return;
   }
   const requested = parsed.data.items;
@@ -3165,6 +3874,18 @@ router.post("/orders", async (req, res) => {
     total,
     status: "PENDING",
     fulfillmentMethod: parsed.data.fulfillmentMethod,
+    ...(parsed.data.fulfillmentMethod === "DELIVERY" && deliveryAddress
+      ? {
+          deliveryAddress: {
+            recipientName: deliveryAddress.recipientName.trim(),
+            contactNumber: deliveryAddress.contactNumber.trim(),
+            streetAddress: deliveryAddress.streetAddress.trim(),
+            barangay: deliveryAddress.barangay.trim(),
+            cityMunicipality: deliveryAddress.cityMunicipality.trim(),
+            instructions: deliveryAddress.instructions?.trim() ?? "",
+          },
+        }
+      : {}),
     itemCount: parsed.data.items.reduce((sum, item) => sum + item.quantity, 0),
     items: orderItems,
     createdAt: new Date().toISOString(),
@@ -3180,6 +3901,26 @@ router.post("/orders", async (req, res) => {
       );
     throw error;
   }
+  await Promise.all([
+    createNotification({
+      eventKey: `order:${order.id}:placed:customer`,
+      recipientUserId: access.userId,
+      recipientRole: "customer",
+      type: "order_placed",
+      message: `Your order #${order.id} was placed successfully.`,
+      relatedRecordId: order.id,
+      relatedRecordType: "order",
+      href: "/orders",
+    }),
+    notifyProvider(provider.id, {
+      eventKey: `order:${order.id}:placed:provider`,
+      type: "new_order",
+      message: `New ${order.fulfillmentMethod === "DELIVERY" ? "Delivery " : ""}Pet Supplies order #${order.id} received.`,
+      relatedRecordId: order.id,
+      relatedRecordType: "order",
+      href: "/provider/retail",
+    }),
+  ]);
   res.status(201).json(CreateOrderResponse.parse(order));
 });
 
