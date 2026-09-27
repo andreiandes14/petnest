@@ -1,0 +1,13 @@
+{
+  "settings": {
+    "createdAt": 1790330609190,
+    "framework": "express",
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": null,
+    "outputDirectory": null,
+    "rootDirectory": "apps/api",
+    "directoryListing": false,
+    "nodeVersion": "24.x"
+  }
+}

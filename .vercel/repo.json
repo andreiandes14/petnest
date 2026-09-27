@@ -1,0 +1,11 @@
+{
+  "remoteName": "origin",
+  "projects": [
+    {
+      "id": "prj_paX7M5fKl91Gcy3SVag6S3NgWS3Q",
+      "name": "petnest-api",
+      "directory": "apps/api",
+      "orgId": "team_YaSwjfAbH3t42uemwDbcFVDa"
+    }
+  ]
+}

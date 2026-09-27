@@ -1,0 +1,25 @@
+{
+  "handler": "apps/api/src/app.js",
+  "runtime": "nodejs24.x",
+  "architecture": "x86_64",
+  "environment": {},
+  "framework": {
+    "slug": "express",
+    "version": "5.2.1"
+  },
+  "shouldDisableAutomaticFetchInstrumentation": false,
+  "launcherType": "Nodejs",
+  "shouldAddHelpers": true,
+  "shouldAddSourcemapSupport": true,
+  "awsLambdaHandler": "",
+  "filePathMap": {
+    "apps/api/node_modules/express": "apps/api/node_modules/express",
+    "apps/api/node_modules/cors": "apps/api/node_modules/cors",
+    "apps/api/node_modules/cookie-parser": "apps/api/node_modules/cookie-parser",
+    "apps/api/node_modules/pino-http": "apps/api/node_modules/pino-http",
+    "apps/api/node_modules/pino": "apps/api/node_modules/pino",
+    "apps/api/node_modules/mongodb": "apps/api/node_modules/mongodb",
+    "apps/api/node_modules/@workspace/api-zod": "apps/api/node_modules/@workspace/api-zod",
+    "packages/api-zod/node_modules/zod": "packages/api-zod/node_modules/zod"
+  }
+}
