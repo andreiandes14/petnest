@@ -144,18 +144,9 @@ function getStringField(value: unknown, key: string): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
-function truncate(text: string, maxLength = 300): string {
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
-}
-
 function buildErrorMessage(response: Response, data: unknown): string {
-  const prefix = `HTTP ${response.status} ${response.statusText}`;
-
-  if (typeof data === "string") {
-    const text = data.trim();
-    return text ? `${prefix}: ${truncate(text)}` : prefix;
-  }
-
+  if (response.status >= 500)
+    return "PetNest is temporarily unavailable. Please try again.";
   const title = getStringField(data, "title");
   const detail = getStringField(data, "detail");
   const message =
@@ -163,12 +154,17 @@ function buildErrorMessage(response: Response, data: unknown): string {
     getStringField(data, "error_description") ??
     getStringField(data, "error");
 
-  if (title && detail) return `${prefix}: ${title} — ${detail}`;
-  if (detail) return `${prefix}: ${detail}`;
-  if (message) return `${prefix}: ${message}`;
-  if (title) return `${prefix}: ${title}`;
+  if (title && detail) return `${title} — ${detail}`;
+  if (detail) return detail;
+  if (message) return message;
+  if (title) return title;
 
-  return prefix;
+  if (response.status === 401) return "Authentication required.";
+  if (response.status === 403) return "You do not have permission to do that.";
+  if (response.status === 404) return "The requested item could not be found.";
+  if (response.status === 429)
+    return "Too many requests. Please try again shortly.";
+  return "The request could not be completed. Please try again.";
 }
 
 export class ApiError<T = unknown> extends Error {
@@ -216,10 +212,7 @@ export class ResponseParseError extends Error {
     cause: unknown,
     requestInfo: { method: string; url: string },
   ) {
-    super(
-      `Failed to parse response from ${requestInfo.method} ${response.url || requestInfo.url} ` +
-        `(${response.status} ${response.statusText}) as JSON`,
-    );
+    super("Something went wrong. Please try again.");
     Object.setPrototypeOf(this, new.target.prototype);
 
     this.status = response.status;
@@ -240,8 +233,8 @@ async function parseJsonBody(
   const raw = await response.text();
   const normalized = stripBom(raw);
 
-  if (normalized.trim() === "") {
-    return null;
+  if (!isJsonMediaType(getMediaType(response.headers)) || normalized.trim() === "") {
+    throw new ResponseParseError(response, raw, undefined, requestInfo);
   }
 
   try {
@@ -327,7 +320,8 @@ export async function customFetch<T = unknown>(
   options: CustomFetchOptions = {},
 ): Promise<T> {
   input = applyBaseUrl(input);
-  const { responseType = "auto", headers: headersInit, ...init } = options;
+  // Generated PetNest endpoints return JSON. Text/blob consumers must opt in.
+  const { responseType = "json", headers: headersInit, ...init } = options;
 
   const method = resolveMethod(input, init.method);
 
@@ -360,12 +354,34 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
-  const response = await fetch(input, { ...init, method, headers });
-
-  if (!response.ok) {
-    const errorData = await parseErrorBody(response, method);
-    throw new ApiError(response, errorData, requestInfo);
+  let response: Response;
+  try {
+    const callerSignal = init.signal ?? (isRequest(input) ? input.signal : undefined);
+    response = await fetch(input, {
+      ...init,
+      method,
+      headers,
+      signal: callerSignal
+        ? AbortSignal.any([callerSignal, AbortSignal.timeout(30_000)])
+        : AbortSignal.timeout(30_000),
+    });
+  } catch (cause) {
+    const error = new Error("We couldn't connect to PetNest. Please try again.");
+    error.cause = cause;
+    throw error;
   }
 
-  return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  try {
+    if (!response.ok) {
+      const errorData = await parseErrorBody(response, method);
+      throw new ApiError(response, errorData, requestInfo);
+    }
+
+    return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  } catch (cause) {
+    if (cause instanceof ApiError || cause instanceof ResponseParseError) throw cause;
+    const error = new Error("We couldn't connect to PetNest. Please try again.");
+    error.cause = cause;
+    throw error;
+  }
 }

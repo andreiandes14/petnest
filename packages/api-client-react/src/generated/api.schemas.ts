@@ -9,6 +9,14 @@ export interface HealthStatus {
   status: string;
 }
 
+export type FulfillmentMethod = typeof FulfillmentMethod[keyof typeof FulfillmentMethod];
+
+
+export const FulfillmentMethod = {
+  PICKUP: 'PICKUP',
+  DELIVERY: 'DELIVERY',
+} as const;
+
 export interface Provider {
   id: number;
   name: string;
@@ -20,6 +28,7 @@ export interface Provider {
   startingPrice: number;
   imageUrl: string;
   verified?: boolean;
+  fulfillmentMethods?: FulfillmentMethod[];
 }
 
 export interface ProviderService {
@@ -179,6 +188,7 @@ export type OrderInputItemsItem = {
 
 export interface OrderInput {
   providerId: number;
+  fulfillmentMethod: FulfillmentMethod;
   items: OrderInputItemsItem[];
 }
 
@@ -198,6 +208,7 @@ export interface Order {
   customerId: string;
   total: number;
   status: string;
+  fulfillmentMethod?: FulfillmentMethod;
   itemCount: number;
   items: OrderItemsItem[];
   createdAt: string;

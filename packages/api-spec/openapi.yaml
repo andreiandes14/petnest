@@ -264,6 +264,9 @@ components:
         startingPrice: { type: number }
         imageUrl: { type: string }
         verified: { type: boolean }
+        fulfillmentMethods:
+          type: array
+          items: { $ref: "#/components/schemas/FulfillmentMethod" }
     ProviderService:
       type: object
       required: [id, name, description, price, durationMinutes, category]
@@ -423,9 +426,10 @@ components:
         cancellationDecidedAt: { type: string, nullable: true }
     OrderInput:
       type: object
-      required: [providerId, items]
+      required: [providerId, fulfillmentMethod, items]
       properties:
         providerId: { type: number }
+        fulfillmentMethod: { $ref: "#/components/schemas/FulfillmentMethod" }
         items:
           type: array
           items:
@@ -457,6 +461,7 @@ components:
         customerId: { type: string }
         total: { type: number }
         status: { type: string }
+        fulfillmentMethod: { $ref: "#/components/schemas/FulfillmentMethod" }
         itemCount: { type: number }
         items:
           type: array
@@ -470,6 +475,9 @@ components:
               quantity: { type: number }
               imageUrl: { type: string }
         createdAt: { type: string, format: date-time }
+    FulfillmentMethod:
+      type: string
+      enum: [PICKUP, DELIVERY]
     DashboardSummary:
       type: object
       required:

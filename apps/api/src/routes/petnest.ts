@@ -33,6 +33,12 @@ import {
   UpdatePetParams,
   UpdatePetResponse,
 } from "@workspace/api-zod";
+import {
+  hasValidFulfillmentConfiguration,
+  supportedFulfillmentMethods,
+  supportsFulfillmentMethod,
+  type FulfillmentMethod,
+} from "../lib/fulfillment.js";
 
 type ProviderService = {
   id: number;
@@ -76,6 +82,7 @@ type Provider = {
   hours: string;
   services: ProviderService[];
   products: ProviderProduct[];
+  fulfillmentMethods?: FulfillmentMethod[];
   active?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -134,6 +141,7 @@ type Order = {
   customerId: string;
   total: number;
   status: string;
+  fulfillmentMethod?: FulfillmentMethod;
   itemCount: number;
   items: Array<{
     productId: number;
@@ -586,7 +594,7 @@ async function acquireBookingLock(providerId: number, date: string) {
   throw new Error("Booking availability is busy. Please try again.");
 }
 
-let initialization: Promise<void> | undefined;
+let maintenanceRun: Promise<void> | undefined;
 const configuredSessionSecret = process.env.SESSION_SECRET;
 if (!configuredSessionSecret)
   throw new Error("SESSION_SECRET must be set for PetNest sessions.");
@@ -728,8 +736,13 @@ async function setInitialCounter<T extends { id: number }>(
   );
 }
 
-export function initializePetnestData(): Promise<void> {
-  initialization ??= (async () => {
+/**
+ * Explicit maintenance for demo seeding, legacy migrations, cleanup, indexes,
+ * and counter initialization. Never call this from application startup or a
+ * request handler. Review its data changes before running it manually.
+ */
+export function runPetnestDataMaintenance(): Promise<void> {
+  maintenanceRun ??= (async () => {
     await client.connect();
     // Remove the obsolete Clerk identity constraint. A non-sparse unique index
     // treats every local account (which has no clerkUserId) as a duplicate.
@@ -927,18 +940,103 @@ export function initializePetnestData(): Promise<void> {
       setInitialCounter("orders", orderCollection),
     ]);
   })();
-  return initialization;
+  return maintenanceRun;
 }
 
 async function nextId(name: string): Promise<number> {
-  await initializePetnestData();
-  const counter = await counterCollection.findOneAndUpdate(
+  const existingCounter = await counterCollection.findOneAndUpdate(
     { _id: name },
     { $inc: { value: 1 } },
-    { upsert: true, returnDocument: "after" },
+    { returnDocument: "after" },
   );
+  if (existingCounter) return existingCounter.value;
+
+  const existingMaximum = await findMaximumStoredId(name);
+  let counter: Counter | null;
+  try {
+    counter = await counterCollection.findOneAndUpdate(
+      { _id: name },
+      [
+        {
+          $set: {
+            value: {
+              $add: [
+                {
+                  $max: [
+                    { $ifNull: ["$value", existingMaximum] },
+                    existingMaximum,
+                  ],
+                },
+                1,
+              ],
+            },
+          },
+        },
+      ],
+      { upsert: true, returnDocument: "after" },
+    );
+  } catch (error) {
+    if ((error as { code?: number }).code !== 11000) throw error;
+    counter = await counterCollection.findOneAndUpdate(
+      { _id: name },
+      { $inc: { value: 1 } },
+      { returnDocument: "after" },
+    );
+  }
   if (!counter) throw new Error(`Unable to allocate ${name} id.`);
   return counter.value;
+}
+
+async function findMaximumStoredId(name: string): Promise<number> {
+  let latest: { id?: number } | null;
+  switch (name) {
+    case "pets":
+      latest = await petCollection.findOne(
+        {},
+        { sort: { id: -1 }, projection: { id: 1 } },
+      );
+      break;
+    case "providers":
+      latest = await providerCollection.findOne(
+        {},
+        { sort: { id: -1 }, projection: { id: 1 } },
+      );
+      break;
+    case "bookings":
+      latest = await bookingCollection.findOne(
+        {},
+        { sort: { id: -1 }, projection: { id: 1 } },
+      );
+      break;
+    case "orders":
+      latest = await orderCollection.findOne(
+        {},
+        { sort: { id: -1 }, projection: { id: 1 } },
+      );
+      break;
+    case "records":
+      latest = await recordCollection.findOne(
+        {},
+        { sort: { id: -1 }, projection: { id: 1 } },
+      );
+      break;
+    case "services":
+    case "products": {
+      const field = name === "services" ? "$services" : "$products";
+      latest = await providerCollection
+        .aggregate<{ id: number }>([
+          { $unwind: field },
+          { $sort: { [`${name}.id`]: -1 } },
+          { $limit: 1 },
+          { $project: { _id: 0, id: `$${name}.id` } },
+        ])
+        .next();
+      break;
+    }
+    default:
+      throw new Error(`Unknown ID counter: ${name}`);
+  }
+  return typeof latest?.id === "number" ? latest.id : 0;
 }
 
 async function ensureCompletedBookingRecord(
@@ -1056,7 +1154,6 @@ async function register(req: Request, res: Response) {
 
   let pendingUserId: string | undefined;
   try {
-    await initializePetnestData();
     if (await userCollection.findOne({ email })) {
       res.status(409).json({ error: "That email address is taken." });
       return;
@@ -1106,7 +1203,10 @@ router.post("/auth/login", async (req, res) => {
       : "";
   const password =
     typeof req.body?.password === "string" ? req.body.password : "";
-  await initializePetnestData();
+  if (!email || !password) {
+    res.status(400).json({ error: "Email and password are required." });
+    return;
+  }
   const user = await userCollection.findOne({ email, isActive: { $ne: false } });
   if (
     !user?.passwordHash ||
@@ -1140,7 +1240,6 @@ router.get("/auth/me", async (req, res) => {
 router.get("/admin/accounts", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
-  await initializePetnestData();
   const accounts = await userCollection
     .find(
       {
@@ -1171,7 +1270,6 @@ router.delete("/admin/accounts/:userId", async (req, res) => {
     res.status(403).json({ error: "You cannot remove your own Admin account." });
     return;
   }
-  await initializePetnestData();
   const now = new Date().toISOString();
   try {
     // Include inactive accounts so retries can finish session/profile cleanup.
@@ -1213,7 +1311,6 @@ router.get("/admin/activity-logs", async (req, res) => {
     res.status(400).json({ error: "Choose a valid activity category." });
     return;
   }
-  await initializePetnestData();
   const providers = await providerCollection
     .find(
       { categories: category },
@@ -1303,7 +1400,6 @@ router.patch("/customer/profile", async (req, res) => {
     return;
   }
   const now = new Date().toISOString();
-  await initializePetnestData();
   const user = await userCollection.findOneAndUpdate(
     { id: access.userId },
     {
@@ -1329,7 +1425,6 @@ router.get("/providers", async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  await initializePetnestData();
   const { category, search } = parsed.data;
   const filter: Record<string, unknown> = {};
   filter.active = { $ne: false };
@@ -1372,7 +1467,6 @@ router.get("/providers/:providerId", async (req, res) => {
     res.status(400).json({ error: "Choose a valid provider category." });
     return;
   }
-  await initializePetnestData();
   const categoriesOnly = req.query.view === "categories";
   if (req.query.view !== undefined && !categoriesOnly) {
     res.status(400).json({ error: "Choose a valid provider view." });
@@ -1476,7 +1570,6 @@ router.get("/providers/:providerId/availability", async (req, res) => {
     res.status(400).json({ error: "A valid provider, service, and month are required." });
     return;
   }
-  await initializePetnestData();
   const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false } });
   const service = provider?.services.find((item) => item.id === serviceId && item.available);
   const schedule = provider ? providerSchedule(provider.hours) : null;
@@ -1533,7 +1626,6 @@ router.get("/providers/:providerId/availability", async (req, res) => {
 });
 
 router.get("/services", async (req, res) => {
-  await initializePetnestData();
   const providerId =
     req.query.providerId === undefined
       ? undefined
@@ -1599,7 +1691,6 @@ router.get("/services", async (req, res) => {
 });
 
 router.get("/services/:serviceId", async (req, res) => {
-  await initializePetnestData();
   const serviceId = Number(req.params.serviceId);
   const provider = await providerCollection.findOne({
     "services.id": serviceId,
@@ -1620,7 +1711,6 @@ router.get("/services/:serviceId", async (req, res) => {
 router.get("/provider/profile", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
-  await initializePetnestData();
   const provider = await providerCollection.findOne(
     { id: access.providerId },
     { projection: { _id: 0 } },
@@ -1642,15 +1732,29 @@ router.patch("/provider/profile", async (req, res) => {
       .json({ error: "A valid assigned provider profile is required" });
     return;
   }
-  await initializePetnestData();
   const existing = await providerCollection.findOne({ id: access.providerId });
   if (!existing) {
     res.status(404).json({ error: "Assigned provider not found" });
     return;
   }
   const { id: _id, ...providerInput } = parsed.data;
+  if (
+    !hasValidFulfillmentConfiguration(
+      providerInput.fulfillmentMethods,
+      providerInput.products.some((product) => product.active),
+    )
+  ) {
+    res.status(400).json({
+      error:
+        "Choose Pickup, Delivery, or both while actively selling pet supplies.",
+    });
+    return;
+  }
   const changes: Omit<Provider, "id"> = {
     ...providerInput,
+    ...(providerInput.fulfillmentMethods !== undefined
+      ? { fulfillmentMethods: supportedFulfillmentMethods(providerInput.fulfillmentMethods) }
+      : {}),
     imageUrl: providerInput.imageUrl ?? existing.imageUrl,
     verified: existing.verified,
     services: providerInput.services.map((service) => ({
@@ -1682,7 +1786,6 @@ router.patch("/provider/profile", async (req, res) => {
 router.get("/admin/providers", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
-  await initializePetnestData();
   res.json(
     await providerCollection
       .find({}, { projection: { _id: 0 } })
@@ -1699,14 +1802,13 @@ router.post("/admin/providers", async (req, res) => {
   const email =
     typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const password = typeof body.password === "string" ? body.password : "";
-  if (!input || !/^\S+@\S+\.\S+$/.test(email) || password.length < 8) {
+  if (!input || !email || !password) {
     res.status(400).json({
       error:
-        "Provider details, a valid email, and an 8-character password are required.",
+        "Provider details, login email, and password are required.",
     });
     return;
   }
-  await initializePetnestData();
   if (await userCollection.findOne({ email })) {
     res.status(409).json({ error: "That email address is taken." });
     return;
@@ -1722,6 +1824,7 @@ router.post("/admin/providers", async (req, res) => {
     verified: false,
     services: [],
     products: [],
+    fulfillmentMethods: ["PICKUP"],
     active: true,
     createdAt: now,
     updatedAt: now,
@@ -1757,7 +1860,6 @@ router.patch("/admin/providers/:providerId", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
   const providerId = Number(req.params.providerId);
-  await initializePetnestData();
   const existing = await providerCollection.findOne({ id: providerId });
   if (!existing) {
     res.status(404).json({ error: "Provider not found" });
@@ -1791,7 +1893,6 @@ router.delete("/admin/providers/:providerId", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
   const providerId = Number(req.params.providerId);
-  await initializePetnestData();
   const existing = await providerCollection.findOne({ id: providerId });
   if (!existing) {
     res.status(404).json({ error: "Provider not found" });
@@ -1829,7 +1930,6 @@ router.post("/provider/services", async (req, res) => {
     });
     return;
   }
-  await initializePetnestData();
   const provider = await providerCollection.findOne({ id: access.providerId });
   if (!provider || !provider.categories.includes(category as string)) {
     res
@@ -1862,7 +1962,6 @@ router.post("/provider/services", async (req, res) => {
 router.patch("/provider/services/:serviceId", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
-  await initializePetnestData();
   const serviceId = Number(req.params.serviceId);
   const provider = await providerCollection.findOne({
     id: access.providerId,
@@ -1910,7 +2009,6 @@ router.delete("/provider/services/:serviceId", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
   const serviceId = Number(req.params.serviceId);
-  await initializePetnestData();
   const result = await providerCollection.updateOne(
     { id: access.providerId, "services.id": serviceId },
     {
@@ -1944,7 +2042,6 @@ router.post("/provider/products", async (req, res) => {
       .json({ error: "Name, description, category, and price are required." });
     return;
   }
-  await initializePetnestData();
   const provider = await providerCollection.findOne({ id: access.providerId });
   if (!provider) {
     res
@@ -1971,6 +2068,16 @@ router.post("/provider/products", async (req, res) => {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
+  if (
+    product.active &&
+    !hasValidFulfillmentConfiguration(provider.fulfillmentMethods, true)
+  ) {
+    res.status(400).json({
+      error:
+        "Choose Pickup, Delivery, or both before activating pet supplies.",
+    });
+    return;
+  }
   const savedProvider = await providerCollection.findOneAndUpdate(
     { id: provider.id },
     {
@@ -1992,7 +2099,6 @@ router.post("/provider/products", async (req, res) => {
 router.patch("/provider/products/:productId", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
-  await initializePetnestData();
   const productId = Number(req.params.productId);
   const provider = await providerCollection.findOne({
     id: access.providerId,
@@ -2032,6 +2138,16 @@ router.patch("/provider/products/:productId", async (req, res) => {
         : existing.imageUrl,
     updatedAt: new Date().toISOString(),
   };
+  if (
+    updated.active &&
+    !hasValidFulfillmentConfiguration(provider.fulfillmentMethods, true)
+  ) {
+    res.status(400).json({
+      error:
+        "Choose Pickup, Delivery, or both before activating pet supplies.",
+    });
+    return;
+  }
   await providerCollection.updateOne(
     { id: provider.id, "products.id": productId },
     { $set: { "products.$": updated, updatedAt: new Date().toISOString() } },
@@ -2043,7 +2159,6 @@ router.delete("/provider/products/:productId", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
   const productId = Number(req.params.productId);
-  await initializePetnestData();
   const result = await providerCollection.updateOne(
     { id: access.providerId, "products.id": productId },
     {
@@ -2060,7 +2175,6 @@ router.delete("/provider/products/:productId", async (req, res) => {
 router.get("/pets", async (req, res) => {
   const access = await requireCustomer(req, res);
   if (!access) return;
-  await initializePetnestData();
   const pets = await petCollection
     .find({ ownerId: access.userId }, { projection: { _id: 0, ownerId: 0 } })
     .sort({ id: 1 })
@@ -2122,7 +2236,6 @@ router.patch("/pets/:petId", async (req, res) => {
     res.status(400).json({ error: body.error.message });
     return;
   }
-  await initializePetnestData();
   const pet = await petCollection.findOneAndUpdate(
     { id: params.data.petId, ownerId: access.userId },
     { $set: { ...body.data, updatedAt: new Date().toISOString() } },
@@ -2196,7 +2309,6 @@ router.get("/pets/:petId/records", async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  await initializePetnestData();
   if (
     !(await petCollection.findOne({
       id: parsed.data.petId,
@@ -2238,7 +2350,6 @@ router.get("/provider/records", async (req, res) => {
     req.query.type === "vaccination" || req.query.type === "grooming"
       ? req.query.type
       : undefined;
-  await initializePetnestData();
   const completedBookings = await bookingCollection
     .find({ providerId: access.providerId, status: "completed" })
     .toArray();
@@ -2256,7 +2367,6 @@ router.get("/provider/records", async (req, res) => {
 router.get("/provider/pets", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
-  await initializePetnestData();
   const bookings = await bookingCollection
     .find(
       { providerId: access.providerId },
@@ -2298,7 +2408,6 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
     res.status(400).json({ error: "A valid pet is required." });
     return;
   }
-  await initializePetnestData();
   const relationship = await bookingCollection.findOne({
     providerId: access.providerId,
     petId,
@@ -2367,7 +2476,6 @@ router.post("/provider/records", async (req, res) => {
         : "Record type, pet, and a valid date are required." });
     return;
   }
-  await initializePetnestData();
   const provider = await providerCollection.findOne({ id: access.providerId });
   const booking = await bookingCollection.findOne({
     providerId: access.providerId,
@@ -2441,7 +2549,6 @@ router.patch("/provider/records/:recordId", async (req, res) => {
     changes.date = body.date;
   }
   if (typeof body.notes === "string") changes.notes = body.notes.trim();
-  await initializePetnestData();
   const existing = await recordCollection.findOne({ id: recordId, providerId: access.providerId });
   if (!existing) {
     res.status(404).json({ error: "History record not found" });
@@ -2471,7 +2578,6 @@ router.patch("/provider/records/:recordId", async (req, res) => {
 router.get("/bookings", async (req, res) => {
   const access = await requireCustomer(req, res);
   if (!access) return;
-  await initializePetnestData();
   const bookings = await bookingCollection
     .find({ ownerId: access.userId }, { projection: { _id: 0, ownerId: 0 } })
     .sort({ id: -1 })
@@ -2526,7 +2632,6 @@ router.post("/bookings", async (req, res) => {
     res.status(400).json({ error: "Choose a valid booking time." });
     return;
   }
-  await initializePetnestData();
   const provider = await providerCollection.findOne({
     id: parsed.data.providerId,
     active: { $ne: false },
@@ -2667,7 +2772,6 @@ router.post("/bookings/:bookingId/cancellation-request", async (req, res) => {
     res.status(400).json({ error: "Cancellation reason is required." });
     return;
   }
-  await initializePetnestData();
   const booking = await bookingCollection.findOne({
     id: bookingId,
     ownerId: access.userId,
@@ -2760,7 +2864,6 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
     res.status(400).json({ error: "A valid booking and status are required" });
     return;
   }
-  await initializePetnestData();
   const current = await bookingCollection.findOne({
     id: bookingId,
     providerId: access.providerId,
@@ -2852,7 +2955,6 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
 router.get("/admin/bookings", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
-  await initializePetnestData();
   const bookings = await bookingCollection
     .find({}, { projection: { _id: 0 } })
     .sort({ date: 1, id: -1 })
@@ -2876,7 +2978,6 @@ router.patch("/admin/bookings/:bookingId/status", async (req, res) => {
 router.get("/orders", async (req, res) => {
   const access = await requireCustomer(req, res);
   if (!access) return;
-  await initializePetnestData();
   const orders = await orderCollection
     .find({ ownerId: access.userId }, { projection: { _id: 0, ownerId: 0 } })
     .sort({ id: -1 })
@@ -2887,12 +2988,21 @@ router.get("/orders", async (req, res) => {
 router.get("/provider/orders", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
-  await initializePetnestData();
   const orders = await orderCollection
     .find(
       { providerId: access.providerId },
       { projection: { _id: 0, ownerId: 0 } },
     )
+    .sort({ id: -1 })
+    .toArray();
+  res.json(ListOrdersResponse.parse(orders));
+});
+
+router.get("/admin/orders", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  const orders = await orderCollection
+    .find({}, { projection: { _id: 0, ownerId: 0 } })
     .sort({ id: -1 })
     .toArray();
   res.json(ListOrdersResponse.parse(orders));
@@ -2906,7 +3016,6 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     res.status(400).json({ error: "Choose a valid order." });
     return;
   }
-  await initializePetnestData();
   const result = await orderCollection.updateOne(
     {
       id: orderId,
@@ -2948,13 +3057,23 @@ router.post("/orders", async (req, res) => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  await initializePetnestData();
   const provider = await providerCollection.findOne({
     id: parsed.data.providerId,
     active: { $ne: false },
   });
   if (!provider) {
     res.status(400).json({ error: "Choose a valid provider." });
+    return;
+  }
+  if (
+    !supportsFulfillmentMethod(
+      provider.fulfillmentMethods,
+      parsed.data.fulfillmentMethod,
+    )
+  ) {
+    res.status(400).json({
+      error: "This provider does not support the selected fulfillment method.",
+    });
     return;
   }
   const requested = parsed.data.items;
@@ -3045,6 +3164,7 @@ router.post("/orders", async (req, res) => {
     customerId: access.userId,
     total,
     status: "PENDING",
+    fulfillmentMethod: parsed.data.fulfillmentMethod,
     itemCount: parsed.data.items.reduce((sum, item) => sum + item.quantity, 0),
     items: orderItems,
     createdAt: new Date().toISOString(),
@@ -3066,7 +3186,6 @@ router.post("/orders", async (req, res) => {
 router.get("/dashboard/summary", async (req, res) => {
   const access = await requireCustomer(req, res);
   if (!access) return;
-  await initializePetnestData();
   const [
     petCount,
     upcomingBookingCount,
