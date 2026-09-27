@@ -19,6 +19,8 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
+import { ApiRequestError, apiRequest } from "@/lib/api-request";
+import { toast } from "@/hooks/use-toast";
 import {
   useCreateBooking,
   useCreateOrder,
@@ -119,11 +121,17 @@ function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoaded, setLoaded] = useState(false);
   useEffect(() => {
-    fetch(`${basePath}/api/auth/me`, { credentials: "same-origin" })
-      .then(async (response) =>
-        response.ok ? (response.json() as Promise<{ user: AuthUser }>) : null,
-      )
+    apiRequest<{ user: AuthUser }>(`${basePath}/api/auth/me`)
       .then((body) => setUser(body?.user ?? null))
+      .catch((error: unknown) => {
+        if (
+          import.meta.env.DEV &&
+          (!(error instanceof ApiRequestError) || error.status !== 401)
+        ) {
+          console.error("Session restoration failed", error);
+        }
+        setUser(null);
+      })
       .finally(() => setLoaded(true));
   }, []);
   return (
@@ -2354,20 +2362,7 @@ type ProviderPet = Pet & {
 };
 
 async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  const body =
-    response.status === 204
-      ? null
-      : ((await response.json().catch(() => null)) as {
-          error?: string;
-        } | null);
-  if (!response.ok)
-    throw new Error(body?.error ?? `Request failed (${response.status})`);
-  return body as T;
+  return apiRequest<T>(path, init);
 }
 
 function AdminAccountsPage() {
@@ -5872,22 +5867,33 @@ function Show({
 function LogoutButton() {
   const { setUser } = useAuth();
   const [, setLocation] = useLocation();
+  const [submitting, setSubmitting] = useState(false);
   const logout = async () => {
-    await fetch(`${basePath}/api/auth/logout`, {
-      method: "POST",
-      credentials: "same-origin",
-    });
-    queryClient.clear();
-    setUser(null);
-    setLocation("/sign-in");
+    setSubmitting(true);
+    try {
+      await apiRequest<void>(`${basePath}/api/auth/logout`, { method: "POST" });
+      queryClient.clear();
+      setUser(null);
+      setLocation("/sign-in");
+    } catch (error) {
+      if (import.meta.env.DEV) console.error("Sign out failed", error);
+      toast({
+        title: "Unable to sign out",
+        description: "Please try again. You are still signed in.",
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
   };
   return (
     <button
       className="btn btn-ghost"
       onClick={logout}
       data-testid="button-sign-out"
+      disabled={submitting}
     >
-      Sign out
+      {submitting ? "Signing out…" : "Sign out"}
     </button>
   );
 }
@@ -5934,18 +5940,15 @@ function SignInPage() {
     if (!isLoaded) return;
     setSubmitting(true);
     try {
-      const response = await fetch(`${basePath}/api/auth/login`, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-      const result = (await response.json()) as {
-        user?: AuthUser;
-        error?: string;
-      };
-      if (!response.ok || !result.user)
-        throw new Error(result.error ?? "Email or password is incorrect.");
+      const result = await apiRequest<{ user: AuthUser }>(
+        `${basePath}/api/auth/login`,
+        {
+          method: "POST",
+          body: JSON.stringify(form),
+        },
+        "Unable to sign in. Please try again.",
+      );
+      if (!result?.user) throw new Error("Unable to sign in. Please try again.");
       setUser(result.user);
       setLocation("/");
     } catch (caught) {
@@ -6050,22 +6053,20 @@ function SignUpPage() {
     }
     setSubmitting(true);
     try {
-      const response = await fetch(`${basePath}/api/auth/register`, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: form.name,
-          email: form.email,
-          password: form.password,
-        }),
-      });
-      const body = (await response.json()) as {
-        error?: string;
-        user?: AuthUser;
-      };
-      if (!response.ok || !body.user)
-        throw new Error(body.error ?? "Account creation failed.");
+      const body = await apiRequest<{ user: AuthUser }>(
+        `${basePath}/api/auth/register`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: form.name,
+            email: form.email,
+            password: form.password,
+          }),
+        },
+        "Account creation failed. Please try again.",
+      );
+      if (!body?.user)
+        throw new Error("Account creation failed. Please try again.");
       setUser(body.user);
       setLocation("/");
     } catch (caught) {
