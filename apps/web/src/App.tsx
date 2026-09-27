@@ -404,6 +404,7 @@ function AppShell({ children }: { children: ReactNode }) {
             ...(providerCategories.includes("pet-supplies")
               ? [{ href: "/provider/retail", label: "Pet Supplies", icon: ShoppingBag }]
               : []),
+            { href: "/provider/archive", label: "Archive", icon: Package },
           ]
         : [
             ...visibleNavItems,
@@ -2338,6 +2339,15 @@ type AdminBooking = Booking & {
   customerId: string;
   customerName?: string;
   endTime?: string;
+  archived?: boolean;
+};
+type ProviderOrder = import("@workspace/api-client-react").Order & {
+  archived?: boolean;
+};
+type ProviderArchive = {
+  orders: ProviderOrder[];
+  bookings: AdminBooking[];
+  vaccinations: AdminBooking[];
 };
 type AdminAccount = {
   id: string;
@@ -3233,6 +3243,8 @@ function ProviderManagementPage() {
         ? "services"
         : providerLocation.endsWith("/retail")
           ? "retail"
+          : providerLocation.endsWith("/archive")
+            ? "archive"
           : "dashboard";
   const query = useQuery({
     queryKey: ["provider", "profile"],
@@ -3275,6 +3287,14 @@ function ProviderManagementPage() {
   const [scheduleDate, setScheduleDate] = useState("");
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
   const [notice, setNotice] = useState("");
+  const [bookingCategory, setBookingCategory] = useState<"grooming" | "vaccination">("grooming");
+  const [archiveCategory, setArchiveCategory] = useState<"orders" | "bookings" | "vaccinations">("orders");
+  const [archiveTarget, setArchiveTarget] = useState<{
+    kind: "order" | "booking";
+    id: number;
+    label: string;
+    archived: boolean;
+  } | null>(null);
   const providerTab = providerSection === "records" ? "records" : "workspace";
   const [selectedProviderPet, setSelectedProviderPet] =
     useState<ProviderPet | null>(null);
@@ -3285,6 +3305,9 @@ function ProviderManagementPage() {
         (category) => category === "grooming" || category === "vaccination",
       );
       if (firstCareCategory) {
+        setBookingCategory((current) =>
+          query.data.categories.includes(current) ? current : firstCareCategory,
+        );
         setServiceForm((current) => ({
           ...current,
           category: query.data.categories.includes(current.category)
@@ -3466,10 +3489,34 @@ function ProviderManagementPage() {
   const providerOrdersQuery = useQuery({
     queryKey: ["provider", "orders"],
     queryFn: () =>
-      adminRequest<import("@workspace/api-client-react").Order[]>(
+      adminRequest<ProviderOrder[]>(
         "/api/provider/orders",
       ),
     enabled: isProvider && providerSection === "retail",
+  });
+  const providerArchiveQuery = useQuery({
+    queryKey: ["provider", "archive"],
+    queryFn: () => adminRequest<ProviderArchive>("/api/provider/archive"),
+    enabled: isProvider && providerSection === "archive",
+  });
+  const setArchiveState = useMutation({
+    mutationFn: (target: NonNullable<typeof archiveTarget>) =>
+      adminRequest(
+        target.kind === "order"
+          ? `/api/provider/orders/${target.id}/archive`
+          : `/api/provider/bookings/${target.id}/archive`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ archived: target.archived }),
+        },
+      ),
+    onSuccess: (_, target) => {
+      setArchiveTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["provider", "orders"] });
+      queryClient.invalidateQueries({ queryKey: ["provider", "bookings"] });
+      queryClient.invalidateQueries({ queryKey: ["provider", "archive"] });
+      setNotice(target.archived ? "Record archived." : "Record restored.");
+    },
   });
   const confirmOrder = useMutation({
     mutationFn: (orderId: number) =>
@@ -3609,6 +3656,9 @@ function ProviderManagementPage() {
   );
   const configuredFulfillmentMethods = getFulfillmentMethods(draft);
   const hasActiveProducts = draft.products.some((product) => product.active);
+  const visibleBookings = (bookingsQuery.data ?? []).filter(
+    (booking) => booking.serviceCategory === bookingCategory,
+  );
   const toggleFulfillmentMethod = (
     method: FulfillmentMethod,
     enabled: boolean,
@@ -3623,7 +3673,9 @@ function ProviderManagementPage() {
     <div className="animate-in">
       <p className="eyebrow">Provider workspace</p>
       <h1 className="page-title">
-        {providerSection === "retail"
+        {providerSection === "archive"
+          ? "Archive."
+          : providerSection === "retail"
           ? "Pet Supplies / Retail."
           : providerSection === "bookings"
             ? "Service bookings."
@@ -3634,7 +3686,9 @@ function ProviderManagementPage() {
                 : "Provider dashboard."}
       </h1>
       <p className="page-subtitle">
-        {providerSection === "retail"
+        {providerSection === "archive"
+          ? "Review and restore archived Pet Supplies orders, bookings, and vaccinations."
+          : providerSection === "retail"
           ? "Manage your Pet Supply products and customer retail orders in one place."
           : providerSection === "bookings"
             ? "Manage Grooming and Vaccination booking requests."
@@ -4511,6 +4565,7 @@ function ProviderManagementPage() {
                         </td>
                         <td>{money(order.total)}</td>
                         <td>
+                          <div className="flex flex-wrap gap-2">
                           {order.status.toUpperCase() === "PENDING" ? (
                             <button
                               className="btn btn-primary h-9 min-h-0 px-4 text-xs"
@@ -4526,6 +4581,13 @@ function ProviderManagementPage() {
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
+                          <button
+                            className="btn btn-ghost h-9 min-h-0 px-4 text-xs"
+                            onClick={() => setArchiveTarget({ kind: "order", id: order.id, label: `order #${order.id}`, archived: true })}
+                          >
+                            Archive
+                          </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -4542,13 +4604,21 @@ function ProviderManagementPage() {
           <section className={providerSection === "bookings" ? "surface-card mt-6 p-6" : "hidden"}>
             <p className="eyebrow">Booking requests</p>
             <h2 className="section-title mt-1">Your provider bookings</h2>
+            <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Booking category">
+              {assignedCareCategories.includes("grooming") ? (
+                <button className={`btn ${bookingCategory === "grooming" ? "btn-primary" : "btn-ghost"}`} onClick={() => setBookingCategory("grooming")}>Grooming</button>
+              ) : null}
+              {assignedCareCategories.includes("vaccination") ? (
+                <button className={`btn ${bookingCategory === "vaccination" ? "btn-primary" : "btn-ghost"}`} onClick={() => setBookingCategory("vaccination")}>Vaccination</button>
+              ) : null}
+            </div>
             {bookingsQuery.isLoading ? (
               <div className="mt-5">
                 <LoadingState label="Loading your booking requests" />
               </div>
-            ) : bookingsQuery.data?.length ? (
+            ) : visibleBookings.length ? (
               <>
-              <ProviderBookingsCalendar bookings={bookingsQuery.data} />
+              <ProviderBookingsCalendar bookings={visibleBookings} />
               <div className="table-wrap mt-5">
                 <table className="data-table">
                   <thead>
@@ -4559,10 +4629,11 @@ function ProviderManagementPage() {
                       <th>Date</th>
                       <th>Time</th>
                       <th>Status</th>
+                      <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {bookingsQuery.data.map((booking) => (
+                    {visibleBookings.map((booking) => (
                       <tr key={booking.id}>
                         <td>{booking.customerName ?? "Customer"}</td>
                         <td>{booking.serviceName}</td>
@@ -4670,6 +4741,14 @@ function ProviderManagementPage() {
                             </div>
                           ) : null}
                         </td>
+                        <td>
+                          <button
+                            className="btn btn-ghost h-9 min-h-0 text-xs"
+                            onClick={() => setArchiveTarget({ kind: "booking", id: booking.id, label: `${booking.serviceName} booking`, archived: true })}
+                          >
+                            Archive
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -4678,9 +4757,51 @@ function ProviderManagementPage() {
               </>
             ) : (
               <p className="mt-5 text-sm text-muted-foreground">
-                No booking requests yet.
+                No {bookingCategory} bookings yet.
               </p>
             )}
+          </section>
+          <section className={providerSection === "archive" ? "surface-card mt-6 p-6" : "hidden"}>
+            <p className="eyebrow">Archive</p>
+            <h2 className="section-title mt-1">Archived provider records</h2>
+            <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Archive category">
+              <button className={`btn ${archiveCategory === "orders" ? "btn-primary" : "btn-ghost"}`} onClick={() => setArchiveCategory("orders")}>Pet Supplies Orders</button>
+              <button className={`btn ${archiveCategory === "bookings" ? "btn-primary" : "btn-ghost"}`} onClick={() => setArchiveCategory("bookings")}>Bookings</button>
+              <button className={`btn ${archiveCategory === "vaccinations" ? "btn-primary" : "btn-ghost"}`} onClick={() => setArchiveCategory("vaccinations")}>Vaccinations</button>
+            </div>
+            {providerArchiveQuery.isLoading ? (
+              <LoadingState label="Loading archived records" />
+            ) : providerArchiveQuery.isError ? (
+              <ErrorState onRetry={() => providerArchiveQuery.refetch()} message={providerArchiveQuery.error.message} />
+            ) : archiveCategory === "orders" ? (
+              providerArchiveQuery.data?.orders.length ? (
+                <div className="list-stack mt-5">
+                  {providerArchiveQuery.data.orders.map((order) => (
+                    <div className="service-row" key={`archive-order-${order.id}`}>
+                      <div className="flex-1">
+                        <p className="font-semibold">Order #{order.id} · {order.customerName}</p>
+                        <p className="text-xs text-muted-foreground">{order.items.map((item) => `${item.productName} × ${item.quantity}`).join(", ")} · {fulfillmentLabel(order.fulfillmentMethod)}</p>
+                        <p className="mt-1 text-sm text-muted-foreground">{formatDate(order.createdAt)} · {statusLabel(order.status)} · {money(order.total)}</p>
+                      </div>
+                      <button className="btn btn-ghost" onClick={() => setArchiveTarget({ kind: "order", id: order.id, label: `order #${order.id}`, archived: false })}>Restore</button>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="mt-5 text-sm text-muted-foreground">No archived Pet Supplies orders.</p>
+            ) : (providerArchiveQuery.data?.[archiveCategory] ?? []).length ? (
+              <div className="list-stack mt-5">
+                {(providerArchiveQuery.data?.[archiveCategory] ?? []).map((booking) => (
+                  <div className="service-row" key={`archive-booking-${booking.id}`}>
+                    <div className="flex-1">
+                      <p className="font-semibold">{booking.serviceName} · {booking.petName}</p>
+                      <p className="text-xs text-muted-foreground">{booking.customerName ?? "Customer"} · {formatDate(booking.date)} · {booking.time}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{statusLabel(booking.status)} · {money(booking.price)}</p>
+                    </div>
+                    <button className="btn btn-ghost" onClick={() => setArchiveTarget({ kind: "booking", id: booking.id, label: `${booking.serviceName} booking`, archived: false })}>Restore</button>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="mt-5 text-sm text-muted-foreground">No archived {archiveCategory === "bookings" ? "bookings" : "vaccinations"}.</p>}
           </section>
         </>
       )}
@@ -4871,6 +4992,27 @@ function ProviderManagementPage() {
               <button className="btn btn-ghost" disabled={updateRecord.isPending} onClick={() => setScheduleRecord(null)}>Cancel</button>
               <button className="btn btn-primary" disabled={updateRecord.isPending || !scheduleDate || scheduleDate < scheduleRecord.date} onClick={() => updateRecord.mutate({ id: scheduleRecord.id, changes: { nextDue: scheduleDate } })}>
                 {updateRecord.isPending ? "Saving…" : "Save schedule"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {archiveTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="archive-confirm-title">
+            <h2 id="archive-confirm-title" className="modal-title">
+              {archiveTarget.archived ? "Archive record?" : "Restore record?"}
+            </h2>
+            <p className="mt-3 text-sm text-muted-foreground">
+              {archiveTarget.archived
+                ? "Are you sure you want to archive this record?"
+                : `Restore ${archiveTarget.label} to its normal section?`}
+            </p>
+            {setArchiveState.isError ? <p className="mt-3 text-sm font-semibold text-destructive">{setArchiveState.error.message}</p> : null}
+            <div className="mt-6 flex gap-2">
+              <button className="btn btn-ghost" disabled={setArchiveState.isPending} onClick={() => setArchiveTarget(null)}>Cancel</button>
+              <button className="btn btn-primary" disabled={setArchiveState.isPending} onClick={() => setArchiveState.mutate(archiveTarget)}>
+                {archiveTarget.archived ? "Archive" : "Restore"}
               </button>
             </div>
           </div>
@@ -6553,6 +6695,7 @@ function MainRouter() {
           <Route path="/provider/records" component={ProviderManagementPage} />
           <Route path="/provider/services" component={ProviderManagementPage} />
           <Route path="/provider/retail" component={ProviderManagementPage} />
+          <Route path="/provider/archive" component={ProviderManagementPage} />
           <Route path="/provider" component={ProviderManagementPage} />
           <Route>
             <Redirect to="/provider" />

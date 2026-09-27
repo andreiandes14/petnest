@@ -450,10 +450,11 @@ type StoredCareRecord = CareRecord & {
 };
 type StoredBooking = Booking & {
   ownerId: string;
+  archived?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
-type StoredOrder = Order & { ownerId: string };
+type StoredOrder = Order & { ownerId: string; archived?: boolean };
 type Counter = { _id: string; value: number };
 type Role = "customer" | "provider" | "admin";
 type Access = { userId: string; role: Role; providerId?: number };
@@ -1430,12 +1431,6 @@ router.get("/providers", async (req, res) => {
   filter.active = { $ne: false };
   if (category) {
     filter.categories = category;
-    filter[category === "pet-supplies" ? "products" : "services"] = {
-      $elemMatch:
-        category === "pet-supplies"
-          ? { category, active: true }
-          : { category, available: true },
-    };
   }
   if (search) {
     filter.$or = ["name", "location", "description"].map((field) => ({
@@ -2435,7 +2430,11 @@ router.get("/provider/pets", async (req, res) => {
   const assignedCare = assignedCareCategories(provider);
   const bookings = await bookingCollection
     .find(
-      { providerId: access.providerId, serviceCategory: { $in: assignedCare } },
+      {
+        providerId: access.providerId,
+        serviceCategory: { $in: assignedCare },
+        archived: { $ne: true },
+      },
       { projection: { petId: 1, ownerId: 1, serviceName: 1, date: 1, time: 1 } },
     )
     .sort({ date: -1, time: -1, id: -1 })
@@ -2890,7 +2889,11 @@ router.get("/provider/bookings", async (req, res) => {
   const assignedCare = assignedCareCategories(provider);
   const bookings = await bookingCollection
     .find(
-      { providerId: access.providerId, serviceCategory: { $in: assignedCare } },
+      {
+        providerId: access.providerId,
+        serviceCategory: { $in: assignedCare },
+        archived: { $ne: true },
+      },
       { projection: { _id: 0 } },
     )
     .sort({ date: 1, time: 1 })
@@ -2947,6 +2950,7 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
   const current = await bookingCollection.findOne({
     id: bookingId,
     providerId: access.providerId,
+    archived: { $ne: true },
   });
   if (!current) {
     res.status(404).json({ error: "Booking not found" });
@@ -3037,6 +3041,32 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
   res.json({ ...publicBooking, customerId: ownerId });
 });
 
+router.patch("/provider/bookings/:bookingId/archive", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const bookingId = Number(req.params.bookingId);
+  if (!Number.isInteger(bookingId) || bookingId < 1 || typeof req.body?.archived !== "boolean") {
+    res.status(400).json({ error: "Choose a valid booking archive state." });
+    return;
+  }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
+  const booking = await bookingCollection.findOneAndUpdate(
+    {
+      id: bookingId,
+      providerId: access.providerId,
+      serviceCategory: { $in: assignedCare },
+    },
+    { $set: { archived: req.body.archived, updatedAt: new Date().toISOString() } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!booking) {
+    res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  res.json(booking);
+});
+
 router.get("/admin/bookings", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
@@ -3075,12 +3105,50 @@ router.get("/provider/orders", async (req, res) => {
   if (!access?.providerId) return;
   const orders = await orderCollection
     .find(
-      { providerId: access.providerId },
+      { providerId: access.providerId, archived: { $ne: true } },
       { projection: { _id: 0, ownerId: 0 } },
     )
     .sort({ id: -1 })
     .toArray();
   res.json(ListOrdersResponse.parse(orders));
+});
+
+router.get("/provider/archive", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider) {
+    res.status(404).json({ error: "Assigned provider not found" });
+    return;
+  }
+  const careCategories = assignedCareCategories(provider);
+  const [orders, bookings] = await Promise.all([
+    provider.categories.includes("pet-supplies")
+      ? orderCollection
+          .find(
+            { providerId: access.providerId, archived: true },
+            { projection: { _id: 0, ownerId: 0 } },
+          )
+          .sort({ id: -1 })
+          .toArray()
+      : [],
+    bookingCollection
+      .find(
+        {
+          providerId: access.providerId,
+          archived: true,
+          serviceCategory: { $in: careCategories },
+        },
+        { projection: { _id: 0, ownerId: 0 } },
+      )
+      .sort({ date: -1, id: -1 })
+      .toArray(),
+  ]);
+  res.json({
+    orders,
+    bookings: bookings.filter((booking) => booking.serviceCategory === "grooming"),
+    vaccinations: bookings.filter((booking) => booking.serviceCategory === "vaccination"),
+  });
 });
 
 router.get("/admin/orders", async (req, res) => {
@@ -3106,6 +3174,7 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
       id: orderId,
       providerId: access.providerId,
       status: "PENDING",
+      archived: { $ne: true },
     },
     { $set: { status: "CONFIRMED" } },
   );
@@ -3132,6 +3201,26 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     return;
   }
   res.json(CreateOrderResponse.parse(order));
+});
+
+router.patch("/provider/orders/:orderId/archive", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const orderId = Number(req.params.orderId);
+  if (!Number.isInteger(orderId) || orderId < 1 || typeof req.body?.archived !== "boolean") {
+    res.status(400).json({ error: "Choose a valid order archive state." });
+    return;
+  }
+  const order = await orderCollection.findOneAndUpdate(
+    { id: orderId, providerId: access.providerId },
+    { $set: { archived: req.body.archived } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!order) {
+    res.status(404).json({ error: "Order not found." });
+    return;
+  }
+  res.json(order);
 });
 
 router.post("/orders", async (req, res) => {
