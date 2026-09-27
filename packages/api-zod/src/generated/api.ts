@@ -35,7 +35,8 @@ export const ListProvidersResponseItem = zod.object({
   "reviewCount": zod.number(),
   "startingPrice": zod.number(),
   "imageUrl": zod.string(),
-  "verified": zod.boolean().optional()
+  "verified": zod.boolean().optional(),
+  "fulfillmentMethods": zod.array(zod.enum(['PICKUP', 'DELIVERY'])).optional()
 })
 export const ListProvidersResponse = zod.array(ListProvidersResponseItem)
 
@@ -61,7 +62,8 @@ export const GetProviderResponse = zod.object({
   "reviewCount": zod.number(),
   "startingPrice": zod.number(),
   "imageUrl": zod.string(),
-  "verified": zod.boolean().optional()
+  "verified": zod.boolean().optional(),
+  "fulfillmentMethods": zod.array(zod.enum(['PICKUP', 'DELIVERY'])).optional()
 }).and(zod.object({
   "contact": zod.string(),
   "hours": zod.string(),
@@ -270,6 +272,7 @@ export const ListOrdersResponseItem = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "itemCount": zod.number(),
   "items": zod.array(zod.object({
   "productId": zod.number(),
@@ -288,6 +291,7 @@ export const ListOrdersResponse = zod.array(ListOrdersResponseItem)
  */
 export const CreateOrderBody = zod.object({
   "providerId": zod.number(),
+  "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']),
   "items": zod.array(zod.object({
   "productId": zod.number(),
   "quantity": zod.number()
@@ -302,6 +306,7 @@ export const CreateOrderResponse = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "itemCount": zod.number(),
   "items": zod.array(zod.object({
   "productId": zod.number(),

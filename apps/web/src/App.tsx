@@ -52,6 +52,7 @@ import type {
   ProviderProduct,
   ProviderService,
   Order,
+  FulfillmentMethod,
 } from "@workspace/api-client-react";
 import {
   ArrowRight,
@@ -93,6 +94,17 @@ import {
 const queryClient = new QueryClient();
 const presentationMode = false;
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+const defaultFulfillmentMethods: FulfillmentMethod[] = ["PICKUP"];
+const getFulfillmentMethods = (provider: Pick<Provider, "fulfillmentMethods">) =>
+  provider.fulfillmentMethods?.includes("DELIVERY")
+    ? ["PICKUP", "DELIVERY"] as FulfillmentMethod[]
+    : defaultFulfillmentMethods;
+const fulfillmentLabel = (method?: FulfillmentMethod) =>
+  method === "PICKUP"
+    ? "Pickup"
+    : method === "DELIVERY"
+      ? "Delivery"
+      : "Not specified";
 type UserRole = "customer" | "provider" | "admin";
 type AuthUser = {
   id: string;
@@ -366,6 +378,7 @@ function AppShell({ children }: { children: ReactNode }) {
       ? [
           { href: "/admin/providers", label: "Providers", icon: ShieldCheck },
           { href: "/admin/bookings", label: "Bookings", icon: CalendarDays },
+          { href: "/admin/orders", label: "Supply Orders", icon: ShoppingBag },
           { href: "/admin/accounts", label: "Accounts", icon: UserRound },
           { href: "/admin/logs", label: "Logs", icon: FileText },
         ]
@@ -1679,6 +1692,7 @@ function ProviderDetailPage() {
       {
         data: {
           providerId: provider.id,
+          fulfillmentMethod: getFulfillmentMethods(provider)[0] ?? "PICKUP",
           items: cart.map((item) => ({
             productId: item.product.id,
             quantity: item.quantity,
@@ -2564,6 +2578,56 @@ function AdminLogsPage() {
   );
 }
 
+function AdminOrdersPage() {
+  const query = useQuery({
+    queryKey: ["admin", "orders"],
+    queryFn: () => adminRequest<Order[]>("/api/admin/orders"),
+  });
+  return (
+    <div className="animate-in">
+      <p className="eyebrow">Administration</p>
+      <h1 className="page-title">Supply orders.</h1>
+      <p className="page-subtitle">
+        Review how customer product orders will be fulfilled.
+      </p>
+      {query.isLoading ? (
+        <LoadingState label="Loading supply orders" />
+      ) : query.isError ? (
+        <ErrorState onRetry={() => query.refetch()} />
+      ) : query.data?.length ? (
+        <div className="table-wrap mt-8">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Provider</th>
+                <th>Customer</th>
+                <th>Fulfillment</th>
+                <th>Status</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {query.data.map((order) => (
+                <tr key={order.id}>
+                  <td>#{order.id}</td>
+                  <td>{order.providerName}</td>
+                  <td>{order.customerName}</td>
+                  <td>{fulfillmentLabel(order.fulfillmentMethod)}</td>
+                  <td>{statusLabel(order.status)}</td>
+                  <td>{money(order.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="mt-8 text-sm text-muted-foreground">No supply orders yet.</p>
+      )}
+    </div>
+  );
+}
+
 function AdminBookingsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -3193,6 +3257,22 @@ function ProviderManagementPage() {
       queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
     },
   });
+  const updateFulfillment = useMutation({
+    mutationFn: (profile: ProviderDetail) =>
+      adminRequest<ProviderDetail>("/api/provider/profile", {
+        method: "PATCH",
+        body: JSON.stringify(profile),
+      }),
+    onSuccess: (profile) => {
+      setDraft(profile);
+      queryClient.setQueryData(["provider", "profile"], profile);
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+      queryClient.invalidateQueries({
+        queryKey: getGetProviderQueryKey(profile.id),
+      });
+      setNotice("Fulfillment settings saved.");
+    },
+  });
   const bookingsQuery = useQuery({
     queryKey: ["provider", "bookings"],
     queryFn: () => adminRequest<AdminBooking[]>("/api/provider/bookings"),
@@ -3462,6 +3542,18 @@ function ProviderManagementPage() {
   const editingProduct = draft.products.find(
     (item) => item.id === editingProductId,
   );
+  const configuredFulfillmentMethods = getFulfillmentMethods(draft);
+  const hasActiveProducts = draft.products.some((product) => product.active);
+  const toggleFulfillmentMethod = (
+    method: FulfillmentMethod,
+    enabled: boolean,
+  ) =>
+    setDraft({
+      ...draft,
+      fulfillmentMethods: method === "DELIVERY" && enabled
+        ? ["PICKUP", "DELIVERY"]
+        : ["PICKUP"],
+    });
   return (
     <div className="animate-in">
       <p className="eyebrow">Provider workspace</p>
@@ -3905,6 +3997,52 @@ function ProviderManagementPage() {
               ))}
             </div>
             <section className={providerSection === "retail" ? "surface-card border p-5" : "hidden"}>
+              <div className="mb-6 border-b pb-6">
+                <p className="eyebrow">Shop settings</p>
+                <h2 className="section-title mt-1">Order Fulfillment</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Choose how customers can receive pet supply orders.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-5">
+                  {(["PICKUP", "DELIVERY"] as const).map((method) => (
+                    <label className="flex items-center gap-2 text-sm font-semibold" key={method}>
+                      <input
+                        type="checkbox"
+                        checked={configuredFulfillmentMethods.includes(method)}
+                        disabled={method === "PICKUP" || updateFulfillment.isPending}
+                        onChange={(event) =>
+                          toggleFulfillmentMethod(method, event.target.checked)
+                        }
+                      />
+                      {fulfillmentLabel(method)}
+                    </label>
+                  ))}
+                </div>
+                {hasActiveProducts && configuredFulfillmentMethods.length === 0 ? (
+                  <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                    Choose Pickup, Delivery, or both while actively selling pet supplies.
+                  </p>
+                ) : null}
+                <button
+                  className="btn btn-primary mt-4"
+                  disabled={
+                    updateFulfillment.isPending ||
+                    (hasActiveProducts && configuredFulfillmentMethods.length === 0)
+                  }
+                  onClick={() =>
+                    updateFulfillment.mutate(draft)
+                  }
+                >
+                  {updateFulfillment.isPending
+                    ? "Savingâ€¦"
+                    : "Save fulfillment settings"}
+                </button>
+                {updateFulfillment.isError ? (
+                  <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                    {updateFulfillment.error.message}
+                  </p>
+                ) : null}
+              </div>
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="eyebrow">Shop inventory</p>
@@ -4264,6 +4402,7 @@ function ProviderManagementPage() {
                       <th>Customer</th>
                       <th>Products</th>
                       <th>Quantity</th>
+                      <th>Fulfillment</th>
                       <th>Date</th>
                       <th>Status</th>
                       <th>Total</th>
@@ -4284,6 +4423,7 @@ function ProviderManagementPage() {
                             .join(", ")}
                         </td>
                         <td>{order.itemCount}</td>
+                        <td>{fulfillmentLabel(order.fulfillmentMethod)}</td>
                         <td>{formatDate(order.createdAt)}</td>
                         <td>
                           <span
@@ -5262,6 +5402,8 @@ function OrdersPage() {
     product: ProviderProduct;
     quantity: number;
     selected: boolean;
+    fulfillmentMethods: FulfillmentMethod[];
+    fulfillmentLoaded: boolean;
   };
   const loadCart = (): CartLine[] => {
     const prefix = `petnest-cart-${user?.id ?? "guest"}-`;
@@ -5281,6 +5423,8 @@ function OrdersPage() {
             providerId,
             providerName: `Shop #${providerId}`,
             selected: true,
+            fulfillmentMethods: defaultFulfillmentMethods,
+            fulfillmentLoaded: false,
           })),
         );
       } catch {
@@ -5291,6 +5435,11 @@ function OrdersPage() {
   };
   const [cart, setCart] = useState<CartLine[]>(loadCart);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [pickupCheckoutWarningOpen, setPickupCheckoutWarningOpen] =
+    useState(false);
+  const [fulfillmentSelections, setFulfillmentSelections] = useState<
+    Record<number, FulfillmentMethod | undefined>
+  >({});
   const [cartError, setCartError] = useState("");
   useEffect(() => {
     const providerIds = [...new Set(cart.map((item) => item.providerId))];
@@ -5307,6 +5456,8 @@ function OrdersPage() {
                 : {
                     ...line,
                     providerName: provider.name,
+                    fulfillmentMethods: getFulfillmentMethods(provider),
+                    fulfillmentLoaded: true,
                     product: provider.products.find(
                       (product) => product.id === line.product.id,
                     ) ?? { ...line.product, active: false, stock: 0 },
@@ -5319,6 +5470,7 @@ function OrdersPage() {
               line.providerId === providerId
                 ? {
                     ...line,
+                    fulfillmentLoaded: true,
                     product: { ...line.product, active: false, stock: 0 },
                   }
                 : line,
@@ -5345,6 +5497,28 @@ function OrdersPage() {
     setCart(next);
   };
   const selected = cart.filter((item) => item.selected);
+  const selectedProviderIds = [
+    ...new Set(selected.map((item) => item.providerId)),
+  ];
+  const methodsForProvider = (providerId: number) =>
+    selected.find((item) => item.providerId === providerId)
+      ?.fulfillmentMethods ?? defaultFulfillmentMethods;
+  const selectedMethodForProvider = (providerId: number) => {
+    const supported = methodsForProvider(providerId);
+    return supported.length === 1
+      ? supported[0]
+      : fulfillmentSelections[providerId];
+  };
+  const fulfillmentSelectionComplete = selectedProviderIds.every(
+    (providerId) => selectedMethodForProvider(providerId) !== undefined,
+  );
+  const fulfillmentSettingsLoaded = selected.every(
+    (item) => item.fulfillmentLoaded,
+  );
+  const hasPickupOnlyOrder = selectedProviderIds.some((providerId) => {
+    const supported = methodsForProvider(providerId);
+    return supported.length === 1 && supported[0] === "PICKUP";
+  });
   const cartTotal = selected.reduce(
     (sum, item) => sum + item.product.price * item.quantity,
     0,
@@ -5353,15 +5527,14 @@ function OrdersPage() {
     mutationFn: async () => {
       const succeeded: number[] = [];
       let error = "";
-      for (const providerId of [
-        ...new Set(selected.map((item) => item.providerId)),
-      ]) {
+      for (const providerId of selectedProviderIds) {
         const lines = selected.filter((item) => item.providerId === providerId);
         try {
           await adminRequest("/api/orders", {
             method: "POST",
             body: JSON.stringify({
               providerId,
+              fulfillmentMethod: selectedMethodForProvider(providerId),
               items: lines.map((item) => ({
                 productId: item.product.id,
                 quantity: item.quantity,
@@ -5524,6 +5697,7 @@ function OrdersPage() {
                 className="btn btn-primary"
                 disabled={
                   !selected.length ||
+                  !fulfillmentSettingsLoaded ||
                   selected.some(
                     (item) =>
                       !item.product.active ||
@@ -5532,7 +5706,11 @@ function OrdersPage() {
                 }
                 onClick={() => {
                   setCartError("");
-                  setCheckoutOpen(true);
+                  if (hasPickupOnlyOrder) {
+                    setPickupCheckoutWarningOpen(true);
+                  } else {
+                    setCheckoutOpen(true);
+                  }
                 }}
               >
                 Checkout
@@ -5552,6 +5730,33 @@ function OrdersPage() {
           </p>
         ) : null}
       </section>
+      {pickupCheckoutWarningOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal animate-in" role="alertdialog" aria-modal="true">
+            <h2 className="modal-title">Pickup Only</h2>
+            <p className="mt-3 text-sm text-muted-foreground">
+              This is only for pick-up, do you still wish to continue?
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                className="btn btn-ghost"
+                onClick={() => setPickupCheckoutWarningOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setPickupCheckoutWarningOpen(false);
+                  setCheckoutOpen(true);
+                }}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="mt-8">
         {query.isLoading ? (
           <LoadingState label="Checking on your deliveries" />
@@ -5566,6 +5771,7 @@ function OrdersPage() {
                   <th>Provider</th>
                   <th>Placed</th>
                   <th>Items</th>
+                  <th>Fulfillment</th>
                   <th>Status</th>
                   <th className="text-right">Total</th>
                 </tr>
@@ -5599,6 +5805,7 @@ function OrdersPage() {
                         </div>
                       ) : null}
                     </td>
+                    <td>{fulfillmentLabel(order.fulfillmentMethod)}</td>
                     <td>
                       <span
                         className={`status status-${order.status.toLowerCase()}`}
@@ -5665,13 +5872,57 @@ function OrdersPage() {
                 </div>
               ))}
             </div>
+            <div className="mt-5 space-y-4 border-t pt-4">
+              {selectedProviderIds.map((providerId) => {
+                const supported = methodsForProvider(providerId);
+                const providerName = selected.find(
+                  (item) => item.providerId === providerId,
+                )?.providerName;
+                return (
+                  <fieldset key={providerId}>
+                    <legend className="font-semibold">
+                      {supported.length === 2
+                        ? "How would you like to receive your order?"
+                        : supported[0] === "PICKUP"
+                          ? "Pickup Only"
+                          : "Delivery"}
+                    </legend>
+                    <p className="mt-1 text-xs text-muted-foreground">{providerName}</p>
+                    {supported.length === 2 ? (
+                      <div className="mt-3 flex flex-wrap gap-5">
+                        {supported.map((method) => (
+                          <label className="flex items-center gap-2 text-sm" key={method}>
+                            <input
+                              type="radio"
+                              name={`fulfillment-${providerId}`}
+                              checked={fulfillmentSelections[providerId] === method}
+                              onChange={() =>
+                                setFulfillmentSelections((current) => ({
+                                  ...current,
+                                  [providerId]: method,
+                                }))
+                              }
+                            />
+                            {fulfillmentLabel(method)}
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        Fulfillment Method: {fulfillmentLabel(supported[0])}
+                      </p>
+                    )}
+                  </fieldset>
+                );
+              })}
+            </div>
             <div className="mt-5 flex items-center justify-between border-t pt-4 font-semibold">
               <span>Total</span>
               <span className="font-mono">{money(cartTotal)}</span>
             </div>
             <button
               className="btn btn-primary mt-5 w-full"
-              disabled={checkout.isPending}
+              disabled={checkout.isPending || !fulfillmentSelectionComplete}
               onClick={() => checkout.mutate()}
             >
               {checkout.isPending ? "Placing order…" : "Place Order"}
@@ -6195,6 +6446,7 @@ function MainRouter() {
         <Switch>
           <Route path="/admin/providers" component={AdminProvidersPage} />
           <Route path="/admin/bookings" component={AdminBookingsPage} />
+          <Route path="/admin/orders" component={AdminOrdersPage} />
           <Route path="/admin/accounts" component={AdminAccountsPage} />
           <Route path="/admin/logs" component={AdminLogsPage} />
           <Route>

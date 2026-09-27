@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { FulfillmentMethod } from './fulfillmentMethod.js';
 
 export interface Provider {
   id: number;
@@ -17,4 +18,5 @@ export interface Provider {
   startingPrice: number;
   imageUrl: string;
   verified?: boolean;
+  fulfillmentMethods?: FulfillmentMethod[];
 }

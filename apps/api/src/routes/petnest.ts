@@ -33,6 +33,12 @@ import {
   UpdatePetParams,
   UpdatePetResponse,
 } from "@workspace/api-zod";
+import {
+  hasValidFulfillmentConfiguration,
+  supportedFulfillmentMethods,
+  supportsFulfillmentMethod,
+  type FulfillmentMethod,
+} from "../lib/fulfillment.js";
 
 type ProviderService = {
   id: number;
@@ -76,6 +82,7 @@ type Provider = {
   hours: string;
   services: ProviderService[];
   products: ProviderProduct[];
+  fulfillmentMethods?: FulfillmentMethod[];
   active?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -134,6 +141,7 @@ type Order = {
   customerId: string;
   total: number;
   status: string;
+  fulfillmentMethod?: FulfillmentMethod;
   itemCount: number;
   items: Array<{
     productId: number;
@@ -1730,8 +1738,23 @@ router.patch("/provider/profile", async (req, res) => {
     return;
   }
   const { id: _id, ...providerInput } = parsed.data;
+  if (
+    !hasValidFulfillmentConfiguration(
+      providerInput.fulfillmentMethods,
+      providerInput.products.some((product) => product.active),
+    )
+  ) {
+    res.status(400).json({
+      error:
+        "Choose Pickup, Delivery, or both while actively selling pet supplies.",
+    });
+    return;
+  }
   const changes: Omit<Provider, "id"> = {
     ...providerInput,
+    ...(providerInput.fulfillmentMethods !== undefined
+      ? { fulfillmentMethods: supportedFulfillmentMethods(providerInput.fulfillmentMethods) }
+      : {}),
     imageUrl: providerInput.imageUrl ?? existing.imageUrl,
     verified: existing.verified,
     services: providerInput.services.map((service) => ({
@@ -1801,6 +1824,7 @@ router.post("/admin/providers", async (req, res) => {
     verified: false,
     services: [],
     products: [],
+    fulfillmentMethods: ["PICKUP"],
     active: true,
     createdAt: now,
     updatedAt: now,
@@ -2044,6 +2068,16 @@ router.post("/provider/products", async (req, res) => {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
+  if (
+    product.active &&
+    !hasValidFulfillmentConfiguration(provider.fulfillmentMethods, true)
+  ) {
+    res.status(400).json({
+      error:
+        "Choose Pickup, Delivery, or both before activating pet supplies.",
+    });
+    return;
+  }
   const savedProvider = await providerCollection.findOneAndUpdate(
     { id: provider.id },
     {
@@ -2104,6 +2138,16 @@ router.patch("/provider/products/:productId", async (req, res) => {
         : existing.imageUrl,
     updatedAt: new Date().toISOString(),
   };
+  if (
+    updated.active &&
+    !hasValidFulfillmentConfiguration(provider.fulfillmentMethods, true)
+  ) {
+    res.status(400).json({
+      error:
+        "Choose Pickup, Delivery, or both before activating pet supplies.",
+    });
+    return;
+  }
   await providerCollection.updateOne(
     { id: provider.id, "products.id": productId },
     { $set: { "products.$": updated, updatedAt: new Date().toISOString() } },
@@ -2954,6 +2998,16 @@ router.get("/provider/orders", async (req, res) => {
   res.json(ListOrdersResponse.parse(orders));
 });
 
+router.get("/admin/orders", async (req, res) => {
+  const access = await requireAdmin(req, res);
+  if (!access) return;
+  const orders = await orderCollection
+    .find({}, { projection: { _id: 0, ownerId: 0 } })
+    .sort({ id: -1 })
+    .toArray();
+  res.json(ListOrdersResponse.parse(orders));
+});
+
 router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -3009,6 +3063,17 @@ router.post("/orders", async (req, res) => {
   });
   if (!provider) {
     res.status(400).json({ error: "Choose a valid provider." });
+    return;
+  }
+  if (
+    !supportsFulfillmentMethod(
+      provider.fulfillmentMethods,
+      parsed.data.fulfillmentMethod,
+    )
+  ) {
+    res.status(400).json({
+      error: "This provider does not support the selected fulfillment method.",
+    });
     return;
   }
   const requested = parsed.data.items;
@@ -3099,6 +3164,7 @@ router.post("/orders", async (req, res) => {
     customerId: access.userId,
     total,
     status: "PENDING",
+    fulfillmentMethod: parsed.data.fulfillmentMethod,
     itemCount: parsed.data.items.reduce((sum, item) => sum + item.quantity, 0),
     items: orderItems,
     createdAt: new Date().toISOString(),
