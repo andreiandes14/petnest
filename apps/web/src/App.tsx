@@ -2744,8 +2744,23 @@ function AdminProvidersPage() {
     enabled: isAdmin,
   });
   const save = useMutation({
-    mutationFn: () =>
-      adminRequest<AdminProvider>(
+    mutationFn: () => {
+      if (
+        !form.name.trim() ||
+        !form.location.trim() ||
+        !form.description.trim() ||
+        !form.contact.trim() ||
+        !form.hours.trim() ||
+        !form.categories.length ||
+        (!editing && (!form.email.trim() || !form.password))
+      ) {
+        throw new Error(
+          editing
+            ? "Provider details are required."
+            : "Provider details, login email, and password are required.",
+        );
+      }
+      return adminRequest<AdminProvider>(
         editing ? `/api/admin/providers/${editing.id}` : "/api/admin/providers",
         {
           method: editing ? "PATCH" : "POST",
@@ -2753,7 +2768,8 @@ function AdminProvidersPage() {
             editing ? { ...form, active: editing.active !== false } : form,
           ),
         },
-      ),
+      );
+    },
     onSuccess: () => {
       setForm(emptyProviderForm);
       setEditing(null);
@@ -2844,7 +2860,9 @@ function AdminProvidersPage() {
                 <label className="form-label">Provider login email</label>
                 <input
                   className="input"
-                  type="email"
+                  type="text"
+                  autoComplete="username"
+                  required
                   value={form.email}
                   onChange={(event) =>
                     setForm({ ...form, email: event.target.value })
@@ -2856,7 +2874,8 @@ function AdminProvidersPage() {
                 <input
                   className="input"
                   type="password"
-                  minLength={8}
+                  autoComplete="new-password"
+                  required
                   value={form.password}
                   onChange={(event) =>
                     setForm({ ...form, password: event.target.value })
@@ -6226,13 +6245,13 @@ function SignInPage() {
         <div className="mt-7 space-y-4">
           <div className="form-field">
             <label className="form-label" htmlFor="signin-email">
-              Email
+              Email or login
             </label>
             <input
               className="input"
               id="signin-email"
-              type="email"
-              autoComplete="email"
+              type="text"
+              autoComplete="username"
               required
               value={form.email}
               onChange={(event) =>

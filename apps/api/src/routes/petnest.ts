@@ -1802,10 +1802,10 @@ router.post("/admin/providers", async (req, res) => {
   const email =
     typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const password = typeof body.password === "string" ? body.password : "";
-  if (!input || !/^\S+@\S+\.\S+$/.test(email) || password.length < 8) {
+  if (!input || !email || !password) {
     res.status(400).json({
       error:
-        "Provider details, a valid email, and an 8-character password are required.",
+        "Provider details, login email, and password are required.",
     });
     return;
   }
