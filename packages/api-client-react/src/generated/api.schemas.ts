@@ -181,6 +181,15 @@ export interface Booking {
   cancellationDecidedAt?: string | null;
 }
 
+export interface DeliveryAddress {
+  recipientName: string;
+  contactNumber: string;
+  streetAddress: string;
+  barangay: string;
+  cityMunicipality: string;
+  instructions?: string;
+}
+
 export type OrderInputItemsItem = {
   productId: number;
   quantity: number;
@@ -189,6 +198,7 @@ export type OrderInputItemsItem = {
 export interface OrderInput {
   providerId: number;
   fulfillmentMethod: FulfillmentMethod;
+  deliveryAddress?: DeliveryAddress;
   items: OrderInputItemsItem[];
 }
 
@@ -209,6 +219,7 @@ export interface Order {
   total: number;
   status: string;
   fulfillmentMethod?: FulfillmentMethod;
+  deliveryAddress?: DeliveryAddress;
   itemCount: number;
   items: OrderItemsItem[];
   createdAt: string;
@@ -235,4 +246,3 @@ export const ListProvidersCategory = {
   vaccination: 'vaccination',
   'pet-supplies': 'pet-supplies',
 } as const;
-

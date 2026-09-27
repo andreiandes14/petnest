@@ -273,6 +273,14 @@ export const ListOrdersResponseItem = zod.object({
   "total": zod.number(),
   "status": zod.string(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
+  "deliveryAddress": zod.object({
+  "recipientName": zod.string(),
+  "contactNumber": zod.string(),
+  "streetAddress": zod.string(),
+  "barangay": zod.string(),
+  "cityMunicipality": zod.string(),
+  "instructions": zod.string().optional()
+}).optional(),
   "itemCount": zod.number(),
   "items": zod.array(zod.object({
   "productId": zod.number(),
@@ -292,6 +300,14 @@ export const ListOrdersResponse = zod.array(ListOrdersResponseItem)
 export const CreateOrderBody = zod.object({
   "providerId": zod.number(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']),
+  "deliveryAddress": zod.object({
+  "recipientName": zod.string(),
+  "contactNumber": zod.string(),
+  "streetAddress": zod.string(),
+  "barangay": zod.string(),
+  "cityMunicipality": zod.string(),
+  "instructions": zod.string().optional()
+}).optional(),
   "items": zod.array(zod.object({
   "productId": zod.number(),
   "quantity": zod.number()
@@ -307,6 +323,14 @@ export const CreateOrderResponse = zod.object({
   "total": zod.number(),
   "status": zod.string(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
+  "deliveryAddress": zod.object({
+  "recipientName": zod.string(),
+  "contactNumber": zod.string(),
+  "streetAddress": zod.string(),
+  "barangay": zod.string(),
+  "cityMunicipality": zod.string(),
+  "instructions": zod.string().optional()
+}).optional(),
   "itemCount": zod.number(),
   "items": zod.array(zod.object({
   "productId": zod.number(),
@@ -357,5 +381,4 @@ export const GetDashboardSummaryResponse = zod.object({
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))
 })
-
 

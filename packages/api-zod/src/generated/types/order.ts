@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { DeliveryAddress } from './deliveryAddress.js';
 import type { FulfillmentMethod } from './fulfillmentMethod.js';
 import type { OrderItemsItem } from './orderItemsItem.js';
 
@@ -17,6 +18,7 @@ export interface Order {
   total: number;
   status: string;
   fulfillmentMethod?: FulfillmentMethod;
+  deliveryAddress?: DeliveryAddress;
   itemCount: number;
   items: OrderItemsItem[];
   createdAt: Date;

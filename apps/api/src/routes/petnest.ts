@@ -142,6 +142,14 @@ type Order = {
   total: number;
   status: string;
   fulfillmentMethod?: FulfillmentMethod;
+  deliveryAddress?: {
+    recipientName: string;
+    contactNumber: string;
+    streetAddress: string;
+    barangay: string;
+    cityMunicipality: string;
+    instructions?: string;
+  };
   itemCount: number;
   items: Array<{
     productId: number;
@@ -3051,11 +3059,28 @@ router.patch("/provider/bookings/:bookingId/archive", async (req, res) => {
   }
   const provider = await providerCollection.findOne({ id: access.providerId });
   const assignedCare = assignedCareCategories(provider);
+  const existing = await bookingCollection.findOne({
+    id: bookingId,
+    providerId: access.providerId,
+    serviceCategory: { $in: assignedCare },
+  });
+  if (!existing) {
+    res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  if (
+    req.body.archived &&
+    !["completed", "cancelled"].includes(existing.status.trim().toLowerCase())
+  ) {
+    res.status(409).json({ error: "Only completed or cancelled bookings can be archived." });
+    return;
+  }
   const booking = await bookingCollection.findOneAndUpdate(
     {
       id: bookingId,
       providerId: access.providerId,
       serviceCategory: { $in: assignedCare },
+      status: existing.status,
     },
     { $set: { archived: req.body.archived, updatedAt: new Date().toISOString() } },
     { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
@@ -3098,6 +3123,34 @@ router.get("/orders", async (req, res) => {
     .sort({ id: -1 })
     .toArray();
   res.json(ListOrdersResponse.parse(orders));
+});
+
+router.patch("/orders/:orderId/cancel", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const orderId = Number(req.params.orderId);
+  if (!Number.isInteger(orderId) || orderId < 1) {
+    res.status(400).json({ error: "Choose a valid order." });
+    return;
+  }
+  const order = await orderCollection.findOneAndUpdate(
+    { id: orderId, ownerId: access.userId, status: "PENDING" },
+    { $set: { status: "CANCELLED" } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!order) {
+    const ownedOrder = await orderCollection.findOne({
+      id: orderId,
+      ownerId: access.userId,
+    });
+    if (!ownedOrder) {
+      res.status(404).json({ error: "Order not found." });
+      return;
+    }
+    res.status(409).json({ error: "Only pending orders can be cancelled." });
+    return;
+  }
+  res.json(CreateOrderResponse.parse(order));
 });
 
 router.get("/provider/orders", async (req, res) => {
@@ -3211,8 +3264,23 @@ router.patch("/provider/orders/:orderId/archive", async (req, res) => {
     res.status(400).json({ error: "Choose a valid order archive state." });
     return;
   }
+  const existing = await orderCollection.findOne({
+    id: orderId,
+    providerId: access.providerId,
+  });
+  if (!existing) {
+    res.status(404).json({ error: "Order not found." });
+    return;
+  }
+  if (
+    req.body.archived &&
+    !["completed", "cancelled"].includes(existing.status.trim().toLowerCase())
+  ) {
+    res.status(409).json({ error: "Only completed or cancelled orders can be archived." });
+    return;
+  }
   const order = await orderCollection.findOneAndUpdate(
-    { id: orderId, providerId: access.providerId },
+    { id: orderId, providerId: access.providerId, status: existing.status },
     { $set: { archived: req.body.archived } },
     { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
   );
@@ -3252,6 +3320,21 @@ router.post("/orders", async (req, res) => {
     res.status(400).json({
       error: "This provider does not support the selected fulfillment method.",
     });
+    return;
+  }
+  const deliveryAddress = parsed.data.deliveryAddress;
+  if (
+    parsed.data.fulfillmentMethod === "DELIVERY" &&
+    (!deliveryAddress ||
+      ![
+        deliveryAddress.recipientName,
+        deliveryAddress.contactNumber,
+        deliveryAddress.streetAddress,
+        deliveryAddress.barangay,
+        deliveryAddress.cityMunicipality,
+      ].every((value) => value.trim().length > 0))
+  ) {
+    res.status(400).json({ error: "Complete all required delivery address fields." });
     return;
   }
   const requested = parsed.data.items;
@@ -3343,6 +3426,18 @@ router.post("/orders", async (req, res) => {
     total,
     status: "PENDING",
     fulfillmentMethod: parsed.data.fulfillmentMethod,
+    ...(parsed.data.fulfillmentMethod === "DELIVERY" && deliveryAddress
+      ? {
+          deliveryAddress: {
+            recipientName: deliveryAddress.recipientName.trim(),
+            contactNumber: deliveryAddress.contactNumber.trim(),
+            streetAddress: deliveryAddress.streetAddress.trim(),
+            barangay: deliveryAddress.barangay.trim(),
+            cityMunicipality: deliveryAddress.cityMunicipality.trim(),
+            instructions: deliveryAddress.instructions?.trim() ?? "",
+          },
+        }
+      : {}),
     itemCount: parsed.data.items.reduce((sum, item) => sum + item.quantity, 0),
     items: orderItems,
     createdAt: new Date().toISOString(),

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   createContext,
   useContext,
   useEffect,
@@ -53,6 +54,7 @@ import type {
   ProviderService,
   Order,
   FulfillmentMethod,
+  DeliveryAddress,
 } from "@workspace/api-client-react";
 import {
   ArrowRight,
@@ -105,6 +107,39 @@ const fulfillmentLabel = (method?: FulfillmentMethod) =>
     : method === "DELIVERY"
       ? "Delivery"
       : "Not specified";
+const emptyDeliveryAddress = (): DeliveryAddress => ({
+  recipientName: "",
+  contactNumber: "",
+  streetAddress: "",
+  barangay: "",
+  cityMunicipality: "",
+  instructions: "",
+});
+const deliveryAddressComplete = (address?: DeliveryAddress) =>
+  Boolean(
+    address &&
+      [
+        address.recipientName,
+        address.contactNumber,
+        address.streetAddress,
+        address.barangay,
+        address.cityMunicipality,
+      ].every((value) => value.trim()),
+  );
+
+function DeliveryAddressDetails({ address }: { address: DeliveryAddress }) {
+  return (
+    <div className="mt-2 text-xs leading-5 text-muted-foreground">
+      <p className="font-semibold text-foreground">Delivery Address</p>
+      <p>Full Name: {address.recipientName}</p>
+      <p>Contact Number: {address.contactNumber}</p>
+      <p>Street / House No. / Building: {address.streetAddress}</p>
+      <p>Barangay: {address.barangay}</p>
+      <p>City / Municipality: {address.cityMunicipality}</p>
+      {address.instructions ? <p>Delivery Instructions: {address.instructions}</p> : null}
+    </div>
+  );
+}
 type UserRole = "customer" | "provider" | "admin";
 type AuthUser = {
   id: string;
@@ -3287,6 +3322,9 @@ function ProviderManagementPage() {
   const [scheduleDate, setScheduleDate] = useState("");
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
   const [notice, setNotice] = useState("");
+  const [expandedOrderIds, setExpandedOrderIds] = useState<Set<number>>(
+    () => new Set(),
+  );
   const [bookingCategory, setBookingCategory] = useState<"grooming" | "vaccination">("grooming");
   const [archiveCategory, setArchiveCategory] = useState<"orders" | "bookings" | "vaccinations">("orders");
   const [archiveTarget, setArchiveTarget] = useState<{
@@ -4541,9 +4579,38 @@ function ProviderManagementPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {providerOrdersQuery.data.map((order) => (
-                      <tr key={order.id}>
-                        <td>#{order.id}</td>
+                    {providerOrdersQuery.data.map((order) => {
+                      const isDelivery = order.fulfillmentMethod === "DELIVERY";
+                      const isExpanded = expandedOrderIds.has(order.id);
+                      return (
+                      <Fragment key={order.id}>
+                      <tr>
+                        <td>
+                          <div className="flex items-center gap-2">
+                            {isDelivery ? (
+                              <button
+                                className="btn btn-ghost h-8 min-h-0 px-2"
+                                type="button"
+                                aria-label={`${isExpanded ? "Collapse" : "Expand"} delivery address for order ${order.id}`}
+                                aria-expanded={isExpanded}
+                                onClick={() =>
+                                  setExpandedOrderIds((current) => {
+                                    const next = new Set(current);
+                                    if (next.has(order.id)) next.delete(order.id);
+                                    else next.add(order.id);
+                                    return next;
+                                  })
+                                }
+                              >
+                                <ChevronRight
+                                  size={15}
+                                  className={`transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                                />
+                              </button>
+                            ) : null}
+                            <span>#{order.id}</span>
+                          </div>
+                        </td>
                         <td>{order.customerName}</td>
                         <td>
                           {order.items
@@ -4581,16 +4648,33 @@ function ProviderManagementPage() {
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
-                          <button
-                            className="btn btn-ghost h-9 min-h-0 px-4 text-xs"
-                            onClick={() => setArchiveTarget({ kind: "order", id: order.id, label: `order #${order.id}`, archived: true })}
-                          >
-                            Archive
-                          </button>
+                          {["completed", "cancelled"].includes(order.status.trim().toLowerCase()) ? (
+                            <button
+                              className="btn btn-ghost h-9 min-h-0 px-4 text-xs"
+                              onClick={() => setArchiveTarget({ kind: "order", id: order.id, label: `order #${order.id}`, archived: true })}
+                            >
+                              Archive
+                            </button>
+                          ) : null}
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      {isDelivery && isExpanded ? (
+                        <tr>
+                          <td colSpan={9} className="bg-muted/30 px-6 py-4">
+                            {order.deliveryAddress ? (
+                              <DeliveryAddressDetails address={order.deliveryAddress} />
+                            ) : (
+                              <p className="text-sm text-muted-foreground">
+                                Delivery address unavailable.
+                              </p>
+                            )}
+                          </td>
+                        </tr>
+                      ) : null}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                   </table>
                 </div>
@@ -4742,12 +4826,14 @@ function ProviderManagementPage() {
                           ) : null}
                         </td>
                         <td>
-                          <button
-                            className="btn btn-ghost h-9 min-h-0 text-xs"
-                            onClick={() => setArchiveTarget({ kind: "booking", id: booking.id, label: `${booking.serviceName} booking`, archived: true })}
-                          >
-                            Archive
-                          </button>
+                          {["completed", "cancelled"].includes(booking.status.trim().toLowerCase()) ? (
+                            <button
+                              className="btn btn-ghost h-9 min-h-0 text-xs"
+                              onClick={() => setArchiveTarget({ kind: "booking", id: booking.id, label: `${booking.serviceName} booking`, archived: true })}
+                            >
+                              Archive
+                            </button>
+                          ) : null}
                         </td>
                       </tr>
                     ))}
@@ -4781,6 +4867,9 @@ function ProviderManagementPage() {
                       <div className="flex-1">
                         <p className="font-semibold">Order #{order.id} · {order.customerName}</p>
                         <p className="text-xs text-muted-foreground">{order.items.map((item) => `${item.productName} × ${item.quantity}`).join(", ")} · {fulfillmentLabel(order.fulfillmentMethod)}</p>
+                        {order.fulfillmentMethod === "DELIVERY" && order.deliveryAddress ? (
+                          <DeliveryAddressDetails address={order.deliveryAddress} />
+                        ) : null}
                         <p className="mt-1 text-sm text-muted-foreground">{formatDate(order.createdAt)} · {statusLabel(order.status)} · {money(order.total)}</p>
                       </div>
                       <button className="btn btn-ghost" onClick={() => setArchiveTarget({ kind: "order", id: order.id, label: `order #${order.id}`, archived: false })}>Restore</button>
@@ -5627,6 +5716,7 @@ function OrdersPage() {
   const { user } = useAuth();
   const query = useListOrders({ query: { queryKey: getListOrdersQueryKey() } });
   const orders = query.data ?? [];
+  const [cancelOrderTarget, setCancelOrderTarget] = useState<Order | null>(null);
   type CartLine = {
     providerId: number;
     providerName: string;
@@ -5671,7 +5761,27 @@ function OrdersPage() {
   const [fulfillmentSelections, setFulfillmentSelections] = useState<
     Record<number, FulfillmentMethod | undefined>
   >({});
+  const [deliveryAddresses, setDeliveryAddresses] = useState<
+    Record<number, DeliveryAddress>
+  >({});
   const [cartError, setCartError] = useState("");
+  const cancelOrder = useMutation({
+    mutationFn: (orderId: number) =>
+      adminRequest<Order>(`/api/orders/${orderId}/cancel`, {
+        method: "PATCH",
+      }),
+    onSuccess: (cancelledOrder) => {
+      setCancelOrderTarget(null);
+      queryClient.setQueryData<Order[]>(
+        getListOrdersQueryKey(),
+        (current = []) =>
+          current.map((order) =>
+            order.id === cancelledOrder.id ? cancelledOrder : order,
+          ),
+      );
+      queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+    },
+  });
   useEffect(() => {
     const providerIds = [...new Set(cart.map((item) => item.providerId))];
     void Promise.all(
@@ -5740,6 +5850,18 @@ function OrdersPage() {
       ? supported[0]
       : fulfillmentSelections[providerId];
   };
+  const updateDeliveryAddress = (
+    providerId: number,
+    field: keyof DeliveryAddress,
+    value: string,
+  ) =>
+    setDeliveryAddresses((current) => ({
+      ...current,
+      [providerId]: {
+        ...(current[providerId] ?? emptyDeliveryAddress()),
+        [field]: value,
+      },
+    }));
   const fulfillmentSelectionComplete = selectedProviderIds.every(
     (providerId) => selectedMethodForProvider(providerId) !== undefined,
   );
@@ -5766,6 +5888,9 @@ function OrdersPage() {
             body: JSON.stringify({
               providerId,
               fulfillmentMethod: selectedMethodForProvider(providerId),
+              ...(selectedMethodForProvider(providerId) === "DELIVERY"
+                ? { deliveryAddress: deliveryAddresses[providerId] }
+                : {}),
               items: lines.map((item) => ({
                 productId: item.product.id,
                 quantity: item.quantity,
@@ -5799,6 +5924,19 @@ function OrdersPage() {
       );
     },
   });
+  const placeSelectedOrders = () => {
+    const incompleteDelivery = selectedProviderIds.some(
+      (providerId) =>
+        selectedMethodForProvider(providerId) === "DELIVERY" &&
+        !deliveryAddressComplete(deliveryAddresses[providerId]),
+    );
+    if (incompleteDelivery) {
+      setCartError("Complete all required delivery address fields.");
+      return;
+    }
+    setCartError("");
+    checkout.mutate();
+  };
   return (
     <div className="animate-in">
       <p className="eyebrow">Good things, on the way</p>
@@ -6005,6 +6143,7 @@ function OrdersPage() {
                   <th>Fulfillment</th>
                   <th>Status</th>
                   <th className="text-right">Total</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -6036,7 +6175,12 @@ function OrdersPage() {
                         </div>
                       ) : null}
                     </td>
-                    <td>{fulfillmentLabel(order.fulfillmentMethod)}</td>
+                    <td>
+                      {fulfillmentLabel(order.fulfillmentMethod)}
+                      {order.fulfillmentMethod === "DELIVERY" && order.deliveryAddress ? (
+                        <DeliveryAddressDetails address={order.deliveryAddress} />
+                      ) : null}
+                    </td>
                     <td>
                       <span
                         className={`status status-${order.status.toLowerCase()}`}
@@ -6046,6 +6190,20 @@ function OrdersPage() {
                     </td>
                     <td className="text-right font-mono">
                       {money(order.total)}
+                    </td>
+                    <td>
+                      {order.status.trim().toUpperCase() === "PENDING" ? (
+                        <button
+                          className="btn btn-ghost h-9 min-h-0 px-3 text-xs"
+                          type="button"
+                          onClick={() => {
+                            cancelOrder.reset();
+                            setCancelOrderTarget(order);
+                          }}
+                        >
+                          Cancel Order
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -6069,6 +6227,52 @@ function OrdersPage() {
           />
         )}
       </div>
+      {cancelOrderTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="cancel-order-title"
+            aria-describedby="cancel-order-description"
+          >
+            <h2 className="modal-title" id="cancel-order-title">
+              Cancel order?
+            </h2>
+            <p className="mt-3 text-sm text-muted-foreground" id="cancel-order-description">
+              Are you sure you want to cancel this order?
+            </p>
+            {cancelOrder.isError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {cancelOrder.error instanceof Error
+                  ? cancelOrder.error.message
+                  : "We could not cancel this order."}
+              </p>
+            ) : null}
+            <div className="mt-6 flex gap-3">
+              <button
+                className="btn btn-ghost flex-1"
+                type="button"
+                disabled={cancelOrder.isPending}
+                onClick={() => {
+                  cancelOrder.reset();
+                  setCancelOrderTarget(null);
+                }}
+              >
+                Keep Order
+              </button>
+              <button
+                className="btn btn-primary flex-1"
+                type="button"
+                disabled={cancelOrder.isPending}
+                onClick={() => cancelOrder.mutate(cancelOrderTarget.id)}
+              >
+                {cancelOrder.isPending ? "Cancelling…" : "Cancel Order"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {checkoutOpen ? (
         <div className="modal-backdrop" role="presentation">
           <div className="modal animate-in" role="dialog" aria-modal="true">
@@ -6127,12 +6331,13 @@ function OrdersPage() {
                               type="radio"
                               name={`fulfillment-${providerId}`}
                               checked={fulfillmentSelections[providerId] === method}
-                              onChange={() =>
+                              onChange={() => {
+                                setCartError("");
                                 setFulfillmentSelections((current) => ({
                                   ...current,
                                   [providerId]: method,
-                                }))
-                              }
+                                }));
+                              }}
                             />
                             {fulfillmentLabel(method)}
                           </label>
@@ -6143,6 +6348,38 @@ function OrdersPage() {
                         Fulfillment Method: {fulfillmentLabel(supported[0])}
                       </p>
                     )}
+                    {selectedMethodForProvider(providerId) === "DELIVERY" ? (
+                      <div className="mt-4 border-t pt-4">
+                        <p className="eyebrow">Delivery Address</p>
+                        <div className="form-grid mt-3">
+                          {([
+                            ["recipientName", "Full Name"],
+                            ["contactNumber", "Contact Number"],
+                            ["streetAddress", "Street / House No. / Building"],
+                            ["barangay", "Barangay"],
+                            ["cityMunicipality", "City / Municipality"],
+                          ] as const).map(([field, label]) => (
+                            <label className="form-field" key={field}>
+                              <span className="form-label">{label}</span>
+                              <input
+                                className="input"
+                                required
+                                value={deliveryAddresses[providerId]?.[field] ?? ""}
+                                onChange={(event) => updateDeliveryAddress(providerId, field, event.target.value)}
+                              />
+                            </label>
+                          ))}
+                          <label className="form-field">
+                            <span className="form-label">Delivery Instructions (Optional)</span>
+                            <textarea
+                              className="input h-20 py-3"
+                              value={deliveryAddresses[providerId]?.instructions ?? ""}
+                              onChange={(event) => updateDeliveryAddress(providerId, "instructions", event.target.value)}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    ) : null}
                   </fieldset>
                 );
               })}
@@ -6154,10 +6391,15 @@ function OrdersPage() {
             <button
               className="btn btn-primary mt-5 w-full"
               disabled={checkout.isPending || !fulfillmentSelectionComplete}
-              onClick={() => checkout.mutate()}
+              onClick={placeSelectedOrders}
             >
               {checkout.isPending ? "Placing order…" : "Place Order"}
             </button>
+            {cartError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {cartError}
+              </p>
+            ) : null}
           </div>
         </div>
       ) : null}
