@@ -58,6 +58,7 @@ import type {
 } from "@workspace/api-client-react";
 import {
   ArrowRight,
+  Bell,
   CalendarDays,
   Check,
   ChevronLeft,
@@ -404,6 +405,108 @@ const visibleNavItems = presentationMode
   : navItems;
 const visibleCategories = Object.entries(categoryMeta);
 
+type AppNotification = {
+  id: string;
+  type: string;
+  message: string;
+  relatedRecordId?: string;
+  relatedRecordType?: string;
+  href?: string;
+  read: boolean;
+  createdAt: string;
+};
+
+function NotificationBell({ userId }: { userId: string }) {
+  const [, setLocation] = useLocation();
+  const [open, setOpen] = useState(false);
+  const query = useQuery({
+    queryKey: ["notifications", userId],
+    queryFn: () => adminRequest<AppNotification[]>("/api/notifications"),
+    refetchInterval: 15_000,
+  });
+  const notifications = query.data ?? [];
+  const unreadCount = notifications.filter((notification) => !notification.read).length;
+  const markAllRead = useMutation({
+    mutationFn: () =>
+      adminRequest<{ success: boolean }>("/api/notifications/read-all", {
+        method: "PATCH",
+      }),
+    onSuccess: () =>
+      queryClient.setQueryData<AppNotification[]>(["notifications", userId], (current = []) =>
+        current.map((notification) => ({ ...notification, read: true })),
+      ),
+  });
+  const openNotification = async (notification: AppNotification) => {
+    if (!notification.read) {
+      const updated = await adminRequest<AppNotification>(
+        `/api/notifications/${encodeURIComponent(notification.id)}/read`,
+        { method: "PATCH" },
+      );
+      queryClient.setQueryData<AppNotification[]>(["notifications", userId], (current = []) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+    }
+    setOpen(false);
+    if (notification.href) setLocation(notification.href);
+  };
+  return (
+    <div className="relative">
+      <button
+        className="btn btn-ghost btn-icon relative"
+        type="button"
+        aria-label="Notifications"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Bell size={18} />
+        {unreadCount ? (
+          <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-destructive px-1 text-center text-[10px] font-bold leading-5 text-white">
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="surface-card absolute right-0 z-50 mt-2 w-[min(24rem,calc(100vw-2rem))] p-4 shadow-xl">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="font-display text-xl">Notifications</h2>
+            <button
+              className="text-xs font-bold text-primary hover:underline"
+              type="button"
+              disabled={!unreadCount || markAllRead.isPending}
+              onClick={() => markAllRead.mutate()}
+            >
+              Mark all as read
+            </button>
+          </div>
+          <div className="mt-3 max-h-96 space-y-2 overflow-y-auto">
+            {query.isLoading ? (
+              <p className="py-4 text-sm text-muted-foreground">Loading notifications…</p>
+            ) : notifications.length ? (
+              notifications.map((notification) => (
+                <button
+                  className={`w-full rounded-xl border p-3 text-left ${notification.read ? "bg-background" : "border-primary/30 bg-primary/5"}`}
+                  type="button"
+                  key={notification.id}
+                  onClick={() => void openNotification(notification)}
+                >
+                  <p className={`text-sm ${notification.read ? "" : "font-semibold"}`}>
+                    {notification.message}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {new Date(notification.createdAt).toLocaleString()}
+                  </p>
+                </button>
+              ))
+            ) : (
+              <p className="py-4 text-sm text-muted-foreground">No notifications yet.</p>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AppShell({ children }: { children: ReactNode }) {
   const { isSignedIn, user } = useAuth();
   const role = user?.role;
@@ -523,6 +626,7 @@ function AppShell({ children }: { children: ReactNode }) {
               <PawPrint size={14} className="text-primary" /> Local pet care
             </div>
             <div className="ml-auto flex items-center gap-2">
+              {isSignedIn && user?.id ? <NotificationBell userId={user.id} /> : null}
               {isSignedIn && role !== "admin" && role !== "provider" ? (
                 <Link
                   href="/pets"
@@ -1115,7 +1219,12 @@ function LegacyBookingModal({
           notes,
         },
       },
-      { onSuccess: () => setComplete(true) },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: ["notifications"] });
+          setComplete(true);
+        },
+      },
     );
   };
   return (
@@ -1410,6 +1519,7 @@ function BookingModal({
             queryKey: getGetDashboardSummaryQueryKey(),
           });
           queryClient.invalidateQueries({ queryKey: ["availability", provider.id] });
+          queryClient.invalidateQueries({ queryKey: ["notifications"] });
           setSavedBooking(booking);
           setComplete(true);
         },
@@ -3641,6 +3751,7 @@ function ProviderManagementPage() {
       });
       setPasswordError("");
       setPasswordSuccess(result.message);
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
     },
   });
   const cancelProviderOrder = useMutation({
@@ -3661,6 +3772,7 @@ function ProviderManagementPage() {
           ),
       );
       queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
       setNotice(`Order #${cancelledOrder.id} cancelled.`);
     },
   });

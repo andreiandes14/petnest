@@ -484,6 +484,19 @@ type UserProfile = {
 };
 type StoredSession = { _id: string; userId: string; expiresAt: Date };
 type BookingLock = { _id: string; token: string; expiresAt: Date };
+type NotificationRole = Role;
+type StoredNotification = {
+  _id: string;
+  recipientUserId: string;
+  recipientRole: NotificationRole;
+  type: string;
+  message: string;
+  relatedRecordId?: string;
+  relatedRecordType?: string;
+  href?: string;
+  read: boolean;
+  createdAt: string;
+};
 
 const legacyOwnerId = "legacy-seed-data";
 
@@ -581,6 +594,86 @@ const sessionCollection: Collection<StoredSession> =
 const counterCollection: Collection<Counter> = database.collection("counters");
 const bookingLockCollection: Collection<BookingLock> =
   database.collection("bookingLocks");
+const notificationCollection: Collection<StoredNotification> =
+  database.collection("notifications");
+
+async function createNotification(input: {
+  eventKey: string;
+  recipientUserId: string;
+  recipientRole: NotificationRole;
+  type: string;
+  message: string;
+  relatedRecordId?: string | number;
+  relatedRecordType?: string;
+  href?: string;
+}) {
+  const notification: StoredNotification = {
+    _id: `${input.recipientUserId}:${input.eventKey}`,
+    recipientUserId: input.recipientUserId,
+    recipientRole: input.recipientRole,
+    type: input.type,
+    message: input.message,
+    ...(input.relatedRecordId !== undefined
+      ? { relatedRecordId: String(input.relatedRecordId) }
+      : {}),
+    ...(input.relatedRecordType ? { relatedRecordType: input.relatedRecordType } : {}),
+    ...(input.href ? { href: input.href } : {}),
+    read: false,
+    createdAt: new Date().toISOString(),
+  };
+  const { _id, ...notificationFields } = notification;
+  try {
+    await notificationCollection.updateOne(
+      { _id },
+      { $setOnInsert: notificationFields },
+      { upsert: true },
+    );
+  } catch {
+    // A notification must never roll back an already-successful business action.
+  }
+}
+
+async function notifyProvider(
+  providerId: number,
+  notification: Omit<Parameters<typeof createNotification>[0], "recipientUserId" | "recipientRole">,
+) {
+  try {
+    const account = await userCollection.findOne({
+      role: "provider",
+      providerId,
+      isActive: { $ne: false },
+    });
+    if (account)
+      await createNotification({
+        ...notification,
+        recipientUserId: account.id,
+        recipientRole: "provider",
+      });
+  } catch {
+    // Notification delivery must not change the completed transaction result.
+  }
+}
+
+async function notifyAdmins(
+  notification: Omit<Parameters<typeof createNotification>[0], "recipientUserId" | "recipientRole">,
+) {
+  try {
+    const admins = await userCollection
+      .find({ role: "admin", isActive: { $ne: false } }, { projection: { id: 1 } })
+      .toArray();
+    await Promise.all(
+      admins.map((admin) =>
+        createNotification({
+          ...notification,
+          recipientUserId: admin.id,
+          recipientRole: "admin",
+        }),
+      ),
+    );
+  } catch {
+    // Notification delivery must not change the completed transaction result.
+  }
+}
 
 async function acquireBookingLock(providerId: number, date: string) {
   const id = `${providerId}:${date}`;
@@ -1185,6 +1278,14 @@ async function register(req: Request, res: Response) {
     pendingUserId = user.id;
     await userCollection.insertOne(user);
     await startSession(res, user.id);
+    await notifyAdmins({
+      eventKey: `customer:${user.id}:registered`,
+      type: "customer_registered",
+      message: `New customer account registered: ${user.name}.`,
+      relatedRecordId: user.id,
+      relatedRecordType: "account",
+      href: "/admin/accounts",
+    });
     res.status(201).json({ user: publicUser(user) });
   } catch (error) {
     await Promise.all([
@@ -1247,6 +1348,50 @@ router.get("/auth/me", async (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+router.get("/notifications", async (req, res) => {
+  const access = await getAccess(req, res);
+  if (!access) return;
+  const notifications = await notificationCollection
+    .find(
+      { recipientUserId: access.userId, recipientRole: access.role },
+      { projection: { recipientUserId: 0, recipientRole: 0 } },
+    )
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .toArray();
+  res.json(notifications.map(({ _id, ...notification }) => ({ id: _id, ...notification })));
+});
+
+router.patch("/notifications/read-all", async (req, res) => {
+  const access = await getAccess(req, res);
+  if (!access) return;
+  await notificationCollection.updateMany(
+    { recipientUserId: access.userId, recipientRole: access.role, read: false },
+    { $set: { read: true } },
+  );
+  res.json({ success: true });
+});
+
+router.patch("/notifications/:notificationId/read", async (req, res) => {
+  const access = await getAccess(req, res);
+  if (!access) return;
+  const notification = await notificationCollection.findOneAndUpdate(
+    {
+      _id: req.params.notificationId,
+      recipientUserId: access.userId,
+      recipientRole: access.role,
+    },
+    { $set: { read: true } },
+    { returnDocument: "after", projection: { recipientUserId: 0, recipientRole: 0 } },
+  );
+  if (!notification) {
+    res.status(404).json({ error: "Notification not found." });
+    return;
+  }
+  const { _id, ...publicNotification } = notification;
+  res.json({ id: _id, ...publicNotification });
+});
+
 router.get("/admin/accounts", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
@@ -1303,6 +1448,14 @@ router.delete("/admin/accounts/:userId", async (req, res) => {
         { $set: { active: false, updatedAt: now } },
       );
     }
+    await notifyAdmins({
+      eventKey: `account:${account.id}:deactivated:${account.deactivatedAt ?? now}`,
+      type: "account_deactivated",
+      message: `${statusLabelForLog(account.role)} account deactivated: ${account.name}.`,
+      relatedRecordId: account.id,
+      relatedRecordType: "account",
+      href: "/admin/accounts",
+    });
     res.json({ ...account, isActive: false });
   } catch {
     res.status(500).json({ error: "Account removal could not be completed. Please retry." });
@@ -1775,6 +1928,16 @@ router.patch("/provider/password", async (req, res) => {
     res.status(409).json({ error: "Password changed elsewhere. Please try again." });
     return;
   }
+  await createNotification({
+    eventKey: `provider:${access.userId}:password-changed:${randomUUID()}`,
+    recipientUserId: access.userId,
+    recipientRole: "provider",
+    type: "password_changed",
+    message: "Your Provider account password was changed successfully.",
+    relatedRecordId: access.userId,
+    relatedRecordType: "account",
+    href: "/provider",
+  });
   res.json({ message: "Password changed successfully." });
 });
 
@@ -1900,6 +2063,26 @@ router.post("/admin/providers", async (req, res) => {
     }
     throw error;
   }
+  await Promise.all([
+    createNotification({
+      eventKey: `provider:${providerId}:account-created`,
+      recipientUserId: user.id,
+      recipientRole: "provider",
+      type: "provider_account_created",
+      message: "Your PetNest Provider account was created.",
+      relatedRecordId: providerId,
+      relatedRecordType: "provider",
+      href: "/provider",
+    }),
+    notifyAdmins({
+      eventKey: `provider:${providerId}:account-created`,
+      type: "provider_account_created",
+      message: `Provider account created: ${provider.name}.`,
+      relatedRecordId: providerId,
+      relatedRecordType: "provider",
+      href: "/admin/providers",
+    }),
+  ]);
   res.status(201).json(GetProviderResponse.parse(provider));
 });
 
@@ -1933,6 +2116,31 @@ router.patch("/admin/providers/:providerId", async (req, res) => {
     },
     { returnDocument: "after", projection: { _id: 0 } },
   );
+  if (
+    provider &&
+    JSON.stringify([...existing.categories].sort()) !==
+      JSON.stringify([...provider.categories].sort())
+  ) {
+    const categories = provider.categories.map(statusLabelForLog).join(", ");
+    await Promise.all([
+      notifyProvider(providerId, {
+        eventKey: `provider:${providerId}:services:${provider.updatedAt}`,
+        type: "provider_services_changed",
+        message: `Admin updated your assigned services: ${categories}.`,
+        relatedRecordId: providerId,
+        relatedRecordType: "provider",
+        href: "/provider/services",
+      }),
+      notifyAdmins({
+        eventKey: `provider:${providerId}:services:${provider.updatedAt}`,
+        type: "provider_services_changed",
+        message: `Assigned services changed for ${provider.name}: ${categories}.`,
+        relatedRecordId: providerId,
+        relatedRecordType: "provider",
+        href: "/admin/providers",
+      }),
+    ]);
+  }
   res.json(provider);
 });
 
@@ -2877,6 +3085,27 @@ router.post("/bookings", async (req, res) => {
     updatedAt: new Date().toISOString(),
   };
   await bookingCollection.insertOne(booking);
+  const bookingKind = service.category === "grooming" ? "Grooming" : "Vaccination";
+  await Promise.all([
+    createNotification({
+      eventKey: `booking:${booking.id}:submitted:customer`,
+      recipientUserId: access.userId,
+      recipientRole: "customer",
+      type: "booking_submitted",
+      message: `Your ${bookingKind} booking was submitted successfully.`,
+      relatedRecordId: booking.id,
+      relatedRecordType: "booking",
+      href: "/bookings",
+    }),
+    notifyProvider(provider.id, {
+      eventKey: `booking:${booking.id}:submitted:provider`,
+      type: "new_booking",
+      message: `New ${bookingKind} booking received.`,
+      relatedRecordId: booking.id,
+      relatedRecordType: "booking",
+      href: "/provider/bookings",
+    }),
+  ]);
   res.status(201).json(CreateBookingResponse.parse(booking));
   } finally {
     await releaseLock();
@@ -2929,6 +3158,16 @@ router.post("/bookings/:bookingId/cancellation-request", async (req, res) => {
     },
     { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
   );
+  if (updated) {
+    await notifyProvider(updated.providerId, {
+      eventKey: `booking:${bookingId}:cancellation-requested`,
+      type: "booking_cancellation_requested",
+      message: `A customer requested cancellation of a ${statusLabelForLog(updated.serviceCategory)} booking. Reason: ${reason}`,
+      relatedRecordId: bookingId,
+      relatedRecordType: "booking",
+      href: "/provider/bookings",
+    });
+  }
   res.status(200).json(updated);
 });
 
@@ -3026,6 +3265,17 @@ router.patch("/provider/bookings/:bookingId/cancel", async (req, res) => {
     res.status(409).json({ error: "Only pending bookings can be cancelled." });
     return;
   }
+  const bookingKind = booking.serviceCategory === "grooming" ? "Grooming" : "Vaccination";
+  await createNotification({
+    eventKey: `booking:${booking.id}:cancelled-by-provider`,
+    recipientUserId: booking.ownerId,
+    recipientRole: "customer",
+    type: "booking_cancelled",
+    message: `Your ${bookingKind} booking was cancelled by the Provider. Reason: ${reason}`,
+    relatedRecordId: booking.id,
+    relatedRecordType: "booking",
+    href: "/bookings",
+  });
   const { ownerId, ...publicBooking } = booking;
   res.json({ ...publicBooking, customerId: ownerId });
 });
@@ -3140,6 +3390,36 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
       });
     }
   }
+  const bookingKind = booking.serviceCategory === "grooming" ? "Grooming" : "Vaccination";
+  if (status === "confirmed" || status === "completed") {
+    await createNotification({
+      eventKey: `booking:${booking.id}:${status}`,
+      recipientUserId: booking.ownerId,
+      recipientRole: "customer",
+      type: `booking_${status}`,
+      message:
+        status === "confirmed"
+          ? `Your ${bookingKind} booking has been confirmed.`
+          : `Your ${bookingKind} booking has been completed.`,
+      relatedRecordId: booking.id,
+      relatedRecordType: "booking",
+      href: "/bookings",
+    });
+  } else if (status === "approve_cancellation" || status === "reject_cancellation") {
+    const approved = status === "approve_cancellation";
+    await createNotification({
+      eventKey: `booking:${booking.id}:cancellation-${approved ? "approved" : "rejected"}`,
+      recipientUserId: booking.ownerId,
+      recipientRole: "customer",
+      type: approved ? "booking_cancelled" : "booking_cancellation_rejected",
+      message: approved
+        ? `Your ${bookingKind} booking cancellation was approved.`
+        : `Your ${bookingKind} booking cancellation was rejected.`,
+      relatedRecordId: booking.id,
+      relatedRecordType: "booking",
+      href: "/bookings",
+    });
+  }
   const { ownerId, ...publicBooking } = booking;
   res.json({ ...publicBooking, customerId: ownerId });
 });
@@ -3245,6 +3525,26 @@ router.patch("/orders/:orderId/cancel", async (req, res) => {
     res.status(409).json({ error: "Only pending orders can be cancelled." });
     return;
   }
+  await Promise.all([
+    createNotification({
+      eventKey: `order:${order.id}:cancelled-by-customer:customer`,
+      recipientUserId: access.userId,
+      recipientRole: "customer",
+      type: "order_cancelled",
+      message: `Your order #${order.id} was cancelled successfully.`,
+      relatedRecordId: order.id,
+      relatedRecordType: "order",
+      href: "/orders",
+    }),
+    notifyProvider(order.providerId, {
+      eventKey: `order:${order.id}:cancelled-by-customer:provider`,
+      type: "order_cancelled_by_customer",
+      message: `Customer cancelled Pet Supplies order #${order.id}.`,
+      relatedRecordId: order.id,
+      relatedRecordType: "order",
+      href: "/provider/retail",
+    }),
+  ]);
   res.json(CreateOrderResponse.parse(order));
 });
 
@@ -3339,6 +3639,16 @@ router.patch("/provider/orders/:orderId/cancel", async (req, res) => {
     res.status(409).json({ error: "Only pending orders can be cancelled." });
     return;
   }
+  await createNotification({
+    eventKey: `order:${order.id}:cancelled-by-provider`,
+    recipientUserId: order.customerId,
+    recipientRole: "customer",
+    type: "order_cancelled",
+    message: `Your order #${order.id} was cancelled by the Provider. Reason: ${reason}`,
+    relatedRecordId: order.id,
+    relatedRecordType: "order",
+    href: "/orders",
+  });
   res.json(CreateOrderResponse.parse(order));
 });
 
@@ -3381,6 +3691,16 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     res.status(404).json({ error: "Order not found." });
     return;
   }
+  await createNotification({
+    eventKey: `order:${order.id}:confirmed`,
+    recipientUserId: order.customerId,
+    recipientRole: "customer",
+    type: "order_confirmed",
+    message: `Your order #${order.id} was confirmed by the Provider.`,
+    relatedRecordId: order.id,
+    relatedRecordType: "order",
+    href: "/orders",
+  });
   res.json(CreateOrderResponse.parse(order));
 });
 
@@ -3581,6 +3901,26 @@ router.post("/orders", async (req, res) => {
       );
     throw error;
   }
+  await Promise.all([
+    createNotification({
+      eventKey: `order:${order.id}:placed:customer`,
+      recipientUserId: access.userId,
+      recipientRole: "customer",
+      type: "order_placed",
+      message: `Your order #${order.id} was placed successfully.`,
+      relatedRecordId: order.id,
+      relatedRecordType: "order",
+      href: "/orders",
+    }),
+    notifyProvider(provider.id, {
+      eventKey: `order:${order.id}:placed:provider`,
+      type: "new_order",
+      message: `New ${order.fulfillmentMethod === "DELIVERY" ? "Delivery " : ""}Pet Supplies order #${order.id} received.`,
+      relatedRecordId: order.id,
+      relatedRecordType: "order",
+      href: "/provider/retail",
+    }),
+  ]);
   res.status(201).json(CreateOrderResponse.parse(order));
 });
 
