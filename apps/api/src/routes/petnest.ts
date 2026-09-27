@@ -141,6 +141,7 @@ type Order = {
   customerId: string;
   total: number;
   status: string;
+  cancellationReason?: string;
   fulfillmentMethod?: FulfillmentMethod;
   deliveryAddress?: {
     recipientName: string;
@@ -1736,6 +1737,47 @@ router.get("/provider/profile", async (req, res) => {
   res.json(GetProviderResponse.parse(provider));
 });
 
+router.patch("/provider/password", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const currentPassword =
+    typeof req.body?.currentPassword === "string" ? req.body.currentPassword : "";
+  const newPassword =
+    typeof req.body?.newPassword === "string" ? req.body.newPassword : "";
+  if (!currentPassword || !newPassword.trim()) {
+    res.status(400).json({ error: "Current password and new password are required." });
+    return;
+  }
+  const user = await userCollection.findOne({
+    id: access.userId,
+    role: "provider",
+    providerId: access.providerId,
+    isActive: { $ne: false },
+  });
+  if (
+    !user?.passwordHash ||
+    !(await verifyPassword(currentPassword, user.passwordHash))
+  ) {
+    res.status(401).json({ error: "Current password is incorrect." });
+    return;
+  }
+  const passwordHash = await hashPassword(newPassword);
+  const result = await userCollection.updateOne(
+    {
+      id: access.userId,
+      role: "provider",
+      providerId: access.providerId,
+      passwordHash: user.passwordHash,
+    },
+    { $set: { passwordHash } },
+  );
+  if (!result.modifiedCount) {
+    res.status(409).json({ error: "Password changed elsewhere. Please try again." });
+    return;
+  }
+  res.json({ message: "Password changed successfully." });
+});
+
 router.patch("/provider/profile", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -3212,6 +3254,39 @@ router.get("/admin/orders", async (req, res) => {
     .sort({ id: -1 })
     .toArray();
   res.json(ListOrdersResponse.parse(orders));
+});
+
+router.patch("/provider/orders/:orderId/cancel", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const orderId = Number(req.params.orderId);
+  if (!Number.isInteger(orderId) || orderId < 1) {
+    res.status(400).json({ error: "Choose a valid order." });
+    return;
+  }
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (!reason) {
+    res.status(400).json({ error: "Please provide a cancellation reason." });
+    return;
+  }
+  const order = await orderCollection.findOneAndUpdate(
+    { id: orderId, providerId: access.providerId, status: "PENDING" },
+    { $set: { status: "CANCELLED", cancellationReason: reason } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!order) {
+    const ownedOrder = await orderCollection.findOne({
+      id: orderId,
+      providerId: access.providerId,
+    });
+    if (!ownedOrder) {
+      res.status(404).json({ error: "Order not found." });
+      return;
+    }
+    res.status(409).json({ error: "Only pending orders can be cancelled." });
+    return;
+  }
+  res.json(CreateOrderResponse.parse(order));
 });
 
 router.patch("/provider/orders/:orderId/confirm", async (req, res) => {

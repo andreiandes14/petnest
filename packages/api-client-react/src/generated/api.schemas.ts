@@ -218,6 +218,7 @@ export interface Order {
   customerId: string;
   total: number;
   status: string;
+  cancellationReason?: string;
   fulfillmentMethod?: FulfillmentMethod;
   deliveryAddress?: DeliveryAddress;
   itemCount: number;

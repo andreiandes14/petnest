@@ -3321,6 +3321,14 @@ function ProviderManagementPage() {
   const [scheduleRecord, setScheduleRecord] = useState<ProviderRecord | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmNewPassword: "",
+  });
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordSuccess, setPasswordSuccess] = useState("");
   const [notice, setNotice] = useState("");
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<number>>(
     () => new Set(),
@@ -3333,6 +3341,10 @@ function ProviderManagementPage() {
     label: string;
     archived: boolean;
   } | null>(null);
+  const [cancelOrderTarget, setCancelOrderTarget] =
+    useState<ProviderOrder | null>(null);
+  const [providerCancellationReason, setProviderCancellationReason] = useState("");
+  const [providerCancellationError, setProviderCancellationError] = useState("");
   const providerTab = providerSection === "records" ? "records" : "workspace";
   const [selectedProviderPet, setSelectedProviderPet] =
     useState<ProviderPet | null>(null);
@@ -3571,6 +3583,50 @@ function ProviderManagementPage() {
       );
       queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
       setNotice(`Order #${confirmedOrder.id} confirmed.`);
+    },
+  });
+  const changeProviderPassword = useMutation({
+    mutationFn: ({
+      currentPassword,
+      newPassword,
+    }: {
+      currentPassword: string;
+      newPassword: string;
+    }) =>
+      adminRequest<{ message: string }>("/api/provider/password", {
+        method: "PATCH",
+        body: JSON.stringify({ currentPassword, newPassword }),
+      }),
+    onSuccess: (result) => {
+      setShowChangePassword(false);
+      setPasswordForm({
+        currentPassword: "",
+        newPassword: "",
+        confirmNewPassword: "",
+      });
+      setPasswordError("");
+      setPasswordSuccess(result.message);
+    },
+  });
+  const cancelProviderOrder = useMutation({
+    mutationFn: ({ orderId, reason }: { orderId: number; reason: string }) =>
+      adminRequest<ProviderOrder>(`/api/provider/orders/${orderId}/cancel`, {
+        method: "PATCH",
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: (cancelledOrder) => {
+      setCancelOrderTarget(null);
+      setProviderCancellationReason("");
+      setProviderCancellationError("");
+      queryClient.setQueryData<ProviderOrder[]>(
+        ["provider", "orders"],
+        (orders = []) =>
+          orders.map((order) =>
+            order.id === cancelledOrder.id ? cancelledOrder : order,
+          ),
+      );
+      queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+      setNotice(`Order #${cancelledOrder.id} cancelled.`);
     },
   });
   const recordsQuery = useQuery({
@@ -3940,6 +3996,129 @@ function ProviderManagementPage() {
                     </button>
                   </div>
                 </div>
+              </div>
+            ) : null}
+          </section>
+          <section className={providerSection === "dashboard" ? "surface-card mt-6 p-6" : "hidden"}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="eyebrow">Account security</p>
+                <h2 className="section-title mt-1">Password</h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Replace your temporary or current password with one only you know.
+                </p>
+              </div>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => {
+                  changeProviderPassword.reset();
+                  setPasswordError("");
+                  setPasswordSuccess("");
+                  setShowChangePassword(true);
+                }}
+              >
+                Change Password
+              </button>
+            </div>
+            {passwordSuccess ? (
+              <p className="mt-4 text-sm font-semibold text-primary" role="status">
+                {passwordSuccess}
+              </p>
+            ) : null}
+            {showChangePassword ? (
+              <div className="modal-backdrop" role="presentation">
+                <form
+                  className="modal animate-in"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    setPasswordError("");
+                    setPasswordSuccess("");
+                    if (!passwordForm.currentPassword || !passwordForm.newPassword.trim()) {
+                      setPasswordError("Current password and new password are required.");
+                      return;
+                    }
+                    if (passwordForm.newPassword !== passwordForm.confirmNewPassword) {
+                      setPasswordError("New passwords do not match.");
+                      return;
+                    }
+                    changeProviderPassword.mutate({
+                      currentPassword: passwordForm.currentPassword,
+                      newPassword: passwordForm.newPassword,
+                    });
+                  }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="change-password-title"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="eyebrow">Account security</p>
+                      <h2 id="change-password-title" className="modal-title">
+                        Change Password
+                      </h2>
+                    </div>
+                    <button
+                      className="modal-close"
+                      type="button"
+                      aria-label="Close change password form"
+                      disabled={changeProviderPassword.isPending}
+                      onClick={() => {
+                        setShowChangePassword(false);
+                        setPasswordForm({
+                          currentPassword: "",
+                          newPassword: "",
+                          confirmNewPassword: "",
+                        });
+                        setPasswordError("");
+                        changeProviderPassword.reset();
+                      }}
+                    >
+                      <X size={17} />
+                    </button>
+                  </div>
+                  <div className="mt-5 space-y-4">
+                    {([
+                      ["currentPassword", "Current Password", "current-password"],
+                      ["newPassword", "New Password", "new-password"],
+                      ["confirmNewPassword", "Confirm New Password", "new-password"],
+                    ] as const).map(([field, label, autoComplete]) => (
+                      <label className="form-field" key={field}>
+                        <span className="form-label">{label} *</span>
+                        <input
+                          className="input"
+                          type="password"
+                          autoComplete={autoComplete}
+                          required
+                          value={passwordForm[field]}
+                          onChange={(event) => {
+                            setPasswordForm((current) => ({
+                              ...current,
+                              [field]: event.target.value,
+                            }));
+                            setPasswordError("");
+                            changeProviderPassword.reset();
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  {passwordError || changeProviderPassword.isError ? (
+                    <p className="mt-4 text-sm font-semibold text-destructive" role="alert">
+                      {passwordError ||
+                        (changeProviderPassword.error instanceof Error
+                          ? changeProviderPassword.error.message
+                          : "The password could not be changed.")}
+                    </p>
+                  ) : null}
+                  <button
+                    className="btn btn-primary mt-6 w-full"
+                    type="submit"
+                    disabled={changeProviderPassword.isPending}
+                  >
+                    {changeProviderPassword.isPending ? "Changing…" : "Change Password"}
+                  </button>
+                </form>
               </div>
             ) : null}
           </section>
@@ -4629,15 +4808,24 @@ function ProviderManagementPage() {
                           >
                             {statusLabel(order.status)}
                           </span>
+                          {order.cancellationReason ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                              <span className="font-semibold text-foreground">
+                                Cancellation Reason:
+                              </span>{" "}
+                              {order.cancellationReason}
+                            </p>
+                          ) : null}
                         </td>
                         <td>{money(order.total)}</td>
                         <td>
                           <div className="flex flex-wrap gap-2">
                           {order.status.toUpperCase() === "PENDING" ? (
+                            <>
                             <button
                               className="btn btn-primary h-9 min-h-0 px-4 text-xs"
                               onClick={() => confirmOrder.mutate(order.id)}
-                              disabled={confirmOrder.isPending}
+                              disabled={confirmOrder.isPending || cancelProviderOrder.isPending}
                               data-testid={`button-confirm-order-${order.id}`}
                             >
                               {confirmOrder.isPending &&
@@ -4645,6 +4833,20 @@ function ProviderManagementPage() {
                                 ? "Confirming…"
                                 : "Confirm"}
                             </button>
+                            <button
+                              className="btn btn-ghost h-9 min-h-0 px-4 text-xs"
+                              type="button"
+                              disabled={confirmOrder.isPending || cancelProviderOrder.isPending}
+                              onClick={() => {
+                                cancelProviderOrder.reset();
+                                setProviderCancellationReason("");
+                                setProviderCancellationError("");
+                                setCancelOrderTarget(order);
+                              }}
+                            >
+                              Cancel Order
+                            </button>
+                            </>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
@@ -5102,6 +5304,86 @@ function ProviderManagementPage() {
               <button className="btn btn-ghost" disabled={setArchiveState.isPending} onClick={() => setArchiveTarget(null)}>Cancel</button>
               <button className="btn btn-primary" disabled={setArchiveState.isPending} onClick={() => setArchiveState.mutate(archiveTarget)}>
                 {archiveTarget.archived ? "Archive" : "Restore"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {cancelOrderTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="provider-cancel-order-title"
+            aria-describedby="provider-cancel-order-description"
+          >
+            <h2 id="provider-cancel-order-title" className="modal-title">
+              Cancel order?
+            </h2>
+            <p
+              id="provider-cancel-order-description"
+              className="mt-3 text-sm text-muted-foreground"
+            >
+              Please provide a reason for cancelling this customer's order.
+            </p>
+            <label className="form-field mt-5" htmlFor="provider-cancellation-reason">
+              <span className="form-label">Cancellation Reason *</span>
+              <textarea
+                id="provider-cancellation-reason"
+                className="input h-24 py-3"
+                required
+                value={providerCancellationReason}
+                onChange={(event) => {
+                  setProviderCancellationReason(event.target.value);
+                  setProviderCancellationError("");
+                }}
+              />
+            </label>
+            {providerCancellationError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {providerCancellationError}
+              </p>
+            ) : null}
+            {cancelProviderOrder.isError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {cancelProviderOrder.error instanceof Error
+                  ? cancelProviderOrder.error.message
+                  : "The order could not be cancelled."}
+              </p>
+            ) : null}
+            <div className="mt-6 flex gap-2">
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={cancelProviderOrder.isPending}
+                onClick={() => {
+                  cancelProviderOrder.reset();
+                  setProviderCancellationReason("");
+                  setProviderCancellationError("");
+                  setCancelOrderTarget(null);
+                }}
+              >
+                Keep Order
+              </button>
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={cancelProviderOrder.isPending}
+                onClick={() => {
+                  const reason = providerCancellationReason.trim();
+                  if (!reason) {
+                    setProviderCancellationError("Please provide a cancellation reason.");
+                    return;
+                  }
+                  setProviderCancellationError("");
+                  cancelProviderOrder.mutate({
+                    orderId: cancelOrderTarget.id,
+                    reason,
+                  });
+                }}
+              >
+                {cancelProviderOrder.isPending ? "Cancelling…" : "Cancel Order"}
               </button>
             </div>
           </div>
@@ -6187,6 +6469,14 @@ function OrdersPage() {
                       >
                         {statusLabel(order.status)}
                       </span>
+                      {order.cancellationReason ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          <span className="font-semibold text-foreground">
+                            Cancellation Reason:
+                          </span>{" "}
+                          {order.cancellationReason}
+                        </p>
+                      ) : null}
                     </td>
                     <td className="text-right font-mono">
                       {money(order.total)}

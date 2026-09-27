@@ -204,6 +204,7 @@ export const GetPetRecordsResponse = zod.object({
 })
 
 
+
 /**
  * @summary List the customer's bookings
  */
@@ -272,6 +273,7 @@ export const ListOrdersResponseItem = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "deliveryAddress": zod.object({
   "recipientName": zod.string(),
@@ -322,6 +324,7 @@ export const CreateOrderResponse = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "deliveryAddress": zod.object({
   "recipientName": zod.string(),
@@ -381,4 +384,3 @@ export const GetDashboardSummaryResponse = zod.object({
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))
 })
-

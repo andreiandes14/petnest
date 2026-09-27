@@ -473,6 +473,7 @@ components:
         customerId: { type: string }
         total: { type: number }
         status: { type: string }
+        cancellationReason: { type: string }
         fulfillmentMethod: { $ref: "#/components/schemas/FulfillmentMethod" }
         deliveryAddress: { $ref: "#/components/schemas/DeliveryAddress" }
         itemCount: { type: number }
