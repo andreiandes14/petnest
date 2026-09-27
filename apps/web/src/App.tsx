@@ -2220,6 +2220,11 @@ function BookingsPage() {
               Cancellation request rejected. Your booking remains active.
             </p>
           ) : null}
+          {booking.status.toLowerCase() === "cancelled" && booking.cancellationReason ? (
+            <p className="booking-note">
+              <strong>Cancellation Reason:</strong> {booking.cancellationReason}
+            </p>
+          ) : null}
         </div>
         <div className="booking-side">
           <span className={`status status-${booking.status.toLowerCase()}`}>
@@ -3345,6 +3350,12 @@ function ProviderManagementPage() {
     useState<ProviderOrder | null>(null);
   const [providerCancellationReason, setProviderCancellationReason] = useState("");
   const [providerCancellationError, setProviderCancellationError] = useState("");
+  const [cancelBookingTarget, setCancelBookingTarget] =
+    useState<AdminBooking | null>(null);
+  const [providerBookingCancellationReason, setProviderBookingCancellationReason] =
+    useState("");
+  const [providerBookingCancellationError, setProviderBookingCancellationError] =
+    useState("");
   const providerTab = providerSection === "records" ? "records" : "workspace";
   const [selectedProviderPet, setSelectedProviderPet] =
     useState<ProviderPet | null>(null);
@@ -3583,6 +3594,30 @@ function ProviderManagementPage() {
       );
       queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
       setNotice(`Order #${confirmedOrder.id} confirmed.`);
+    },
+  });
+  const cancelProviderBooking = useMutation({
+    mutationFn: ({ bookingId, reason }: { bookingId: number; reason: string }) =>
+      adminRequest<AdminBooking>(`/api/provider/bookings/${bookingId}/cancel`, {
+        method: "PATCH",
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: (cancelledBooking) => {
+      setCancelBookingTarget(null);
+      setProviderBookingCancellationReason("");
+      setProviderBookingCancellationError("");
+      queryClient.setQueryData<AdminBooking[]>(
+        ["provider", "bookings"],
+        (bookings = []) =>
+          bookings.map((booking) =>
+            booking.id === cancelledBooking.id
+              ? { ...booking, ...cancelledBooking }
+              : booking,
+          ),
+      );
+      queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: ["availability"] });
+      setNotice(`Booking #${cancelledBooking.id} cancelled.`);
     },
   });
   const changeProviderPassword = useMutation({
@@ -4930,6 +4965,14 @@ function ProviderManagementPage() {
                           <span className={`status status-${booking.status}`}>
                             {statusLabel(booking.status)}
                           </span>
+                          {booking.cancellationReason ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                              <span className="font-semibold text-foreground">
+                                Cancellation Reason:
+                              </span>{" "}
+                              {booking.cancellationReason}
+                            </p>
+                          ) : null}
                           {booking.status === "cancellation_pending" ? (
                             <div className="mt-2 flex gap-2">
                               <button
@@ -4984,21 +5027,20 @@ function ProviderManagementPage() {
                               </button>
                               <button
                                 className="btn btn-ghost h-9 min-h-0 text-xs"
-                                disabled={updateBooking.isPending}
-                                onClick={() =>
-                                  window.confirm("Cancel this booking?") &&
-                                  updateBooking.mutate({
-                                    id: booking.id,
-                                    status: "cancelled",
-                                  })
-                                }
+                                disabled={updateBooking.isPending || cancelProviderBooking.isPending}
+                                onClick={() => {
+                                  cancelProviderBooking.reset();
+                                  setProviderBookingCancellationReason("");
+                                  setProviderBookingCancellationError("");
+                                  setCancelBookingTarget(booking);
+                                }}
                               >
-                                Cancel
+                                Cancel Booking
                               </button>
                             </div>
                           ) : null}
                           {booking.status === "confirmed" ? (
-                            <div className="mt-2 flex gap-2">
+                            <div className="mt-2">
                               <button
                                 className="btn btn-secondary h-9 min-h-0 text-xs"
                                 disabled={updateBooking.isPending}
@@ -5010,19 +5052,6 @@ function ProviderManagementPage() {
                                 }
                               >
                                 Complete service
-                              </button>
-                              <button
-                                className="btn btn-ghost h-9 min-h-0 text-xs"
-                                disabled={updateBooking.isPending}
-                                onClick={() =>
-                                  window.confirm("Cancel this booking?") &&
-                                  updateBooking.mutate({
-                                    id: booking.id,
-                                    status: "cancelled",
-                                  })
-                                }
-                              >
-                                Cancel
                               </button>
                             </div>
                           ) : null}
@@ -5087,6 +5116,14 @@ function ProviderManagementPage() {
                       <p className="font-semibold">{booking.serviceName} · {booking.petName}</p>
                       <p className="text-xs text-muted-foreground">{booking.customerName ?? "Customer"} · {formatDate(booking.date)} · {booking.time}</p>
                       <p className="mt-1 text-sm text-muted-foreground">{statusLabel(booking.status)} · {money(booking.price)}</p>
+                      {booking.cancellationReason ? (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          <span className="font-semibold text-foreground">
+                            Cancellation Reason:
+                          </span>{" "}
+                          {booking.cancellationReason}
+                        </p>
+                      ) : null}
                     </div>
                     <button className="btn btn-ghost" onClick={() => setArchiveTarget({ kind: "booking", id: booking.id, label: `${booking.serviceName} booking`, archived: false })}>Restore</button>
                   </div>
@@ -5384,6 +5421,88 @@ function ProviderManagementPage() {
                 }}
               >
                 {cancelProviderOrder.isPending ? "Cancelling…" : "Cancel Order"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {cancelBookingTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal animate-in"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="provider-cancel-booking-title"
+            aria-describedby="provider-cancel-booking-description"
+          >
+            <h2 id="provider-cancel-booking-title" className="modal-title">
+              Cancel booking?
+            </h2>
+            <p
+              id="provider-cancel-booking-description"
+              className="mt-3 text-sm text-muted-foreground"
+            >
+              Please provide a reason for cancelling this customer's booking.
+            </p>
+            <label className="form-field mt-5" htmlFor="provider-booking-cancellation-reason">
+              <span className="form-label">Cancellation Reason *</span>
+              <textarea
+                id="provider-booking-cancellation-reason"
+                className="input h-24 py-3"
+                required
+                value={providerBookingCancellationReason}
+                onChange={(event) => {
+                  setProviderBookingCancellationReason(event.target.value);
+                  setProviderBookingCancellationError("");
+                }}
+              />
+            </label>
+            {providerBookingCancellationError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {providerBookingCancellationError}
+              </p>
+            ) : null}
+            {cancelProviderBooking.isError ? (
+              <p className="mt-3 text-sm font-semibold text-destructive" role="alert">
+                {cancelProviderBooking.error instanceof Error
+                  ? cancelProviderBooking.error.message
+                  : "The booking could not be cancelled."}
+              </p>
+            ) : null}
+            <div className="mt-6 flex gap-2">
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={cancelProviderBooking.isPending}
+                onClick={() => {
+                  cancelProviderBooking.reset();
+                  setProviderBookingCancellationReason("");
+                  setProviderBookingCancellationError("");
+                  setCancelBookingTarget(null);
+                }}
+              >
+                Keep Booking
+              </button>
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={cancelProviderBooking.isPending}
+                onClick={() => {
+                  const reason = providerBookingCancellationReason.trim();
+                  if (!reason) {
+                    setProviderBookingCancellationError(
+                      "Please provide a cancellation reason.",
+                    );
+                    return;
+                  }
+                  setProviderBookingCancellationError("");
+                  cancelProviderBooking.mutate({
+                    bookingId: cancelBookingTarget.id,
+                    reason,
+                  });
+                }}
+              >
+                {cancelProviderBooking.isPending ? "Cancelling…" : "Cancel Booking"}
               </button>
             </div>
           </div>

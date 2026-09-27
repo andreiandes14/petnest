@@ -2976,6 +2976,60 @@ router.get("/provider/bookings", async (req, res) => {
   );
 });
 
+router.patch("/provider/bookings/:bookingId/cancel", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const bookingId = Number(req.params.bookingId);
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  if (!Number.isInteger(bookingId) || bookingId <= 0) {
+    res.status(400).json({ error: "Choose a valid booking." });
+    return;
+  }
+  if (!reason) {
+    res.status(400).json({ error: "Please provide a cancellation reason." });
+    return;
+  }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
+  const booking = await bookingCollection.findOneAndUpdate(
+    {
+      id: bookingId,
+      providerId: access.providerId,
+      serviceCategory: { $in: assignedCare },
+      status: "pending",
+      archived: { $ne: true },
+    },
+    {
+      $set: {
+        status: "cancelled",
+        cancellationReason: reason,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    { returnDocument: "after", projection: { _id: 0 } },
+  );
+  if (!booking) {
+    const ownedBooking = await bookingCollection.findOne({
+      id: bookingId,
+      providerId: access.providerId,
+    });
+    if (!ownedBooking) {
+      res.status(404).json({ error: "Booking not found" });
+      return;
+    }
+    if (!assignedCare.includes(ownedBooking.serviceCategory)) {
+      res.status(403).json({
+        error: "This service is not assigned to your provider account.",
+      });
+      return;
+    }
+    res.status(409).json({ error: "Only pending bookings can be cancelled." });
+    return;
+  }
+  const { ownerId, ...publicBooking } = booking;
+  res.json({ ...publicBooking, customerId: ownerId });
+});
+
 router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -2984,7 +3038,6 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
     typeof req.body?.status === "string" ? req.body.status.toLowerCase() : "";
   const allowedStatuses = [
     "confirmed",
-    "cancelled",
     "completed",
     "approve_cancellation",
     "reject_cancellation",
