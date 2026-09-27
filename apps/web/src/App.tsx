@@ -372,6 +372,15 @@ const visibleCategories = Object.entries(categoryMeta);
 function AppShell({ children }: { children: ReactNode }) {
   const { isSignedIn, user } = useAuth();
   const role = user?.role;
+  const providerProfileQuery = useQuery({
+    queryKey: ["provider", "profile"],
+    queryFn: () => adminRequest<ProviderDetail>("/api/provider/profile"),
+    enabled: isSignedIn && role === "provider",
+  });
+  const providerCategories = providerProfileQuery.data?.categories ?? [];
+  const hasCareService = providerCategories.some((category) =>
+    category === "grooming" || category === "vaccination",
+  );
   const shellNavItems = !isSignedIn
     ? visibleNavItems.filter(({ href }) => href === "/")
     : role === "admin"
@@ -385,10 +394,16 @@ function AppShell({ children }: { children: ReactNode }) {
       : role === "provider"
         ? [
             { href: "/provider", label: "Dashboard", icon: Pencil },
-            { href: "/provider/bookings", label: "Bookings", icon: CalendarDays },
-            { href: "/provider/records", label: "Pet Records", icon: PawPrint },
-            { href: "/provider/services", label: "Services", icon: Sparkles },
-            { href: "/provider/retail", label: "Pet Supplies", icon: ShoppingBag },
+            ...(hasCareService
+              ? [
+                  { href: "/provider/bookings", label: "Bookings", icon: CalendarDays },
+                  { href: "/provider/records", label: "Pet Records", icon: PawPrint },
+                  { href: "/provider/services", label: "Services", icon: Sparkles },
+                ]
+              : []),
+            ...(providerCategories.includes("pet-supplies")
+              ? [{ href: "/provider/retail", label: "Pet Supplies", icon: ShoppingBag }]
+              : []),
           ]
         : [
             ...visibleNavItems,
@@ -2728,7 +2743,7 @@ const emptyProviderForm = {
   description: "",
   contact: "",
   hours: "",
-  categories: ["grooming"] as string[],
+  categories: [] as string[],
 };
 
 function AdminProvidersPage() {
@@ -2774,6 +2789,8 @@ function AdminProvidersPage() {
       setForm(emptyProviderForm);
       setEditing(null);
       queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
+      queryClient.invalidateQueries({ queryKey: ["provider", "profile"] });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
     },
   });
   const deactivate = useMutation({
@@ -3262,7 +3279,26 @@ function ProviderManagementPage() {
   const [selectedProviderPet, setSelectedProviderPet] =
     useState<ProviderPet | null>(null);
   useEffect(() => {
-    if (query.data) setDraft(query.data);
+    if (query.data) {
+      setDraft(query.data);
+      const firstCareCategory = query.data.categories.find(
+        (category) => category === "grooming" || category === "vaccination",
+      );
+      if (firstCareCategory) {
+        setServiceForm((current) => ({
+          ...current,
+          category: query.data.categories.includes(current.category)
+            ? current.category
+            : firstCareCategory,
+        }));
+        setRecordForm((current) => ({
+          ...current,
+          type: query.data.categories.includes(current.type)
+            ? current.type
+            : firstCareCategory,
+        }));
+      }
+    }
   }, [query.data]);
   const updateProfile = useMutation({
     mutationFn: (profile: ProviderDetail) =>
@@ -3327,7 +3363,9 @@ function ProviderManagementPage() {
         description: "",
         price: "",
         durationMinutes: "60",
-        category: "grooming",
+        category: query.data?.categories.find(
+          (category) => category === "grooming" || category === "vaccination",
+        ) ?? "grooming",
         imageUrl: "",
       });
       setShowServiceForm(false);
@@ -3387,9 +3425,6 @@ function ProviderManagementPage() {
         current
           ? {
               ...current,
-              categories: current.categories.includes("pet-supplies")
-                ? current.categories
-                : [...current.categories, "pet-supplies"],
               products: [...current.products, product],
             }
           : current,
@@ -3530,6 +3565,17 @@ function ProviderManagementPage() {
     );
   if (query.isLoading || !draft)
     return <LoadingState label="Loading provider information" />;
+  const assignedCareCategories = draft.categories.filter(
+    (category): category is "grooming" | "vaccination" =>
+      category === "grooming" || category === "vaccination",
+  );
+  if (
+    (providerSection === "retail" && !draft.categories.includes("pet-supplies")) ||
+    (["bookings", "records", "services"].includes(providerSection) &&
+      assignedCareCategories.length === 0)
+  ) {
+    return <NotFound />;
+  }
   const change = (
     key: "name" | "location" | "description" | "contact" | "hours",
     value: string,
@@ -3666,16 +3712,19 @@ function ProviderManagementPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button className="btn btn-secondary" onClick={() => {
-                      setRecordForm({ type: "vaccination", petId: String(selectedProviderPet.id), title: "", date: "", nextDue: "", notes: "" });
-                      setSelectedProviderPet(null);
-                      setShowRecordForm("vaccination");
-                    }}>Set Next Vaccination</button>
+                    {assignedCareCategories.includes("vaccination") ? (
+                      <button className="btn btn-secondary" onClick={() => {
+                        setRecordForm({ type: "vaccination", petId: String(selectedProviderPet.id), title: "", date: "", nextDue: "", notes: "" });
+                        setSelectedProviderPet(null);
+                        setShowRecordForm("vaccination");
+                      }}>Set Next Vaccination</button>
+                    ) : null}
                     <button className="modal-close" onClick={() => setSelectedProviderPet(null)} aria-label="Close pet records">
                       <X size={17} />
                     </button>
                   </div>
                 </div>
+                {assignedCareCategories.includes("grooming") ? (
                 <div className="mt-6">
                   <h3 className="font-display text-xl">Grooming History</h3>
                   <div className="list-stack mt-3">
@@ -3695,6 +3744,8 @@ function ProviderManagementPage() {
                     ) : <p className="text-sm text-muted-foreground">No completed grooming services yet.</p>}
                   </div>
                 </div>
+                ) : null}
+                {assignedCareCategories.includes("vaccination") ? (
                 <div className="mt-6">
                   <h3 className="font-display text-xl">Vaccination History</h3>
                   <div className="list-stack mt-3">
@@ -3715,6 +3766,7 @@ function ProviderManagementPage() {
                     ) : <p className="text-sm text-muted-foreground">No completed vaccination services yet.</p>}
                   </div>
                 </div>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -3945,8 +3997,12 @@ function ProviderManagementPage() {
                         })
                       }
                     >
-                      <option value="grooming">Grooming</option>
-                      <option value="vaccination">Vaccination</option>
+                      {assignedCareCategories.includes("grooming") ? (
+                        <option value="grooming">Grooming</option>
+                      ) : null}
+                      {assignedCareCategories.includes("vaccination") ? (
+                        <option value="vaccination">Vaccination</option>
+                      ) : null}
                     </select>
                     <input
                       className="input"
@@ -3978,7 +4034,9 @@ function ProviderManagementPage() {
               </div>
             ) : null}
             <div className={providerSection === "services" ? "list-stack mt-4" : "hidden"}>
-              {draft.services.map((service) => (
+              {draft.services
+                .filter((service) => draft.categories.includes(service.category))
+                .map((service) => (
                 <div key={service.id}>
                   <div className="service-row">
                     <div className="flex-1">
@@ -4630,28 +4688,32 @@ function ProviderManagementPage() {
         <p className="eyebrow">Provider records</p>
         <h2 className="section-title mt-1">Grooming and vaccination history</h2>
         <div className="mt-4 flex flex-wrap gap-3">
-          <button
-            className="btn btn-secondary"
-            onClick={() => {
-              setRecordForm({ ...recordForm, type: "vaccination" });
-              setShowRecordForm(
-                showRecordForm === "vaccination" ? null : "vaccination",
-              );
-            }}
-          >
-            + Add vaccination record
-          </button>
-          <button
-            className="btn btn-secondary"
-            onClick={() => {
-              setRecordForm({ ...recordForm, type: "grooming" });
-              setShowRecordForm(
-                showRecordForm === "grooming" ? null : "grooming",
-              );
-            }}
-          >
-            + Add grooming record
-          </button>
+          {assignedCareCategories.includes("vaccination") ? (
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setRecordForm({ ...recordForm, type: "vaccination" });
+                setShowRecordForm(
+                  showRecordForm === "vaccination" ? null : "vaccination",
+                );
+              }}
+            >
+              + Add vaccination record
+            </button>
+          ) : null}
+          {assignedCareCategories.includes("grooming") ? (
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setRecordForm({ ...recordForm, type: "grooming" });
+                setShowRecordForm(
+                  showRecordForm === "grooming" ? null : "grooming",
+                );
+              }}
+            >
+              + Add grooming record
+            </button>
+          ) : null}
         </div>
         {showRecordForm ? (
           <div className="modal-backdrop" role="presentation">
@@ -4672,8 +4734,12 @@ function ProviderManagementPage() {
                     setRecordForm({ ...recordForm, type: event.target.value })
                   }
                 >
-                  <option value="grooming">Grooming</option>
-                  <option value="vaccination">Vaccination</option>
+                  {assignedCareCategories.includes("grooming") ? (
+                    <option value="grooming">Grooming</option>
+                  ) : null}
+                  {assignedCareCategories.includes("vaccination") ? (
+                    <option value="vaccination">Vaccination</option>
+                  ) : null}
                 </select>
                 <select
                   className="input select"
@@ -4879,8 +4945,12 @@ function ProviderManagementPage() {
                   })
                 }
               >
-                <option value="grooming">Grooming</option>
-                <option value="vaccination">Vaccination</option>
+                {assignedCareCategories.includes("grooming") ? (
+                  <option value="grooming">Grooming</option>
+                ) : null}
+                {assignedCareCategories.includes("vaccination") ? (
+                  <option value="vaccination">Vaccination</option>
+                ) : null}
               </select>
               <input
                 className="input"

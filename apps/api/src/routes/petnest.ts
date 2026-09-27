@@ -1429,6 +1429,7 @@ router.get("/providers", async (req, res) => {
   const filter: Record<string, unknown> = {};
   filter.active = { $ne: false };
   if (category) {
+    filter.categories = category;
     filter[category === "pet-supplies" ? "products" : "services"] = {
       $elemMatch:
         category === "pet-supplies"
@@ -1478,13 +1479,6 @@ router.get("/providers/:providerId", async (req, res) => {
           { $match: { id: parsed.data.providerId, active: { $ne: false } } },
           {
             $set: {
-              categories: {
-                $concatArrays: [
-                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$services", as: "service", cond: { $and: [{ $eq: ["$$service.category", "grooming"] }, { $eq: ["$$service.available", true] }] } } } }, 0] }, ["grooming"], []] },
-                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$services", as: "service", cond: { $and: [{ $eq: ["$$service.category", "vaccination"] }, { $eq: ["$$service.available", true] }] } } } }, 0] }, ["vaccination"], []] },
-                  { $cond: [{ $gt: [{ $size: { $filter: { input: "$products", as: "product", cond: { $and: [{ $eq: ["$$product.category", "pet-supplies"] }, { $eq: ["$$product.active", true] }] } } } }, 0] }, ["pet-supplies"], []] },
-                ],
-              },
               services: [],
               products: [],
             },
@@ -1499,6 +1493,7 @@ router.get("/providers/:providerId", async (req, res) => {
             $match: {
               id: parsed.data.providerId,
               active: { $ne: false },
+              categories: requestedCategory,
               [requestedCategory === "pet-supplies" ? "products" : "services"]:
                 {
                   $elemMatch:
@@ -1559,7 +1554,17 @@ router.get("/providers/:providerId", async (req, res) => {
     res.status(404).json({ error: "Provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse(provider));
+  res.json(
+    GetProviderResponse.parse({
+      ...provider,
+      services: provider.services.filter((service) =>
+        provider.categories.includes(service.category),
+      ),
+      products: provider.categories.includes("pet-supplies")
+        ? provider.products
+        : [],
+    }),
+  );
 });
 
 router.get("/providers/:providerId/availability", async (req, res) => {
@@ -1573,7 +1578,7 @@ router.get("/providers/:providerId/availability", async (req, res) => {
   const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false } });
   const service = provider?.services.find((item) => item.id === serviceId && item.available);
   const schedule = provider ? providerSchedule(provider.hours) : null;
-  if (!provider || !service || !schedule || !["grooming", "vaccination"].includes(service.category)) {
+  if (!provider || !service || !provider.categories.includes(service.category) || !schedule || !["grooming", "vaccination"].includes(service.category)) {
     res.status(404).json({ error: "Availability is not configured for this service." });
     return;
   }
@@ -1641,13 +1646,14 @@ router.get("/services", async (req, res) => {
     return;
   }
   const providers = await providerCollection
-    .aggregate<Pick<Provider, "id" | "name" | "services">>([
+    .aggregate<Pick<Provider, "id" | "name" | "categories" | "services">>([
       {
         $match: {
           active: { $ne: false },
           ...(providerId === undefined ? {} : { id: providerId }),
           ...(category
             ? {
+                categories: category,
                 services: {
                   $elemMatch: { category, available: { $ne: false } },
                 },
@@ -1660,6 +1666,7 @@ router.get("/services", async (req, res) => {
           _id: 0,
           id: 1,
           name: 1,
+          categories: 1,
           services: category
             ? {
                 $filter: {
@@ -1680,7 +1687,11 @@ router.get("/services", async (req, res) => {
     .toArray();
   const services = providers.flatMap((provider) =>
     provider.services
-      .filter((service) => !category || service.category === category)
+      .filter(
+        (service) =>
+          provider.categories.includes(service.category) &&
+          (!category || service.category === category),
+      )
       .map((service) => ({
         ...service,
         providerId: provider.id,
@@ -1697,7 +1708,7 @@ router.get("/services/:serviceId", async (req, res) => {
     active: { $ne: false },
   });
   const service = provider?.services.find((item) => item.id === serviceId);
-  if (!provider || !service) {
+  if (!provider || !service || !provider.categories.includes(service.category)) {
     res.status(404).json({ error: "Service not found" });
     return;
   }
@@ -1741,7 +1752,7 @@ router.patch("/provider/profile", async (req, res) => {
   if (
     !hasValidFulfillmentConfiguration(
       providerInput.fulfillmentMethods,
-      providerInput.products.some((product) => product.active),
+      existing.products.some((product) => product.active),
     )
   ) {
     res.status(400).json({
@@ -1756,19 +1767,10 @@ router.patch("/provider/profile", async (req, res) => {
       ? { fulfillmentMethods: supportedFulfillmentMethods(providerInput.fulfillmentMethods) }
       : {}),
     imageUrl: providerInput.imageUrl ?? existing.imageUrl,
+    categories: existing.categories,
     verified: existing.verified,
-    services: providerInput.services.map((service) => ({
-      ...service,
-      available: service.available ?? true,
-      updatedAt: new Date().toISOString(),
-    })),
-    products: providerInput.products.map((product) => ({
-      ...product,
-      imageUrl:
-        product.imageUrl ??
-        existing.products.find((item) => item.id === product.id)?.imageUrl ??
-        "",
-    })),
+    services: existing.services,
+    products: existing.products,
     updatedAt: new Date().toISOString(),
   };
   const provider = await providerCollection.findOneAndUpdate(
@@ -1910,6 +1912,50 @@ router.delete("/admin/providers/:providerId", async (req, res) => {
   res.json(provider);
 });
 
+async function requireProviderModule(
+  req: Request,
+  res: Response,
+  categories: readonly ProviderCategory[],
+): Promise<Provider | null> {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return null;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider) {
+    res.status(404).json({ error: "Assigned provider not found" });
+    return null;
+  }
+  if (!categories.some((category) => provider.categories.includes(category))) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
+    return null;
+  }
+  return provider;
+}
+
+function assignedCareCategories(
+  provider: Pick<Provider, "categories"> | null | undefined,
+): Array<"grooming" | "vaccination"> {
+  return (["grooming", "vaccination"] as const).filter((category) =>
+    provider?.categories.includes(category),
+  );
+}
+
+router.use(
+  ["/provider/products", "/provider/orders"],
+  async (req, res, next) => {
+    if (!(await requireProviderModule(req, res, ["pet-supplies"]))) return;
+    next();
+  },
+);
+
+router.use(
+  ["/provider/bookings", "/provider/records", "/provider/pets"],
+  async (req, res, next) => {
+    if (!(await requireProviderModule(req, res, ["grooming", "vaccination"])))
+      return;
+    next();
+  },
+);
+
 router.post("/provider/services", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -2009,6 +2055,19 @@ router.delete("/provider/services/:serviceId", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
   const serviceId = Number(req.params.serviceId);
+  const provider = await providerCollection.findOne({
+    id: access.providerId,
+    "services.id": serviceId,
+  });
+  const service = provider?.services.find((item) => item.id === serviceId);
+  if (!provider || !service) {
+    res.status(404).json({ error: "Service not found" });
+    return;
+  }
+  if (!provider.categories.includes(service.category)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
+    return;
+  }
   const result = await providerCollection.updateOne(
     { id: access.providerId, "services.id": serviceId },
     {
@@ -2082,7 +2141,6 @@ router.post("/provider/products", async (req, res) => {
     { id: provider.id },
     {
       $push: { products: product },
-      $addToSet: { categories: "pet-supplies" },
       $set: { updatedAt: new Date().toISOString() },
     },
     { returnDocument: "after", projection: { _id: 0, products: 1 } },
@@ -2350,13 +2408,19 @@ router.get("/provider/records", async (req, res) => {
     req.query.type === "vaccination" || req.query.type === "grooming"
       ? req.query.type
       : undefined;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
+  if (type && !assignedCare.includes(type)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
+    return;
+  }
   const completedBookings = await bookingCollection
-    .find({ providerId: access.providerId, status: "completed" })
+    .find({ providerId: access.providerId, status: "completed", serviceCategory: { $in: assignedCare } })
     .toArray();
   await Promise.all(completedBookings.map(ensureCompletedBookingRecord));
   const records = await recordCollection
     .find(
-      { providerId: access.providerId, ...(type ? { type } : {}) },
+      { providerId: access.providerId, type: type ?? { $in: assignedCare } },
       { projection: { _id: 0 } },
     )
     .sort({ date: -1 })
@@ -2367,9 +2431,11 @@ router.get("/provider/records", async (req, res) => {
 router.get("/provider/pets", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
   const bookings = await bookingCollection
     .find(
-      { providerId: access.providerId },
+      { providerId: access.providerId, serviceCategory: { $in: assignedCare } },
       { projection: { petId: 1, ownerId: 1, serviceName: 1, date: 1, time: 1 } },
     )
     .sort({ date: -1, time: -1, id: -1 })
@@ -2403,6 +2469,8 @@ router.get("/provider/pets", async (req, res) => {
 router.get("/provider/pets/:petId/records", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
   const petId = Number(req.params.petId);
   if (!Number.isInteger(petId) || petId <= 0) {
     res.status(400).json({ error: "A valid pet is required." });
@@ -2411,6 +2479,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
   const relationship = await bookingCollection.findOne({
     providerId: access.providerId,
     petId,
+    serviceCategory: { $in: assignedCare },
   });
   if (!relationship) {
     res
@@ -2419,7 +2488,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
     return;
   }
   const completedBookings = await bookingCollection
-    .find({ providerId: access.providerId, petId, status: "completed" })
+    .find({ providerId: access.providerId, petId, status: "completed", serviceCategory: { $in: assignedCare } })
     .toArray();
   await Promise.all(completedBookings.map(ensureCompletedBookingRecord));
   const [pet, records] = await Promise.all([
@@ -2429,7 +2498,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
     ),
     recordCollection
       .find(
-        { petId, providerId: access.providerId },
+        { petId, providerId: access.providerId, type: { $in: assignedCare } },
         { projection: { _id: 0 } },
       )
       .sort({ date: -1 })
@@ -2477,6 +2546,10 @@ router.post("/provider/records", async (req, res) => {
     return;
   }
   const provider = await providerCollection.findOne({ id: access.providerId });
+  if (provider && !provider.categories.includes(type)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
+    return;
+  }
   const booking = await bookingCollection.findOne({
     providerId: access.providerId,
     petId,
@@ -2552,6 +2625,11 @@ router.patch("/provider/records/:recordId", async (req, res) => {
   const existing = await recordCollection.findOne({ id: recordId, providerId: access.providerId });
   if (!existing) {
     res.status(404).json({ error: "History record not found" });
+    return;
+  }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider?.categories.includes(existing.type)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
     return;
   }
   const effectiveDate = (changes.date as string | undefined) ?? existing.date;
@@ -2808,13 +2886,15 @@ router.post("/bookings/:bookingId/cancellation-request", async (req, res) => {
 router.get("/provider/bookings", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
-  const [bookings, provider] = await Promise.all([
-    bookingCollection
-      .find({ providerId: access.providerId }, { projection: { _id: 0 } })
-      .sort({ date: 1, time: 1 })
-      .toArray(),
-    providerCollection.findOne({ id: access.providerId }),
-  ]);
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  const assignedCare = assignedCareCategories(provider);
+  const bookings = await bookingCollection
+    .find(
+      { providerId: access.providerId, serviceCategory: { $in: assignedCare } },
+      { projection: { _id: 0 } },
+    )
+    .sort({ date: 1, time: 1 })
+    .toArray();
   const owners = await userCollection
     .find(
       { id: { $in: [...new Set(bookings.map((booking) => booking.ownerId))] } },
@@ -2870,6 +2950,11 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
   });
   if (!current) {
     res.status(404).json({ error: "Booking not found" });
+    return;
+  }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider?.categories.includes(current.serviceCategory)) {
+    res.status(403).json({ error: "This service is not assigned to your provider account." });
     return;
   }
   let update: Record<string, unknown>;
@@ -3063,6 +3148,10 @@ router.post("/orders", async (req, res) => {
   });
   if (!provider) {
     res.status(400).json({ error: "Choose a valid provider." });
+    return;
+  }
+  if (!provider.categories.includes("pet-supplies")) {
+    res.status(400).json({ error: "This provider does not offer pet supplies." });
     return;
   }
   if (
