@@ -1961,6 +1961,11 @@ router.patch("/provider/profile", async (req, res) => {
     return;
   }
   const { id: _id, ...providerInput } = parsed.data;
+  const businessLocation = providerInput.location.trim().replace(/\s+/g, " ");
+  if (businessLocation.length > 300 || /[\u0000-\u001f\u007f]/.test(businessLocation)) {
+    res.status(400).json({ error: "Enter a business address of up to 300 characters without control characters." });
+    return;
+  }
   if (
     !hasValidFulfillmentConfiguration(
       providerInput.fulfillmentMethods,
@@ -1975,6 +1980,7 @@ router.patch("/provider/profile", async (req, res) => {
   }
   const changes: Omit<Provider, "id"> = {
     ...providerInput,
+    location: /^(undefined|null)$/i.test(businessLocation) ? "" : businessLocation,
     ...(providerInput.fulfillmentMethods !== undefined
       ? { fulfillmentMethods: supportedFulfillmentMethods(providerInput.fulfillmentMethods) }
       : {}),

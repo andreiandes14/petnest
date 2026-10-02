@@ -21,6 +21,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { ApiRequestError, apiRequest } from "@/lib/api-request";
+import { providerAddress, providerMapUrl } from "@/lib/provider-location";
 import { availableFollowupDates, closestFollowupDate, followupDisplayWindow, monthsInRange, offsetDate } from "@/lib/vaccination-followup";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -712,17 +713,28 @@ function HeroSearch() {
   );
 }
 
+function ProviderLocation({ provider }: { provider: Pick<Provider, "id" | "name" | "location"> }) {
+  const address = providerAddress(provider.location);
+  const mapUrl = providerMapUrl(address);
+  return <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
+    <MapPin size={13} className="shrink-0" aria-hidden="true" />
+    <span className="min-w-0 break-words [overflow-wrap:anywhere]">{address || "Location not provided"}</span>
+    {mapUrl ? <a href={mapUrl} target="_blank" rel="noopener noreferrer"
+      className="relative z-20 shrink-0 font-semibold text-primary underline underline-offset-2"
+      aria-label={`View map for ${provider.name}`} data-testid={`link-provider-map-${provider.id}`}>View Map</a> : null}
+  </span>;
+}
+
 function ProviderCard({ provider }: { provider: Provider }) {
   const [saved, setSaved] = useState(false);
   const queryString = useSearch();
   const selectedCategory = new URLSearchParams(queryString).get("category");
   return (
     <div className="wavy-shadow">
-      <Link
-        href={`/providers/${provider.id}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`}
-        className="provider-card surface-card wavy block"
-        data-testid={`card-provider-${provider.id}`}
-      >
+      <div className="provider-card surface-card wavy block">
+        <Link href={`/providers/${provider.id}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`}
+          className="absolute inset-0 z-10" aria-label={`View provider ${provider.name}`}
+          data-testid={`card-provider-${provider.id}`} />
         <div className="provider-media">
           {provider.imageUrl ? (
             <img
@@ -740,6 +752,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
           )}
           <span
             role="button"
+            style={{ zIndex: 20 }}
             tabIndex={0}
             aria-pressed={saved}
             aria-label={
@@ -747,7 +760,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
                 ? `Remove ${provider.name} from saved`
                 : `Save ${provider.name}`
             }
-            className={`fav-btn ${saved ? "is-on" : ""}`}
+            className={`fav-btn z-20 ${saved ? "is-on" : ""}`}
             data-testid={`button-save-provider-${provider.id}`}
             onClick={(event) => {
               event.preventDefault();
@@ -764,7 +777,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
             <Heart size={16} fill={saved ? "currentColor" : "none"} />
           </span>
         </div>
-        <div className="provider-card-body">
+        <div className="provider-card-body" style={{ zIndex: "auto" }}>
           {/* Name and rating lead, so the card can be scanned in one pass. */}
           <div className="flex items-start justify-between gap-3">
             <h3 className="provider-name">{provider.name}</h3>
@@ -773,8 +786,8 @@ function ProviderCard({ provider }: { provider: Provider }) {
               {provider.rating.toFixed(1)}
             </span>
           </div>
-          <p className="provider-meta">
-            <MapPin size={13} /> {provider.location}
+          <p className="provider-meta flex-wrap">
+            <ProviderLocation provider={provider} />
             <span aria-hidden>·</span>
             <span>{provider.reviewCount} reviews</span>
           </p>
@@ -801,7 +814,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
             </span>
           </div>
         </div>
-      </Link>
+      </div>
     </div>
   );
 }
@@ -1130,11 +1143,10 @@ function ProvidersPage() {
           {/* With no filter applied, lead with the best-rated place as a
               full-width spotlight, then the rest as a grid. */}
           {spotlight ? (
-            <Link
-              href={`/providers/${spotlight.id}${category ? `?category=${encodeURIComponent(category)}` : ""}`}
-              className={`spotlight wavy tone-${spotlight.id % 4}`}
-              data-testid={`card-spotlight-${spotlight.id}`}
-            >
+            <div className={`spotlight wavy relative tone-${spotlight.id % 4}`}>
+              <Link href={`/providers/${spotlight.id}${category ? `?category=${encodeURIComponent(category)}` : ""}`}
+                className="absolute inset-0 z-10" aria-label={`View provider ${spotlight.name}`}
+                data-testid={`card-spotlight-${spotlight.id}`} />
               <span className="spotlight-mark" aria-hidden>
                 {initials(spotlight.name)}
               </span>
@@ -1146,9 +1158,7 @@ function ProvidersPage() {
                     <Star size={13} fill="currentColor" />{" "}
                     {spotlight.rating.toFixed(1)}
                   </span>
-                  <span>
-                    <MapPin size={13} /> {spotlight.location}
-                  </span>
+                  <ProviderLocation provider={spotlight} />
                   <span>{spotlight.reviewCount} reviews</span>
                 </span>
                 <span className="spotlight-copy">{spotlight.description}</span>
@@ -1162,7 +1172,7 @@ function ProvidersPage() {
                   </span>
                 </span>
               </span>
-            </Link>
+            </div>
           ) : null}
           <div className="provider-grid">
             {rest.map((provider) => (
@@ -1918,10 +1928,7 @@ function ProviderDetailPage() {
           </div>
           <h1 className="mt-4">{provider.name}</h1>
           <div className="detail-meta">
-            <span>
-              <MapPin size={14} className="mr-1 inline text-primary" />
-              {provider.location}
-            </span>
+            <ProviderLocation provider={provider} />
             <span>
               <Clock3 size={14} className="mr-1 inline text-primary" />
               {provider.hours}
@@ -3509,6 +3516,7 @@ function ProviderManagementPage() {
       setDraft(profile);
       queryClient.invalidateQueries({ queryKey: ["provider", "profile"] });
       queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetProviderQueryKey(profile.id) });
     },
   });
   const updateFulfillment = useMutation({
@@ -4287,13 +4295,21 @@ function ProviderManagementPage() {
                 />
               </div>
               <div className="form-field">
-                <label className="form-label">Location</label>
-                <input
-                  className="input"
-                  value={draft.location}
+                <h2 className="section-title">Business Location</h2>
+                <label className="form-label mt-2" htmlFor="provider-business-location">Store / business address</label>
+                <textarea
+                  id="provider-business-location"
+                  className="input h-24 resize-y py-3"
+                  maxLength={300}
+                  placeholder="Street / House No. / Building, Barangay, City / Municipality"
+                  value={draft.location ?? ""}
                   onChange={(event) => change("location", event.target.value)}
-                  onBlur={() => updateProfile.mutate(draft)}
                 />
+                <p className="text-xs text-muted-foreground">Include the street, barangay, and city so customers can find your business.</p>
+                <button className="btn btn-primary mt-2 self-start" type="button" disabled={updateProfile.isPending}
+                  onClick={() => updateProfile.mutate(draft)}>{updateProfile.isPending ? "Saving…" : "Save Location"}</button>
+                {updateProfile.isError ? <p className="text-sm text-destructive" role="alert">{updateProfile.error.message}</p> : null}
+                {updateProfile.isSuccess ? <p className="text-xs text-primary" role="status">Profile saved.</p> : null}
               </div>
               <div className="form-field full">
                 <label className="form-label">Description</label>
