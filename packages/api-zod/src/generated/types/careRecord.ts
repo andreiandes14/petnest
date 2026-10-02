@@ -18,6 +18,7 @@ export interface CareRecord {
   notes?: string;
   /** @nullable */
   nextDue?: string | null;
+  expectedReturnMonths?: number;
   bookingId?: number;
   serviceCategory?: CareRecordServiceCategory;
 }

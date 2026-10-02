@@ -7,6 +7,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { promisify } from "node:util";
+import { vaccinationReturnTarget } from "../lib/vaccination-followup.js";
 import {
   MongoClient,
   type Collection,
@@ -110,6 +111,7 @@ type CareRecord = {
   status: string;
   notes: string;
   nextDue?: string | null;
+  expectedReturnMonths?: number;
   bookingId?: number;
   serviceCategory?: "grooming" | "vaccination";
 };
@@ -2656,6 +2658,42 @@ router.get("/pets/:petId/records", async (req, res) => {
   );
 });
 
+async function vaccinationFollowupService(record: StoredCareRecord) {
+  const booking = record.bookingId ? await bookingCollection.findOne({
+    id: record.bookingId, ownerId: record.ownerId, petId: record.petId,
+    status: "completed", serviceCategory: "vaccination",
+  }) : null;
+  const providerId = record.providerId ?? booking?.providerId;
+  if (!providerId) return null;
+  const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false } });
+  if (!provider?.categories.includes("vaccination")) return null;
+  const service = provider.services.find((item) => item.category === "vaccination" && item.available &&
+    (record.serviceId ? item.id === record.serviceId : item.name === (booking?.serviceName ?? record.title)));
+  return service ? { provider, service } : null;
+}
+
+router.get("/pets/:petId/records/:recordId/follow-up", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const record = await recordCollection.findOne({
+    id: Number(req.params.recordId), petId: Number(req.params.petId), ownerId: access.userId,
+    type: "vaccination", status: "completed",
+  });
+  if (!record || !record.nextDue) {
+    res.status(404).json({ error: "Vaccination follow-up recommendation not found." });
+    return;
+  }
+  const context = await vaccinationFollowupService(record);
+  if (!context) {
+    res.status(409).json({ error: "The original provider's vaccination service is not currently available. Contact the provider." });
+    return;
+  }
+  res.json({
+    provider: GetProviderResponse.parse(context.provider), service: context.service,
+    targetDate: record.nextDue, expectedReturnMonths: record.expectedReturnMonths,
+  });
+});
+
 router.get("/provider/records", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -2892,16 +2930,29 @@ router.patch("/provider/records/:recordId", async (req, res) => {
     return;
   }
   const effectiveDate = (changes.date as string | undefined) ?? existing.date;
+  if (body.expectedReturnMonths !== undefined || (body.date !== undefined && existing.expectedReturnMonths)) {
+    const months = body.expectedReturnMonths ?? existing.expectedReturnMonths;
+    if (existing.type !== "vaccination" || typeof months !== "number" ||
+        !Number.isInteger(months) || months < 1 || months > 120 || body.nextDue !== undefined) {
+      res.status(400).json({ error: "Choose an expected return from 1 to 120 months, or a target date." });
+      return;
+    }
+    changes.expectedReturnMonths = months;
+    changes.nextDue = vaccinationReturnTarget(effectiveDate, months);
+  }
   if (body.nextDue !== undefined) {
     if (existing.type !== "vaccination" || !isIsoDate(body.nextDue) || body.nextDue < effectiveDate) {
       res.status(400).json({ error: "Choose a valid next vaccination date that is not earlier than the vaccination date." });
       return;
     }
     changes.nextDue = body.nextDue;
+    // An explicit recommendation date replaces the period-based recommendation.
+    changes.expectedReturnMonths = undefined;
   }
   const record = await recordCollection.findOneAndUpdate(
     { id: recordId, providerId: access.providerId },
-    { $set: changes },
+    { $set: Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)),
+      ...(body.nextDue !== undefined ? { $unset: { expectedReturnMonths: "" } } : {}) },
     { returnDocument: "after", projection: { _id: 0 } },
   );
   if (!record) {
@@ -3031,6 +3082,13 @@ router.post("/bookings", async (req, res) => {
         error: "Choose a record that belongs to this pet and service.",
       });
       return;
+    }
+    if (service.category === "vaccination" && record.nextDue) {
+      const followup = await vaccinationFollowupService(record);
+      if (!followup || followup.provider.id !== provider.id || followup.service.id !== service.id) {
+        res.status(400).json({ error: "Choose the original provider and vaccination service for this follow-up." });
+        return;
+      }
     }
   }
   let releaseLock: (() => Promise<unknown>) | undefined;
