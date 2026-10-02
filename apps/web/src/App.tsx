@@ -6271,6 +6271,7 @@ function OrdersPage() {
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [pickupCheckoutWarningOpen, setPickupCheckoutWarningOpen] =
     useState(false);
+  const [checkoutSettingsPending, setCheckoutSettingsPending] = useState(false);
   const [fulfillmentSelections, setFulfillmentSelections] = useState<
     Record<number, FulfillmentMethod | undefined>
   >({});
@@ -6381,10 +6382,32 @@ function OrdersPage() {
   const fulfillmentSettingsLoaded = selected.every(
     (item) => item.fulfillmentLoaded,
   );
-  const hasPickupOnlyOrder = selectedProviderIds.some((providerId) => {
-    const supported = methodsForProvider(providerId);
-    return supported.length === 1 && supported[0] === "PICKUP";
-  });
+  const beginCheckout = async () => {
+    setCartError("");
+    setCheckoutSettingsPending(true);
+    try {
+      const providers = await Promise.all(selectedProviderIds.map((providerId) =>
+        adminRequest<ProviderDetail>(`/api/providers/${providerId}`),
+      ));
+      const latestMethods = new Map(providers.map((provider) => [
+        provider.id, getFulfillmentMethods(provider),
+      ]));
+      setCart((current) => current.map((line) => {
+        const methods = latestMethods.get(line.providerId);
+        return methods ? { ...line, fulfillmentMethods: methods, fulfillmentLoaded: true } : line;
+      }));
+      const checkoutIsPickupOnly = selectedProviderIds.every((providerId) => {
+        const methods = latestMethods.get(providerId);
+        return methods?.includes("PICKUP") === true && !methods.includes("DELIVERY");
+      });
+      if (checkoutIsPickupOnly) setPickupCheckoutWarningOpen(true);
+      else setCheckoutOpen(true);
+    } catch {
+      setCartError("Could not confirm this shop's fulfillment options. Please try again.");
+    } finally {
+      setCheckoutSettingsPending(false);
+    }
+  };
   const cartTotal = selected.reduce(
     (sum, item) => sum + item.product.price * item.quantity,
     0,
@@ -6431,7 +6454,7 @@ function OrdersPage() {
         ),
       );
       query.refetch();
-      setCheckoutOpen(false);
+      if (succeeded.length) setCheckoutOpen(false);
       setCartError(
         error || (succeeded.length ? "Order placed successfully." : ""),
       );
@@ -6580,20 +6603,14 @@ function OrdersPage() {
                 disabled={
                   !selected.length ||
                   !fulfillmentSettingsLoaded ||
+                  checkoutSettingsPending ||
                   selected.some(
                     (item) =>
                       !item.product.active ||
                       item.product.stock < item.quantity,
                   )
                 }
-                onClick={() => {
-                  setCartError("");
-                  if (hasPickupOnlyOrder) {
-                    setPickupCheckoutWarningOpen(true);
-                  } else {
-                    setCheckoutOpen(true);
-                  }
-                }}
+                onClick={() => { void beginCheckout(); }}
               >
                 Checkout
               </button>
@@ -6633,7 +6650,7 @@ function OrdersPage() {
                   setCheckoutOpen(true);
                 }}
               >
-                Continue
+                Proceed
               </button>
             </div>
           </div>

@@ -273,6 +273,8 @@ export const ListOrdersResponseItem = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "paymentStatus": zod.enum(['UNPAID', 'PENDING', 'PAID', 'FAILED', 'CANCELLED']).optional(),
+  "paymentMethod": zod.enum(['GCASH']).optional(),
   "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "deliveryAddress": zod.object({
@@ -324,6 +326,8 @@ export const CreateOrderResponse = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "paymentStatus": zod.enum(['UNPAID', 'PENDING', 'PAID', 'FAILED', 'CANCELLED']).optional(),
+  "paymentMethod": zod.enum(['GCASH']).optional(),
   "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "deliveryAddress": zod.object({

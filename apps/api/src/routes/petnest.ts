@@ -141,6 +141,8 @@ type Order = {
   customerId: string;
   total: number;
   status: string;
+  paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
+  paymentMethod?: "GCASH";
   cancellationReason?: string;
   fulfillmentMethod?: FulfillmentMethod;
   deliveryAddress?: {
@@ -3696,7 +3698,7 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     recipientUserId: order.customerId,
     recipientRole: "customer",
     type: "order_confirmed",
-    message: `Your order #${order.id} was confirmed by the Provider.`,
+    message: `Your Pet Supplies order #${order.id} has been confirmed by the Provider.`,
     relatedRecordId: order.id,
     relatedRecordType: "order",
     href: "/orders",
@@ -3771,17 +3773,12 @@ router.post("/orders", async (req, res) => {
     return;
   }
   const deliveryAddress = parsed.data.deliveryAddress;
-  if (
-    parsed.data.fulfillmentMethod === "DELIVERY" &&
-    (!deliveryAddress ||
-      ![
-        deliveryAddress.recipientName,
-        deliveryAddress.contactNumber,
-        deliveryAddress.streetAddress,
-        deliveryAddress.barangay,
+  if (parsed.data.fulfillmentMethod === "DELIVERY" &&
+      (!deliveryAddress || ![
+        deliveryAddress.recipientName, deliveryAddress.contactNumber,
+        deliveryAddress.streetAddress, deliveryAddress.barangay,
         deliveryAddress.cityMunicipality,
-      ].every((value) => value.trim().length > 0))
-  ) {
+      ].every((value) => value.trim().length > 0))) {
     res.status(400).json({ error: "Complete all required delivery address fields." });
     return;
   }
@@ -3830,10 +3827,15 @@ router.post("/orders", async (req, res) => {
     quantity: item!.quantity,
     imageUrl: item!.product.imageUrl,
   }));
-  const total = orderItems.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0,
+  const totalCentavos = orderItems.reduce(
+    (sum, item) => sum + Math.round(item.price * 100) * item.quantity, 0,
   );
+  if (!Number.isSafeInteger(totalCentavos) || totalCentavos <= 0 ||
+      orderItems.some((item) => !Number.isFinite(item.price) || item.price <= 0)) {
+    res.status(409).json({ error: "Order pricing is invalid." });
+    return;
+  }
+  const total = totalCentavos / 100;
   const decremented: Array<{ productId: number; quantity: number }> = [];
   for (const item of orderItems) {
     const result = await providerCollection.updateOne(
@@ -3873,19 +3875,18 @@ router.post("/orders", async (req, res) => {
     customerId: access.userId,
     total,
     status: "PENDING",
+    paymentStatus: "UNPAID",
     fulfillmentMethod: parsed.data.fulfillmentMethod,
-    ...(parsed.data.fulfillmentMethod === "DELIVERY" && deliveryAddress
-      ? {
-          deliveryAddress: {
-            recipientName: deliveryAddress.recipientName.trim(),
-            contactNumber: deliveryAddress.contactNumber.trim(),
-            streetAddress: deliveryAddress.streetAddress.trim(),
-            barangay: deliveryAddress.barangay.trim(),
-            cityMunicipality: deliveryAddress.cityMunicipality.trim(),
-            instructions: deliveryAddress.instructions?.trim() ?? "",
-          },
-        }
-      : {}),
+    ...(parsed.data.fulfillmentMethod === "DELIVERY" && deliveryAddress ? {
+      deliveryAddress: {
+        recipientName: deliveryAddress.recipientName.trim(),
+        contactNumber: deliveryAddress.contactNumber.trim(),
+        streetAddress: deliveryAddress.streetAddress.trim(),
+        barangay: deliveryAddress.barangay.trim(),
+        cityMunicipality: deliveryAddress.cityMunicipality.trim(),
+        instructions: deliveryAddress.instructions?.trim() ?? "",
+      },
+    } : {}),
     itemCount: parsed.data.items.reduce((sum, item) => sum + item.quantity, 0),
     items: orderItems,
     createdAt: new Date().toISOString(),
