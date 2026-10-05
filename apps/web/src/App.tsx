@@ -22,6 +22,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { ApiRequestError, apiRequest } from "@/lib/api-request";
 import { providerAddress, providerMapUrl } from "@/lib/provider-location";
+import { customerOrderStatus } from "@/lib/customer-order-status";
 import { availableFollowupDates, closestFollowupDate, followupDisplayWindow, monthsInRange, offsetDate } from "@/lib/vaccination-followup";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -238,6 +239,8 @@ function statusLabel(value: string) {
   const labels: Record<string, string> = {
     pending: "Pending",
     confirmed: "Confirmed",
+    awaiting_payment: "Awaiting Payment",
+    payment_processing: "Payment Processing",
     cancellation_pending: "Cancellation Pending",
     cancelled: "Cancelled",
     completed: "Completed",
@@ -3677,6 +3680,9 @@ function ProviderManagementPage() {
         "/api/provider/orders",
       ),
     enabled: isProvider && providerSection === "retail",
+    refetchInterval: (current) => current.state.data?.some(
+      order => order.status === "CONFIRMED" && order.paymentStatus !== "PAID",
+    ) ? 5000 : false,
   });
   const providerArchiveQuery = useQuery({
     queryKey: ["provider", "archive"],
@@ -4973,9 +4979,10 @@ function ProviderManagementPage() {
                         <td>{formatDate(order.createdAt)}</td>
                         <td>
                           <span
-                            className={`status status-${order.status.toLowerCase()}`}
+                            className={`status status-${customerOrderStatus(order).tone}`}
+                            data-testid={`provider-order-status-${order.id}`}
                           >
-                            {statusLabel(order.status)}
+                            {statusLabel(customerOrderStatus(order).status)}
                           </span>
                           <p className="mt-2 text-xs text-muted-foreground">
                             Payment Status: {statusLabel(order.paymentStatus ?? "UNPAID")}
@@ -6347,8 +6354,9 @@ function OrdersPage() {
   const returnOrderId = Number(returnParams.get("order"));
   const query = useListOrders({ query: {
     queryKey: getListOrdersQueryKey(),
-    refetchInterval: (current) => paymentReturn === "success" &&
-      current.state.data?.find(order => order.id === returnOrderId)?.paymentStatus !== "PAID" ? 5000 : false,
+    refetchInterval: (current) => (paymentReturn === "success" &&
+      current.state.data?.find(order => order.id === returnOrderId)?.paymentStatus !== "PAID") ||
+      current.state.data?.some(order => order.status === "CONFIRMED" && order.paymentStatus !== "PAID") ? 5000 : false,
   } });
   const orders = query.data ?? [];
   const payment = useMutation({
@@ -6362,6 +6370,10 @@ function OrdersPage() {
     },
     onSettled: () => { void query.refetch(); },
   });
+  const orderPresentation = (order: Order) => customerOrderStatus(order,
+    (payment.isPending && payment.variables === order.id) ||
+    (paymentReturn === "success" && returnOrderId === order.id),
+  );
   const [cancelOrderTarget, setCancelOrderTarget] = useState<Order | null>(null);
   type CartLine = {
     providerId: number;
@@ -6846,9 +6858,10 @@ function OrdersPage() {
                     </td>
                     <td>
                       <span
-                        className={`status status-${order.status.toLowerCase()}`}
+                        className={`status status-${orderPresentation(order).tone}`}
+                        data-testid={`order-status-${order.id}`}
                       >
-                        {statusLabel(order.status)}
+                        {statusLabel(orderPresentation(order).status)}
                       </span>
                       <p className="mt-2 text-xs text-muted-foreground" data-testid={`order-payment-status-${order.id}`}>
                         Payment Status: {statusLabel(order.paymentStatus ?? "UNPAID")}
@@ -6878,7 +6891,7 @@ function OrdersPage() {
                           Cancel Order
                         </button>
                       ) : null}
-                      {order.status === "CONFIRMED" && [undefined, "UNPAID", "FAILED", "PENDING"].includes(order.paymentStatus) ? (
+                      {orderPresentation(order).canPay ? (
                         <button className="btn btn-primary h-9 min-h-0 px-3 text-xs" type="button"
                           data-testid={`button-pay-order-${order.id}`} disabled={payment.isPending}
                           onClick={() => payment.mutate(order.id)}>
