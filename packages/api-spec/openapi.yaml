@@ -172,6 +172,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Booking"
+  /pets/{petId}/records/{recordId}/follow-up:
+    get:
+      operationId: getVaccinationFollowup
+      tags: [pets]
+      summary: Resolve the customer's completed vaccination to its original provider and service
+      parameters:
+        - in: path
+          name: petId
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - in: path
+          name: recordId
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Provider recommendation and original vaccination booking context
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider, service, targetDate]
+                properties:
+                  provider: { $ref: "#/components/schemas/ProviderDetail" }
+                  service: { $ref: "#/components/schemas/ProviderService" }
+                  targetDate: { type: string, format: date }
+                  expectedReturnMonths: { type: integer, minimum: 1, maximum: 120 }
+        "404": { description: Owned completed vaccination recommendation not found }
+        "409": { description: Original provider or vaccination service unavailable }
   /orders:
     get:
       operationId: listOrders
@@ -366,6 +395,7 @@ components:
         status: { type: string }
         notes: { type: string }
         nextDue: { type: [string, "null"] }
+        expectedReturnMonths: { type: integer, minimum: 1, maximum: 120 }
         bookingId: { type: number }
         serviceCategory: { type: string, enum: [grooming, vaccination] }
     PetRecords:
@@ -475,6 +505,8 @@ components:
         status: { type: string }
         cancellationReason: { type: string }
         fulfillmentMethod: { $ref: "#/components/schemas/FulfillmentMethod" }
+        paymentStatus: { type: string, enum: [UNPAID, PENDING, PAID, FAILED, CANCELLED] }
+        paymentMethod: { type: string, enum: [GCASH] }
         deliveryAddress: { $ref: "#/components/schemas/DeliveryAddress" }
         itemCount: { type: number }
         items:

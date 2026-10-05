@@ -124,6 +124,7 @@ export interface CareRecord {
   notes?: string;
   /** @nullable */
   nextDue?: string | null;
+  expectedReturnMonths?: number;
   bookingId?: number;
   serviceCategory?: CareRecordServiceCategory;
 }
@@ -218,6 +219,8 @@ export interface Order {
   customerId: string;
   total: number;
   status: string;
+  paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
+  paymentMethod?: "GCASH";
   cancellationReason?: string;
   fulfillmentMethod?: FulfillmentMethod;
   deliveryAddress?: DeliveryAddress;

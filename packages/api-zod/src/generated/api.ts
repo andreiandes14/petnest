@@ -186,6 +186,7 @@ export const GetPetRecordsResponse = zod.object({
   "status": zod.string(),
   "notes": zod.string().optional(),
   "nextDue": zod.string().nullish(),
+  "expectedReturnMonths": zod.number().int().min(1).max(120).optional(),
   "bookingId": zod.number().optional(),
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 })),
@@ -198,6 +199,7 @@ export const GetPetRecordsResponse = zod.object({
   "status": zod.string(),
   "notes": zod.string().optional(),
   "nextDue": zod.string().nullish(),
+  "expectedReturnMonths": zod.number().int().min(1).max(120).optional(),
   "bookingId": zod.number().optional(),
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))
@@ -273,6 +275,8 @@ export const ListOrdersResponseItem = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "paymentStatus": zod.enum(['UNPAID', 'PENDING', 'PAID', 'FAILED', 'CANCELLED']).optional(),
+  "paymentMethod": zod.enum(['GCASH']).optional(),
   "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "deliveryAddress": zod.object({
@@ -324,6 +328,8 @@ export const CreateOrderResponse = zod.object({
   "customerId": zod.string(),
   "total": zod.number(),
   "status": zod.string(),
+  "paymentStatus": zod.enum(['UNPAID', 'PENDING', 'PAID', 'FAILED', 'CANCELLED']).optional(),
+  "paymentMethod": zod.enum(['GCASH']).optional(),
   "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "deliveryAddress": zod.object({
@@ -380,6 +386,7 @@ export const GetDashboardSummaryResponse = zod.object({
   "status": zod.string(),
   "notes": zod.string().optional(),
   "nextDue": zod.string().nullish(),
+  "expectedReturnMonths": zod.number().int().min(1).max(120).optional(),
   "bookingId": zod.number().optional(),
   "serviceCategory": zod.enum(['grooming', 'vaccination']).optional()
 }))

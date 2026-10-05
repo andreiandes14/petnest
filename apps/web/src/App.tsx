@@ -21,6 +21,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { ApiRequestError, apiRequest } from "@/lib/api-request";
+import { providerAddress, providerMapUrl } from "@/lib/provider-location";
+import { availableFollowupDates, closestFollowupDate, followupDisplayWindow, monthsInRange, offsetDate } from "@/lib/vaccination-followup";
 import { toast } from "@/hooks/use-toast";
 import {
   useCreateBooking,
@@ -711,17 +713,28 @@ function HeroSearch() {
   );
 }
 
+function ProviderLocation({ provider }: { provider: Pick<Provider, "id" | "name" | "location"> }) {
+  const address = providerAddress(provider.location);
+  const mapUrl = providerMapUrl(address);
+  return <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
+    <MapPin size={13} className="shrink-0" aria-hidden="true" />
+    <span className="min-w-0 break-words [overflow-wrap:anywhere]">{address || "Location not provided"}</span>
+    {mapUrl ? <a href={mapUrl} target="_blank" rel="noopener noreferrer"
+      className="relative z-20 shrink-0 font-semibold text-primary underline underline-offset-2"
+      aria-label={`View map for ${provider.name}`} data-testid={`link-provider-map-${provider.id}`}>View Map</a> : null}
+  </span>;
+}
+
 function ProviderCard({ provider }: { provider: Provider }) {
   const [saved, setSaved] = useState(false);
   const queryString = useSearch();
   const selectedCategory = new URLSearchParams(queryString).get("category");
   return (
     <div className="wavy-shadow">
-      <Link
-        href={`/providers/${provider.id}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`}
-        className="provider-card surface-card wavy block"
-        data-testid={`card-provider-${provider.id}`}
-      >
+      <div className="provider-card surface-card wavy block">
+        <Link href={`/providers/${provider.id}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`}
+          className="absolute inset-0 z-10" aria-label={`View provider ${provider.name}`}
+          data-testid={`card-provider-${provider.id}`} />
         <div className="provider-media">
           {provider.imageUrl ? (
             <img
@@ -739,6 +752,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
           )}
           <span
             role="button"
+            style={{ zIndex: 20 }}
             tabIndex={0}
             aria-pressed={saved}
             aria-label={
@@ -746,7 +760,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
                 ? `Remove ${provider.name} from saved`
                 : `Save ${provider.name}`
             }
-            className={`fav-btn ${saved ? "is-on" : ""}`}
+            className={`fav-btn z-20 ${saved ? "is-on" : ""}`}
             data-testid={`button-save-provider-${provider.id}`}
             onClick={(event) => {
               event.preventDefault();
@@ -763,7 +777,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
             <Heart size={16} fill={saved ? "currentColor" : "none"} />
           </span>
         </div>
-        <div className="provider-card-body">
+        <div className="provider-card-body" style={{ zIndex: "auto" }}>
           {/* Name and rating lead, so the card can be scanned in one pass. */}
           <div className="flex items-start justify-between gap-3">
             <h3 className="provider-name">{provider.name}</h3>
@@ -772,8 +786,8 @@ function ProviderCard({ provider }: { provider: Provider }) {
               {provider.rating.toFixed(1)}
             </span>
           </div>
-          <p className="provider-meta">
-            <MapPin size={13} /> {provider.location}
+          <p className="provider-meta flex-wrap">
+            <ProviderLocation provider={provider} />
             <span aria-hidden>·</span>
             <span>{provider.reviewCount} reviews</span>
           </p>
@@ -800,7 +814,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
             </span>
           </div>
         </div>
-      </Link>
+      </div>
     </div>
   );
 }
@@ -1129,11 +1143,10 @@ function ProvidersPage() {
           {/* With no filter applied, lead with the best-rated place as a
               full-width spotlight, then the rest as a grid. */}
           {spotlight ? (
-            <Link
-              href={`/providers/${spotlight.id}${category ? `?category=${encodeURIComponent(category)}` : ""}`}
-              className={`spotlight wavy tone-${spotlight.id % 4}`}
-              data-testid={`card-spotlight-${spotlight.id}`}
-            >
+            <div className={`spotlight wavy relative tone-${spotlight.id % 4}`}>
+              <Link href={`/providers/${spotlight.id}${category ? `?category=${encodeURIComponent(category)}` : ""}`}
+                className="absolute inset-0 z-10" aria-label={`View provider ${spotlight.name}`}
+                data-testid={`card-spotlight-${spotlight.id}`} />
               <span className="spotlight-mark" aria-hidden>
                 {initials(spotlight.name)}
               </span>
@@ -1145,9 +1158,7 @@ function ProvidersPage() {
                     <Star size={13} fill="currentColor" />{" "}
                     {spotlight.rating.toFixed(1)}
                   </span>
-                  <span>
-                    <MapPin size={13} /> {spotlight.location}
-                  </span>
+                  <ProviderLocation provider={spotlight} />
                   <span>{spotlight.reviewCount} reviews</span>
                 </span>
                 <span className="spotlight-copy">{spotlight.description}</span>
@@ -1161,7 +1172,7 @@ function ProvidersPage() {
                   </span>
                 </span>
               </span>
-            </Link>
+            </div>
           ) : null}
           <div className="provider-grid">
             {rest.map((provider) => (
@@ -1464,18 +1475,20 @@ function BookingModal({
   provider,
   service,
   onClose,
+  followup,
 }: {
   provider: ProviderDetail;
   service: ProviderService;
   onClose: () => void;
+  followup?: { petId: number; recordId: number; date: string; slots: AvailabilitySlot[] };
 }) {
   const petsQuery = useListPets({ query: { queryKey: getListPetsQueryKey() } });
   const createBooking = useCreateBooking();
-  const [petId, setPetId] = useState("");
-  const [recordId, setRecordId] = useState("");
-  const [date, setDate] = useState("");
+  const [petId, setPetId] = useState(followup ? String(followup.petId) : "");
+  const [recordId, setRecordId] = useState(followup ? String(followup.recordId) : "");
+  const [date, setDate] = useState(followup?.date ?? "");
   const [time, setTime] = useState("");
-  const [timeSlots, setTimeSlots] = useState<AvailabilitySlot[]>([]);
+  const [timeSlots, setTimeSlots] = useState<AvailabilitySlot[]>(followup?.slots ?? []);
   const [notes, setNotes] = useState("");
   const [reviewing, setReviewing] = useState(false);
   const [complete, setComplete] = useState(false);
@@ -1654,6 +1667,7 @@ function BookingModal({
               <select
                 className="input select"
                 id="booking-pet"
+                disabled={Boolean(followup)}
                 value={petId}
                 onChange={(event) => {
                   setPetId(event.target.value);
@@ -1677,7 +1691,7 @@ function BookingModal({
                 id="booking-record"
                 value={recordId}
                 onChange={(event) => setRecordId(event.target.value)}
-                disabled={!petId || recordsQuery.isLoading}
+                disabled={Boolean(followup) || !petId || recordsQuery.isLoading}
               >
                 <option value="">No previous record</option>
                 {relevantRecords.map((item) => (
@@ -1914,10 +1928,7 @@ function ProviderDetailPage() {
           </div>
           <h1 className="mt-4">{provider.name}</h1>
           <div className="detail-meta">
-            <span>
-              <MapPin size={14} className="mr-1 inline text-primary" />
-              {provider.location}
-            </span>
+            <ProviderLocation provider={provider} />
             <span>
               <Clock3 size={14} className="mr-1 inline text-primary" />
               {provider.hours}
@@ -3435,6 +3446,7 @@ function ProviderManagementPage() {
   >(null);
   const [scheduleRecord, setScheduleRecord] = useState<ProviderRecord | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
+  const [expectedReturnMonths, setExpectedReturnMonths] = useState("");
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [passwordForm, setPasswordForm] = useState({
@@ -3504,6 +3516,7 @@ function ProviderManagementPage() {
       setDraft(profile);
       queryClient.invalidateQueries({ queryKey: ["provider", "profile"] });
       queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetProviderQueryKey(profile.id) });
     },
   });
   const updateFulfillment = useMutation({
@@ -3824,7 +3837,7 @@ function ProviderManagementPage() {
     },
   });
   const updateRecord = useMutation({
-    mutationFn: ({ id, changes }: { id: number; changes: { notes?: string; nextDue?: string } }) =>
+    mutationFn: ({ id, changes }: { id: number; changes: { notes?: string; nextDue?: string; expectedReturnMonths?: number } }) =>
       adminRequest<ProviderRecord>(`/api/provider/records/${id}`, {
         method: "PATCH",
         body: JSON.stringify(changes),
@@ -3836,7 +3849,7 @@ function ProviderManagementPage() {
       queryClient.invalidateQueries({ queryKey: ["provider", "pet-records", record.petId] });
       queryClient.invalidateQueries({ queryKey: getGetPetRecordsQueryKey(record.petId) });
       queryClient.invalidateQueries({ queryKey: getListPetsQueryKey() });
-      setNotice(variables.changes.nextDue ? "Next vaccination schedule saved." : "History record updated.");
+      setNotice(variables.changes.nextDue || variables.changes.expectedReturnMonths ? "Vaccination return recommendation saved." : "History record updated.");
     },
   });
   if (!isProvider) return <NotFound />;
@@ -4054,6 +4067,7 @@ function ProviderManagementPage() {
                           <button className="btn btn-ghost mt-3" onClick={() => {
                             setScheduleRecord(record);
                             setScheduleDate(record.nextDue ?? "");
+                    setExpectedReturnMonths(record.expectedReturnMonths ? String(record.expectedReturnMonths) : "");
                             updateRecord.reset();
                           }}>Update Next Vaccination</button>
                         </div>
@@ -4281,13 +4295,21 @@ function ProviderManagementPage() {
                 />
               </div>
               <div className="form-field">
-                <label className="form-label">Location</label>
-                <input
-                  className="input"
-                  value={draft.location}
+                <h2 className="section-title">Business Location</h2>
+                <label className="form-label mt-2" htmlFor="provider-business-location">Store / business address</label>
+                <textarea
+                  id="provider-business-location"
+                  className="input h-24 resize-y py-3"
+                  maxLength={300}
+                  placeholder="Street / House No. / Building, Barangay, City / Municipality"
+                  value={draft.location ?? ""}
                   onChange={(event) => change("location", event.target.value)}
-                  onBlur={() => updateProfile.mutate(draft)}
                 />
+                <p className="text-xs text-muted-foreground">Include the street, barangay, and city so customers can find your business.</p>
+                <button className="btn btn-primary mt-2 self-start" type="button" disabled={updateProfile.isPending}
+                  onClick={() => updateProfile.mutate(draft)}>{updateProfile.isPending ? "Saving…" : "Save Location"}</button>
+                {updateProfile.isError ? <p className="text-sm text-destructive" role="alert">{updateProfile.error.message}</p> : null}
+                {updateProfile.isSuccess ? <p className="text-xs text-primary" role="status">Profile saved.</p> : null}
               </div>
               <div className="form-field full">
                 <label className="form-label">Description</label>
@@ -5405,6 +5427,7 @@ function ProviderManagementPage() {
                   <button className="btn btn-ghost" onClick={() => {
                     setScheduleRecord(record);
                     setScheduleDate(record.nextDue ?? "");
+                    setExpectedReturnMonths(record.expectedReturnMonths ? String(record.expectedReturnMonths) : "");
                     updateRecord.reset();
                   }}>Set Next Vaccination</button>
                 ) : null}
@@ -5421,17 +5444,23 @@ function ProviderManagementPage() {
       {scheduleRecord ? (
         <div className="modal-backdrop" role="presentation">
           <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="schedule-title">
-            <h2 id="schedule-title" className="modal-title">Set Next Vaccination</h2>
+            <h2 id="schedule-title" className="modal-title">Set Vaccination Return Recommendation</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               {scheduleRecord.title} · Vaccinated {formatDate(scheduleRecord.date)}
             </p>
-            <label className="form-label mt-5" htmlFor="next-vaccination-date">Next vaccination date</label>
-            <input id="next-vaccination-date" className="input mt-2" type="date" min={scheduleRecord.date} value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
+            <label className="form-label mt-5" htmlFor="expected-return-months">Expected Return</label>
+            <div className="mt-2 flex items-center gap-3">
+              <input id="expected-return-months" className="input" type="number" min="1" max="120" step="1" value={expectedReturnMonths} onChange={(event) => setExpectedReturnMonths(event.target.value)} />
+              <span>Months</span>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">The return period sets a target. Customers choose from your available vaccination schedules.</p>
+            <label className="form-label mt-4" htmlFor="next-vaccination-date">Or recommend a target date</label>
+            <input id="next-vaccination-date" className="input mt-2" type="date" disabled={Boolean(expectedReturnMonths)} min={scheduleRecord.date} value={scheduleDate} onChange={(event) => setScheduleDate(event.target.value)} />
             {updateRecord.isError ? <p className="mt-3 text-sm font-semibold text-destructive" role="alert">{updateRecord.error.message}</p> : null}
             <div className="mt-6 flex gap-2">
               <button className="btn btn-ghost" disabled={updateRecord.isPending} onClick={() => setScheduleRecord(null)}>Cancel</button>
-              <button className="btn btn-primary" disabled={updateRecord.isPending || !scheduleDate || scheduleDate < scheduleRecord.date} onClick={() => updateRecord.mutate({ id: scheduleRecord.id, changes: { nextDue: scheduleDate } })}>
-                {updateRecord.isPending ? "Saving…" : "Save schedule"}
+              <button className="btn btn-primary" disabled={updateRecord.isPending || (expectedReturnMonths ? !Number.isInteger(Number(expectedReturnMonths)) || Number(expectedReturnMonths) < 1 || Number(expectedReturnMonths) > 120 : !scheduleDate || scheduleDate < scheduleRecord.date)} onClick={() => updateRecord.mutate({ id: scheduleRecord.id, changes: expectedReturnMonths ? { expectedReturnMonths: Number(expectedReturnMonths) } : { nextDue: scheduleDate } })}>
+                {updateRecord.isPending ? "Saving…" : "Save recommendation"}
               </button>
             </div>
           </div>
@@ -6034,7 +6063,85 @@ function PetCard({
   );
 }
 
+function VaccinationFollowupModal({ pet, record, onClose }: {
+  pet: Pet; record: CareRecord; onClose: () => void;
+}) {
+  const [selectedDate, setSelectedDate] = useState("");
+  const [moreMonth, setMoreMonth] = useState<string | null>(null);
+  const [bookingDate, setBookingDate] = useState<string | null>(null);
+  const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const context = useQuery({
+    queryKey: ["vaccination-followup", pet.id, record.id],
+    queryFn: ({ signal }) => adminRequest<{
+      provider: ProviderDetail; service: ProviderService; targetDate: string;
+      expectedReturnMonths?: number;
+    }>(`/api/pets/${pet.id}/records/${record.id}/follow-up`, { signal }),
+  });
+  const target = context.data?.targetDate ?? record.nextDue!;
+  // This is a browsing window, not a medical recommendation or a booking limit.
+  const days = followupDisplayWindow(import.meta.env.VITE_VACCINATION_FOLLOWUP_WINDOW_DAYS);
+  const start = moreMonth ? `${moreMonth}-01` : offsetDate(target, -days);
+  const end = moreMonth ? offsetDate(`${shiftMonth(moreMonth, 1)}-01`, -1) : offsetDate(target, days);
+  const months = monthsInRange(start, end);
+  const availability = useQuery({
+    queryKey: ["availability", "vaccination-followup", context.data?.provider.id, context.data?.service.id, months],
+    enabled: Boolean(context.data),
+    queryFn: ({ signal }) => Promise.all(months.map(async (month) => {
+      const value = context.data!;
+      const response = await adminRequest<AvailabilityResponse>(
+        `/api/providers/${value.provider.id}/availability?serviceId=${value.service.id}&month=${month}`, { signal },
+      );
+      if (response.providerId !== value.provider.id || response.serviceId !== value.service.id)
+        throw new Error("Provider availability could not be verified.");
+      return response;
+    })),
+  });
+  const dates = availableFollowupDates(availability.data ?? [], start, end, today);
+  const closest = closestFollowupDate(dates, target);
+  const selectedSlots = (availability.data ?? []).flatMap((response) => response.slots[selectedDate] ?? []);
+  if (bookingDate && context.data) return <BookingModal
+    provider={context.data.provider} service={context.data.service} onClose={onClose}
+    followup={{ petId: pet.id, recordId: record.id, date: bookingDate, slots: selectedSlots }}
+  />;
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="vaccination-followup-title">
+        <h2 id="vaccination-followup-title" className="modal-title">Available Vaccination Dates</h2>
+        <p className="mt-3 text-sm">Recommended Return Period: Around {formatDate(target)}</p>
+        <p className="mt-2 text-xs text-muted-foreground">Choose from the original provider's available schedules. The target is a reference for browsing.</p>
+        {context.isLoading || (context.data && availability.isLoading) ? <LoadingState label="Checking provider availability" /> :
+          context.isError ? <ErrorState message={context.error instanceof Error ? context.error.message : "Follow-up could not be loaded."} onRetry={() => context.refetch()} /> :
+          availability.isError ? <ErrorState message="Available dates could not be loaded." onRetry={() => availability.refetch()} /> : (
+          <>
+            {moreMonth ? <div className="mt-4 flex items-center justify-between">
+              <button className="btn btn-ghost btn-icon" aria-label="Previous availability month" disabled={moreMonth <= today.slice(0, 7)} onClick={() => { setSelectedDate(""); setMoreMonth(shiftMonth(moreMonth, -1)); }}><ChevronLeft size={16} /></button>
+              <span>{formatDate(`${moreMonth}-01`)}</span>
+              <button className="btn btn-ghost btn-icon" aria-label="Next availability month" onClick={() => { setSelectedDate(""); setMoreMonth(shiftMonth(moreMonth, 1)); }}><ChevronRight size={16} /></button>
+            </div> : null}
+            <div className="mt-4 max-h-64 space-y-2 overflow-y-auto">
+              {dates.length ? dates.map((date) => <label key={date} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm">
+                <input type="radio" name="vaccination-followup-date" value={date} checked={selectedDate === date} onChange={() => setSelectedDate(date)} />
+                {formatDate(date)} {date === closest ? <span className="text-xs text-primary">Closest to Recommendation</span> : null}
+              </label>) : <p className="text-sm text-muted-foreground">No provider availability in this period. View more available dates.</p>}
+            </div>
+            <button className="btn btn-ghost mt-3" onClick={() => {
+              setSelectedDate("");
+              const next = moreMonth ? shiftMonth(moreMonth, 1) : shiftMonth(end.slice(0, 7), 1);
+              setMoreMonth(next < today.slice(0, 7) ? today.slice(0, 7) : next);
+            }}>View More Available Dates</button>
+          </>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={!dates.includes(selectedDate) || availability.isFetching || context.isFetching || !selectedSlots.some((slot) => slot.status === "available")} onClick={() => setBookingDate(selectedDate)}>Continue</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RecordsPanel({ pet }: { pet: Pet }) {
+  const [followupRecord, setFollowupRecord] = useState<CareRecord | null>(null);
   const [tab, setTab] = useState<"grooming" | "vaccinations">("grooming");
   const query = useGetPetRecords(pet.id, {
     query: { enabled: !!pet.id, queryKey: getGetPetRecordsQueryKey(pet.id) },
@@ -6113,8 +6220,11 @@ function RecordsPanel({ pet }: { pet: Pet }) {
                 ) : null}
                 {record.type === "vaccination" ? (
                   <div className="mt-4 rounded-xl bg-primary/5 p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Next Vaccination Schedule</p>
-                    <p className="mt-1 font-semibold text-primary">{formatDate(record.nextDue)}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Vaccination Follow-up</p>
+                    <p className="mt-2 text-sm">Last Vaccination: {formatDate(record.date)}</p>
+                    {record.expectedReturnMonths ? <p className="mt-1 text-sm">Provider Recommendation: Expected {record.expectedReturnMonths} {record.expectedReturnMonths === 1 ? "month" : "months"} to come back</p> : null}
+                    <p className="mt-1 font-semibold text-primary">Target Return: {record.nextDue ? `Around ${formatDate(record.nextDue)}` : "Not yet recommended"}</p>
+                    {record.nextDue && record.status.toLowerCase() === "completed" ? <button className="btn btn-primary mt-3" onClick={() => setFollowupRecord(record)}>Choose Available Dates</button> : null}
                   </div>
                 ) : null}
               </div>
@@ -6128,6 +6238,7 @@ function RecordsPanel({ pet }: { pet: Pet }) {
           />
         )}
       </div>
+      {followupRecord ? <VaccinationFollowupModal pet={pet} record={followupRecord} onClose={() => setFollowupRecord(null)} /> : null}
     </div>
   );
 }
@@ -6271,6 +6382,7 @@ function OrdersPage() {
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [pickupCheckoutWarningOpen, setPickupCheckoutWarningOpen] =
     useState(false);
+  const [checkoutSettingsPending, setCheckoutSettingsPending] = useState(false);
   const [fulfillmentSelections, setFulfillmentSelections] = useState<
     Record<number, FulfillmentMethod | undefined>
   >({});
@@ -6381,10 +6493,32 @@ function OrdersPage() {
   const fulfillmentSettingsLoaded = selected.every(
     (item) => item.fulfillmentLoaded,
   );
-  const hasPickupOnlyOrder = selectedProviderIds.some((providerId) => {
-    const supported = methodsForProvider(providerId);
-    return supported.length === 1 && supported[0] === "PICKUP";
-  });
+  const beginCheckout = async () => {
+    setCartError("");
+    setCheckoutSettingsPending(true);
+    try {
+      const providers = await Promise.all(selectedProviderIds.map((providerId) =>
+        adminRequest<ProviderDetail>(`/api/providers/${providerId}`),
+      ));
+      const latestMethods = new Map(providers.map((provider) => [
+        provider.id, getFulfillmentMethods(provider),
+      ]));
+      setCart((current) => current.map((line) => {
+        const methods = latestMethods.get(line.providerId);
+        return methods ? { ...line, fulfillmentMethods: methods, fulfillmentLoaded: true } : line;
+      }));
+      const checkoutIsPickupOnly = selectedProviderIds.every((providerId) => {
+        const methods = latestMethods.get(providerId);
+        return methods?.includes("PICKUP") === true && !methods.includes("DELIVERY");
+      });
+      if (checkoutIsPickupOnly) setPickupCheckoutWarningOpen(true);
+      else setCheckoutOpen(true);
+    } catch {
+      setCartError("Could not confirm this shop's fulfillment options. Please try again.");
+    } finally {
+      setCheckoutSettingsPending(false);
+    }
+  };
   const cartTotal = selected.reduce(
     (sum, item) => sum + item.product.price * item.quantity,
     0,
@@ -6431,7 +6565,7 @@ function OrdersPage() {
         ),
       );
       query.refetch();
-      setCheckoutOpen(false);
+      if (succeeded.length) setCheckoutOpen(false);
       setCartError(
         error || (succeeded.length ? "Order placed successfully." : ""),
       );
@@ -6580,20 +6714,14 @@ function OrdersPage() {
                 disabled={
                   !selected.length ||
                   !fulfillmentSettingsLoaded ||
+                  checkoutSettingsPending ||
                   selected.some(
                     (item) =>
                       !item.product.active ||
                       item.product.stock < item.quantity,
                   )
                 }
-                onClick={() => {
-                  setCartError("");
-                  if (hasPickupOnlyOrder) {
-                    setPickupCheckoutWarningOpen(true);
-                  } else {
-                    setCheckoutOpen(true);
-                  }
-                }}
+                onClick={() => { void beginCheckout(); }}
               >
                 Checkout
               </button>
@@ -6633,7 +6761,7 @@ function OrdersPage() {
                   setCheckoutOpen(true);
                 }}
               >
-                Continue
+                Proceed
               </button>
             </div>
           </div>

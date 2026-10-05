@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "corepack pnpm run build && node --env-file=../../.env --enable-source-maps ./dist/index.mjs",
+    "dev": "corepack pnpm run build && node --watch --env-file=../../.env --enable-source-maps ./dist/index.mjs",
     "build": "corepack pnpm --filter @workspace/api-zod run build && node ./build.mjs",
     "start": "node --env-file=../../.env --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

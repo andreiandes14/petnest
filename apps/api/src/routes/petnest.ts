@@ -7,6 +7,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { promisify } from "node:util";
+import { vaccinationReturnTarget } from "../lib/vaccination-followup.js";
 import {
   MongoClient,
   type Collection,
@@ -110,6 +111,7 @@ type CareRecord = {
   status: string;
   notes: string;
   nextDue?: string | null;
+  expectedReturnMonths?: number;
   bookingId?: number;
   serviceCategory?: "grooming" | "vaccination";
 };
@@ -141,6 +143,8 @@ type Order = {
   customerId: string;
   total: number;
   status: string;
+  paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
+  paymentMethod?: "GCASH";
   cancellationReason?: string;
   fulfillmentMethod?: FulfillmentMethod;
   deliveryAddress?: {
@@ -1957,6 +1961,11 @@ router.patch("/provider/profile", async (req, res) => {
     return;
   }
   const { id: _id, ...providerInput } = parsed.data;
+  const businessLocation = providerInput.location.trim().replace(/\s+/g, " ");
+  if (businessLocation.length > 300 || /[\u0000-\u001f\u007f]/.test(businessLocation)) {
+    res.status(400).json({ error: "Enter a business address of up to 300 characters without control characters." });
+    return;
+  }
   if (
     !hasValidFulfillmentConfiguration(
       providerInput.fulfillmentMethods,
@@ -1971,6 +1980,7 @@ router.patch("/provider/profile", async (req, res) => {
   }
   const changes: Omit<Provider, "id"> = {
     ...providerInput,
+    location: /^(undefined|null)$/i.test(businessLocation) ? "" : businessLocation,
     ...(providerInput.fulfillmentMethods !== undefined
       ? { fulfillmentMethods: supportedFulfillmentMethods(providerInput.fulfillmentMethods) }
       : {}),
@@ -2654,6 +2664,42 @@ router.get("/pets/:petId/records", async (req, res) => {
   );
 });
 
+async function vaccinationFollowupService(record: StoredCareRecord) {
+  const booking = record.bookingId ? await bookingCollection.findOne({
+    id: record.bookingId, ownerId: record.ownerId, petId: record.petId,
+    status: "completed", serviceCategory: "vaccination",
+  }) : null;
+  const providerId = record.providerId ?? booking?.providerId;
+  if (!providerId) return null;
+  const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false } });
+  if (!provider?.categories.includes("vaccination")) return null;
+  const service = provider.services.find((item) => item.category === "vaccination" && item.available &&
+    (record.serviceId ? item.id === record.serviceId : item.name === (booking?.serviceName ?? record.title)));
+  return service ? { provider, service } : null;
+}
+
+router.get("/pets/:petId/records/:recordId/follow-up", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const record = await recordCollection.findOne({
+    id: Number(req.params.recordId), petId: Number(req.params.petId), ownerId: access.userId,
+    type: "vaccination", status: "completed",
+  });
+  if (!record || !record.nextDue) {
+    res.status(404).json({ error: "Vaccination follow-up recommendation not found." });
+    return;
+  }
+  const context = await vaccinationFollowupService(record);
+  if (!context) {
+    res.status(409).json({ error: "The original provider's vaccination service is not currently available. Contact the provider." });
+    return;
+  }
+  res.json({
+    provider: GetProviderResponse.parse(context.provider), service: context.service,
+    targetDate: record.nextDue, expectedReturnMonths: record.expectedReturnMonths,
+  });
+});
+
 router.get("/provider/records", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -2890,16 +2936,29 @@ router.patch("/provider/records/:recordId", async (req, res) => {
     return;
   }
   const effectiveDate = (changes.date as string | undefined) ?? existing.date;
+  if (body.expectedReturnMonths !== undefined || (body.date !== undefined && existing.expectedReturnMonths)) {
+    const months = body.expectedReturnMonths ?? existing.expectedReturnMonths;
+    if (existing.type !== "vaccination" || typeof months !== "number" ||
+        !Number.isInteger(months) || months < 1 || months > 120 || body.nextDue !== undefined) {
+      res.status(400).json({ error: "Choose an expected return from 1 to 120 months, or a target date." });
+      return;
+    }
+    changes.expectedReturnMonths = months;
+    changes.nextDue = vaccinationReturnTarget(effectiveDate, months);
+  }
   if (body.nextDue !== undefined) {
     if (existing.type !== "vaccination" || !isIsoDate(body.nextDue) || body.nextDue < effectiveDate) {
       res.status(400).json({ error: "Choose a valid next vaccination date that is not earlier than the vaccination date." });
       return;
     }
     changes.nextDue = body.nextDue;
+    // An explicit recommendation date replaces the period-based recommendation.
+    changes.expectedReturnMonths = undefined;
   }
   const record = await recordCollection.findOneAndUpdate(
     { id: recordId, providerId: access.providerId },
-    { $set: changes },
+    { $set: Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)),
+      ...(body.nextDue !== undefined ? { $unset: { expectedReturnMonths: "" } } : {}) },
     { returnDocument: "after", projection: { _id: 0 } },
   );
   if (!record) {
@@ -3029,6 +3088,13 @@ router.post("/bookings", async (req, res) => {
         error: "Choose a record that belongs to this pet and service.",
       });
       return;
+    }
+    if (service.category === "vaccination" && record.nextDue) {
+      const followup = await vaccinationFollowupService(record);
+      if (!followup || followup.provider.id !== provider.id || followup.service.id !== service.id) {
+        res.status(400).json({ error: "Choose the original provider and vaccination service for this follow-up." });
+        return;
+      }
     }
   }
   let releaseLock: (() => Promise<unknown>) | undefined;
@@ -3696,7 +3762,7 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     recipientUserId: order.customerId,
     recipientRole: "customer",
     type: "order_confirmed",
-    message: `Your order #${order.id} was confirmed by the Provider.`,
+    message: `Your Pet Supplies order #${order.id} has been confirmed by the Provider.`,
     relatedRecordId: order.id,
     relatedRecordType: "order",
     href: "/orders",
@@ -3771,17 +3837,12 @@ router.post("/orders", async (req, res) => {
     return;
   }
   const deliveryAddress = parsed.data.deliveryAddress;
-  if (
-    parsed.data.fulfillmentMethod === "DELIVERY" &&
-    (!deliveryAddress ||
-      ![
-        deliveryAddress.recipientName,
-        deliveryAddress.contactNumber,
-        deliveryAddress.streetAddress,
-        deliveryAddress.barangay,
+  if (parsed.data.fulfillmentMethod === "DELIVERY" &&
+      (!deliveryAddress || ![
+        deliveryAddress.recipientName, deliveryAddress.contactNumber,
+        deliveryAddress.streetAddress, deliveryAddress.barangay,
         deliveryAddress.cityMunicipality,
-      ].every((value) => value.trim().length > 0))
-  ) {
+      ].every((value) => value.trim().length > 0))) {
     res.status(400).json({ error: "Complete all required delivery address fields." });
     return;
   }
@@ -3830,10 +3891,15 @@ router.post("/orders", async (req, res) => {
     quantity: item!.quantity,
     imageUrl: item!.product.imageUrl,
   }));
-  const total = orderItems.reduce(
-    (sum, item) => sum + item.price * item.quantity,
-    0,
+  const totalCentavos = orderItems.reduce(
+    (sum, item) => sum + Math.round(item.price * 100) * item.quantity, 0,
   );
+  if (!Number.isSafeInteger(totalCentavos) || totalCentavos <= 0 ||
+      orderItems.some((item) => !Number.isFinite(item.price) || item.price <= 0)) {
+    res.status(409).json({ error: "Order pricing is invalid." });
+    return;
+  }
+  const total = totalCentavos / 100;
   const decremented: Array<{ productId: number; quantity: number }> = [];
   for (const item of orderItems) {
     const result = await providerCollection.updateOne(
@@ -3873,19 +3939,18 @@ router.post("/orders", async (req, res) => {
     customerId: access.userId,
     total,
     status: "PENDING",
+    paymentStatus: "UNPAID",
     fulfillmentMethod: parsed.data.fulfillmentMethod,
-    ...(parsed.data.fulfillmentMethod === "DELIVERY" && deliveryAddress
-      ? {
-          deliveryAddress: {
-            recipientName: deliveryAddress.recipientName.trim(),
-            contactNumber: deliveryAddress.contactNumber.trim(),
-            streetAddress: deliveryAddress.streetAddress.trim(),
-            barangay: deliveryAddress.barangay.trim(),
-            cityMunicipality: deliveryAddress.cityMunicipality.trim(),
-            instructions: deliveryAddress.instructions?.trim() ?? "",
-          },
-        }
-      : {}),
+    ...(parsed.data.fulfillmentMethod === "DELIVERY" && deliveryAddress ? {
+      deliveryAddress: {
+        recipientName: deliveryAddress.recipientName.trim(),
+        contactNumber: deliveryAddress.contactNumber.trim(),
+        streetAddress: deliveryAddress.streetAddress.trim(),
+        barangay: deliveryAddress.barangay.trim(),
+        cityMunicipality: deliveryAddress.cityMunicipality.trim(),
+        instructions: deliveryAddress.instructions?.trim() ?? "",
+      },
+    } : {}),
     itemCount: parsed.data.items.reduce((sum, item) => sum + item.quantity, 0),
     items: orderItems,
     createdAt: new Date().toISOString(),
