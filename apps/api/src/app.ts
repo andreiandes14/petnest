@@ -28,6 +28,8 @@ app.use(
 );
 app.use(cors({ credentials: true, origin: true }));
 app.use(cookieParser());
+// Preserve exact bytes for PayMongo's HMAC while keeping ordinary JSON routes unchanged.
+app.use("/api/webhooks/paymongo", express.raw({ type: "application/json", limit: "1mb", inflate: false }));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use("/api", router);

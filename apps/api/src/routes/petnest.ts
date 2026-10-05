@@ -8,6 +8,7 @@ import {
 } from "node:crypto";
 import { promisify } from "node:util";
 import { vaccinationReturnTarget } from "../lib/vaccination-followup.js";
+import { createOrderCheckout, processPaidWebhook, verifyPaymongoSignature, PaymentError, paymentWebUrl, deliverPaymentNotifications, type PaymentOrder, type PaymentFields } from "../lib/paymongo.js";
 import {
   MongoClient,
   type Collection,
@@ -467,7 +468,7 @@ type StoredBooking = Booking & {
   createdAt?: string;
   updatedAt?: string;
 };
-type StoredOrder = Order & { ownerId: string; archived?: boolean };
+type StoredOrder = Order & PaymentFields & { ownerId: string; archived?: boolean };
 type Counter = { _id: string; value: number };
 type Role = "customer" | "provider" | "admin";
 type Access = { userId: string; role: Role; providerId?: number };
@@ -610,7 +611,7 @@ async function createNotification(input: {
   relatedRecordId?: string | number;
   relatedRecordType?: string;
   href?: string;
-}) {
+}, requireDelivery = false) {
   const notification: StoredNotification = {
     _id: `${input.recipientUserId}:${input.eventKey}`,
     recipientUserId: input.recipientUserId,
@@ -633,6 +634,7 @@ async function createNotification(input: {
       { upsert: true },
     );
   } catch {
+    if (requireDelivery) throw new PaymentError(503, "Payment notification delivery needs to be retried.");
     // A notification must never roll back an already-successful business action.
   }
 }
@@ -3556,6 +3558,22 @@ router.patch("/admin/bookings/:bookingId/status", async (req, res) => {
     .json({ error: "Booking status is managed by the assigned provider." });
 });
 
+
+async function notifyPaidOrder(order: PaymentOrder) {
+      await createNotification({
+        eventKey: `order:${order.id}:payment-paid`, recipientUserId: order.customerId, recipientRole: "customer",
+        type: "order_payment_paid", message: `Payment for Pet Supplies order #${order.id} was successful.`,
+        relatedRecordId: order.id, relatedRecordType: "order", href: "/orders",
+      }, true);
+      const providerAccount = await userCollection.findOne({ role: "provider", providerId: order.providerId, isActive: { $ne: false } });
+      if (providerAccount) await createNotification({
+        eventKey: `order:${order.id}:payment-paid`, recipientUserId: providerAccount.id, recipientRole: "provider",
+        type: "order_payment_paid", message: `Payment received for Pet Supplies order #${order.id}.`,
+        relatedRecordId: order.id, relatedRecordType: "order", href: "/provider/retail",
+      }, true);
+
+}
+
 router.get("/orders", async (req, res) => {
   const access = await requireCustomer(req, res);
   if (!access) return;
@@ -3563,7 +3581,54 @@ router.get("/orders", async (req, res) => {
     .find({ ownerId: access.userId }, { projection: { _id: 0, ownerId: 0 } })
     .sort({ id: -1 })
     .toArray();
+  await Promise.all(orders.filter(order => order.paymentStatus === "PAID" && order.paymentNotificationStatus === "PENDING")
+    .map(order => deliverPaymentNotifications(orderCollection, order, notifyPaidOrder)));
   res.json(ListOrdersResponse.parse(orders));
+});
+
+router.post("/orders/:orderId/payment", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const orderId = Number(req.params.orderId);
+  if (!/^\d+$/.test(String(req.params.orderId)) || !Number.isSafeInteger(orderId) || orderId < 1) {
+    res.status(400).json({ error: "Choose a valid order." });
+    return;
+  }
+  try {
+    const checkout = await createOrderCheckout(orderCollection, orderId, access.userId, {
+      secretKey: process.env.PAYMONGO_SECRET_KEY,
+      webUrl: paymentWebUrl(process.env),
+    });
+    res.json(checkout);
+  } catch (error) {
+    // Never log outbound payment requests, upstream bodies, or credentials.
+    res.status(error instanceof PaymentError ? error.status : 503).json({
+      error: error instanceof PaymentError ? error.message : "Payment is temporarily unavailable. Please try again.",
+    });
+  }
+});
+
+router.post("/webhooks/paymongo", async (req, res) => {
+  let stage = "raw_body";
+  try {
+    if (!Buffer.isBuffer(req.body)) throw new PaymentError(400, "Raw payment payload is required.");
+    stage = "signature";
+    verifyPaymongoSignature(req.body, req.get("Paymongo-Signature"), process.env.PAYMONGO_WEBHOOK_SECRET);
+    stage = "event_json";
+    let payload: unknown;
+    try { payload = JSON.parse(req.body.toString("utf8")); }
+    catch { throw new PaymentError(400, "Invalid payment payload."); }
+    stage = "payment_validation_or_persistence";
+    const result = await processPaidWebhook(orderCollection, payload, notifyPaidOrder);
+    if (result?.notificationsPending) req.log?.warn({ stage: "payment_notifications" }, "Payment saved; notification delivery deferred");
+    res.json({ received: true });
+  } catch (error) {
+    // Stage/status only: no payloads, signatures, credentials or exception details.
+    req.log?.warn({ stage, status: error instanceof PaymentError ? error.status : 503 }, "PayMongo webhook rejected");
+    res.status(error instanceof PaymentError ? error.status : 503).json({
+      error: error instanceof PaymentError ? error.message : "Payment event could not be processed. Retry delivery.",
+    });
+  }
 });
 
 router.patch("/orders/:orderId/cancel", async (req, res) => {
@@ -3624,6 +3689,8 @@ router.get("/provider/orders", async (req, res) => {
     )
     .sort({ id: -1 })
     .toArray();
+  await Promise.all(orders.filter(order => order.paymentStatus === "PAID" && order.paymentNotificationStatus === "PENDING")
+    .map(order => deliverPaymentNotifications(orderCollection, order, notifyPaidOrder)));
   res.json(ListOrdersResponse.parse(orders));
 });
 

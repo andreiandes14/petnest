@@ -4977,6 +4977,9 @@ function ProviderManagementPage() {
                           >
                             {statusLabel(order.status)}
                           </span>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Payment Status: {statusLabel(order.paymentStatus ?? "UNPAID")}
+                          </p>
                           {order.cancellationReason ? (
                             <p className="mt-2 text-xs text-muted-foreground">
                               <span className="font-semibold text-foreground">
@@ -6338,8 +6341,27 @@ function PetsPage() {
 
 function OrdersPage() {
   const { user } = useAuth();
-  const query = useListOrders({ query: { queryKey: getListOrdersQueryKey() } });
+  const paymentSearch = useSearch();
+  const returnParams = new URLSearchParams(paymentSearch);
+  const paymentReturn = returnParams.get("payment");
+  const returnOrderId = Number(returnParams.get("order"));
+  const query = useListOrders({ query: {
+    queryKey: getListOrdersQueryKey(),
+    refetchInterval: (current) => paymentReturn === "success" &&
+      current.state.data?.find(order => order.id === returnOrderId)?.paymentStatus !== "PAID" ? 5000 : false,
+  } });
   const orders = query.data ?? [];
+  const payment = useMutation({
+    mutationFn: (orderId: number) => adminRequest<{ checkout_url: string }>(`/api/orders/${orderId}/payment`, { method: "POST" }),
+    onSuccess: ({ checkout_url }) => {
+      const url = new URL(checkout_url);
+      if (url.protocol !== "https:" || url.hostname !== "checkout.paymongo.com" || url.username || url.password || url.port) {
+        throw new Error("The payment checkout URL is invalid.");
+      }
+      window.location.assign(url.href);
+    },
+    onSettled: () => { void query.refetch(); },
+  });
   const [cancelOrderTarget, setCancelOrderTarget] = useState<Order | null>(null);
   type CartLine = {
     providerId: number;
@@ -6828,6 +6850,9 @@ function OrdersPage() {
                       >
                         {statusLabel(order.status)}
                       </span>
+                      <p className="mt-2 text-xs text-muted-foreground" data-testid={`order-payment-status-${order.id}`}>
+                        Payment Status: {statusLabel(order.paymentStatus ?? "UNPAID")}
+                      </p>
                       {order.cancellationReason ? (
                         <p className="mt-2 text-xs text-muted-foreground">
                           <span className="font-semibold text-foreground">
@@ -6853,6 +6878,13 @@ function OrdersPage() {
                           Cancel Order
                         </button>
                       ) : null}
+                      {order.status === "CONFIRMED" && [undefined, "UNPAID", "FAILED", "PENDING"].includes(order.paymentStatus) ? (
+                        <button className="btn btn-primary h-9 min-h-0 px-3 text-xs" type="button"
+                          data-testid={`button-pay-order-${order.id}`} disabled={payment.isPending}
+                          onClick={() => payment.mutate(order.id)}>
+                          {payment.isPending && payment.variables === order.id ? "Preparing payment…" : "Proceed to Payment"}
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -6876,6 +6908,20 @@ function OrdersPage() {
           />
         )}
       </div>
+      {paymentReturn === "success" ? (
+        <p className="mt-4 text-sm text-muted-foreground" role="status">
+          {orders.find(order => order.id === returnOrderId)?.paymentStatus === "PAID"
+            ? "Your payment has been verified."
+            : "Payment confirmation is being verified. Your payment status updates after PayMongo verification."}
+        </p>
+      ) : paymentReturn === "cancel" ? (
+        <p className="mt-4 text-sm text-muted-foreground" role="status">
+          Checkout was closed. If the order is unpaid, you can return to its payment checkout.
+        </p>
+      ) : null}
+      {payment.isError ? <p className="mt-4 text-sm text-destructive" role="alert">
+        {payment.error instanceof Error ? payment.error.message : "Payment could not be prepared. Please try again."}
+      </p> : null}
       {cancelOrderTarget ? (
         <div className="modal-backdrop" role="presentation">
           <div
