@@ -284,6 +284,12 @@ components:
         id: { type: number }
         name: { type: string }
         location: { type: string }
+        latitude: { type: [number, "null"], minimum: -90, maximum: 90 }
+        longitude: { type: [number, "null"], minimum: -180, maximum: 180 }
+        cityLatitude: { type: [number, "null"], minimum: -90, maximum: 90 }
+        cityLongitude: { type: [number, "null"], minimum: -180, maximum: 180 }
+        locationCity: { type: [string, "null"], maxLength: 100 }
+        locationAccuracy: { type: [string, "null"], enum: [city, shop, null] }
         description: { type: string }
         categories:
           type: array

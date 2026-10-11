@@ -1,11 +1,14 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
   createHmac,
+  createHash,
   randomBytes,
   randomUUID,
   scrypt as scryptCallback,
   timingSafeEqual,
 } from "node:crypto";
+import { cityGeocodingResult, photonCityResult, providerLocationUpdate, validPin, type CityLocation } from "../lib/shop-location.js";
+import { detectCity, normalizeCity } from "../../../../shared/city-location.js";
 import { promisify } from "node:util";
 import { vaccinationReturnTarget } from "../lib/vaccination-followup.js";
 import { createOrderCheckout, processPaidWebhook, verifyPaymongoSignature, PaymentError, paymentWebUrl, deliverPaymentNotifications, type PaymentOrder, type PaymentFields } from "../lib/paymongo.js";
@@ -73,6 +76,12 @@ type Provider = {
   id: number;
   name: string;
   location: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  locationCity?: string | null;
+  locationAccuracy?: "city" | "shop" | null;
+  cityLatitude?: number | null;
+  cityLongitude?: number | null;
   description: string;
   categories: string[];
   rating: number;
@@ -1949,6 +1958,52 @@ router.patch("/provider/password", async (req, res) => {
   res.json({ message: "Password changed successfully." });
 });
 
+// City resolution happens only during explicit profile saves, never autocomplete or bulk scans.
+async function resolveProviderCity(city: string, retry = false): Promise<CityLocation | null> {
+  // Reuse actual saved city centres before calling a geocoder.
+  const saved = await providerCollection.find({ $or: [{ cityLatitude: { $ne: null } }, { locationAccuracy: "city" }] }, { projection: { locationCity: 1, cityLatitude: 1, cityLongitude: 1, latitude: 1, longitude: 1, locationAccuracy: 1 } }).toArray();
+  for (const provider of saved) {
+    if (!provider.locationCity || normalizeCity(provider.locationCity) !== normalizeCity(city)) continue;
+    const candidate = { latitude: provider.cityLatitude ?? (provider.locationAccuracy === "city" ? provider.latitude : null), longitude: provider.cityLongitude ?? (provider.locationAccuracy === "city" ? provider.longitude : null) };
+    if (validPin(candidate)) return candidate;
+  }
+  const endpoint = process.env.GEOCODING_URL || "https://photon.komoot.io/api/";
+  const photon = process.env.GEOCODING_FORMAT === "photon" || new URL(endpoint).hostname === "photon.komoot.io";
+  const cache = database.collection<{ _id: string; result: CityLocation | null; expiresAt: Date }>("shopGeocodingCache");
+  const key = createHash("sha256").update(`city:v2:${endpoint}:${normalizeCity(city)}`).digest("hex");
+  const cached = await cache.findOne({ _id: key, expiresAt: { $gt: new Date() } });
+  if (cached && (cached.result || !retry)) return cached.result;
+  const limits = database.collection<{ _id: string; nextAt: Date }>("shopGeocodingLimits");
+  try {
+    await limits.findOneAndUpdate({ _id: "geocoder", nextAt: { $lte: new Date() } }, { $set: { nextAt: new Date(Date.now() + 30000) } }, { upsert: true });
+  } catch { return null; }
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== "https:") return null;
+    if (photon) {
+      url.searchParams.set("q", `${normalizeCity(city)}, Philippines`);
+      url.searchParams.set("limit", "10");
+      url.searchParams.set("lang", "en");
+    } else {
+      url.searchParams.delete("q");
+      url.searchParams.set("city", city);
+      url.searchParams.set("country", "Philippines");
+      url.searchParams.set("format", "jsonv2");
+      url.searchParams.set("limit", "5");
+      url.searchParams.set("countrycodes", "ph");
+      url.searchParams.set("featureType", "city");
+      url.searchParams.set("addressdetails", "1");
+    }
+    const response = await fetch(url, { headers: { "User-Agent": "PetNest-CityLocation/1.0 (+https://petnest-api.vercel.app)", "Accept": "application/json" }, signal: AbortSignal.timeout(10000) });
+    if (!response.ok) return null;
+    const body: unknown = await response.json();
+    const result = photon ? photonCityResult(body, city) : cityGeocodingResult(body, city);
+    await cache.updateOne({ _id: key }, { $set: { result, expiresAt: new Date(Date.now() + (result ? 7 * 86400000 : 60000)) } }, { upsert: true });
+    return result;
+  } catch { return null; }
+  finally { await limits.updateOne({ _id: "geocoder" }, { $set: { nextAt: new Date(Date.now() + 1200) } }); }
+}
+
 router.patch("/provider/profile", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -1982,8 +2037,24 @@ router.patch("/provider/profile", async (req, res) => {
     });
     return;
   }
+  const addressChanged = businessLocation !== existing.location.trim().replace(/\s+/g, " ");
+  const detectedCity = detectCity(businessLocation);
+  const suppliedCity = providerInput.locationCity?.trim() || null;
+  const city = businessLocation ? detectedCity || suppliedCity || (!addressChanged ? existing.locationCity : null) || null : null;
+  if (city && (city.length > 100 || !/^[\p{L} .'-]+$/u.test(city))) {
+    res.status(400).json({ error: "Enter a valid City / Municipality." }); return;
+  }
+  let selectedPin: CityLocation | undefined;
+  if (req.body.shopPinSelected === true) {
+    if (!city || typeof req.body.shopPinCity !== "string" || normalizeCity(req.body.shopPinCity) !== normalizeCity(city) || !validPin(providerInput)) {
+      res.status(400).json({ error: "Select your shop location on the map for the current city." }); return;
+    }
+    selectedPin = { latitude: providerInput.latitude, longitude: providerInput.longitude };
+  }
+  const shopCoordinates = await providerLocationUpdate(existing, city, name => resolveProviderCity(name, req.body.locationRetry === true), selectedPin);
   const changes: Omit<Provider, "id"> = {
     ...providerInput,
+    ...shopCoordinates,
     location: /^(undefined|null)$/i.test(businessLocation) ? "" : businessLocation,
     ...(providerInput.fulfillmentMethods !== undefined
       ? { fulfillmentMethods: supportedFulfillmentMethods(providerInput.fulfillmentMethods) }

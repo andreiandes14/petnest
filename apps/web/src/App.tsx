@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Dispatch,
   type FormEvent,
@@ -18,9 +19,11 @@ import {
 } from "@tanstack/react-query";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Toaster } from "@/components/ui/toaster";
+import { BusinessLocation } from "@/components/shop-location";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { ApiRequestError, apiRequest } from "@/lib/api-request";
+import { nearbyProviders, nearbySearchMessage, requestBrowserLocation, validCoordinates, type Coordinates } from "@/lib/nearby-providers";
 import { providerAddress, providerMapUrl } from "@/lib/provider-location";
 import { availableGroomingTime, groomingTime, latestGroomingRecords, repeatGroomingService } from "@/lib/grooming-records";
 import { customerOrderStatus } from "@/lib/customer-order-status";
@@ -717,19 +720,21 @@ function HeroSearch() {
   );
 }
 
-function ProviderLocation({ provider }: { provider: Pick<Provider, "id" | "name" | "location"> }) {
+function ProviderLocation({ provider, distance }: { provider: Pick<Provider, "id" | "name" | "location" | "latitude" | "longitude" | "locationCity" | "locationAccuracy">; distance?: number }) {
   const address = providerAddress(provider.location);
-  const mapUrl = providerMapUrl(address);
+  const mapUrl = providerMapUrl(address, provider);
   return <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
     <MapPin size={13} className="shrink-0" aria-hidden="true" />
     <span className="min-w-0 break-words [overflow-wrap:anywhere]">{address || "Location not provided"}</span>
+    {provider.locationCity ? <span className="text-xs text-muted-foreground">Located in {provider.locationCity}</span> : null}
+    {distance !== undefined ? <span className="text-xs text-muted-foreground">{provider.locationAccuracy === "city" && provider.locationCity ? `Approximately ${distance.toFixed(1)} km to ${provider.locationCity}` : provider.locationAccuracy === "shop" ? `Approx. ${distance.toFixed(1)} km to shop pin` : `Approximate distance: ${distance.toFixed(1)} km`}</span> : null}
     {mapUrl ? <a href={mapUrl} target="_blank" rel="noopener noreferrer"
       className="relative z-20 shrink-0 font-semibold text-primary underline underline-offset-2"
       aria-label={`View map for ${provider.name}`} data-testid={`link-provider-map-${provider.id}`}>View Map</a> : null}
   </span>;
 }
 
-function ProviderCard({ provider }: { provider: Provider }) {
+function ProviderCard({ provider, distance }: { provider: Provider; distance?: number }) {
   const [saved, setSaved] = useState(false);
   const queryString = useSearch();
   const selectedCategory = new URLSearchParams(queryString).get("category");
@@ -791,7 +796,7 @@ function ProviderCard({ provider }: { provider: Provider }) {
             </span>
           </div>
           <p className="provider-meta flex-wrap">
-            <ProviderLocation provider={provider} />
+            <ProviderLocation provider={provider} distance={distance} />
             <span aria-hidden>·</span>
             <span>{provider.reviewCount} reviews</span>
           </p>
@@ -1018,6 +1023,27 @@ function Home({ authenticated = true }: { authenticated?: boolean }) {
 }
 
 function ProvidersPage() {
+  const [origin, setOrigin] = useState<Coordinates | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationMessage, setLocationMessage] = useState("");
+  const locationRequest = useRef(0);
+  useEffect(() => () => { locationRequest.current += 1; }, []);
+  const locate = async () => {
+    const request = ++locationRequest.current;
+    setLocating(true);
+    setLocationMessage("");
+    try {
+      const coordinates = await requestBrowserLocation(navigator.geolocation, window.isSecureContext);
+      if (request !== locationRequest.current) return;
+      setOrigin(coordinates);
+    } catch (error) {
+      if (request !== locationRequest.current) return;
+      setOrigin(null);
+      setLocationMessage(error instanceof Error ? error.message : "Your location is unavailable. Please try again. You can still browse all providers.");
+    } finally {
+      if (request === locationRequest.current) setLocating(false);
+    }
+  };
   const [, setLocation] = useLocation();
   const queryString = useSearch();
   const params = new URLSearchParams(queryString);
@@ -1036,13 +1062,22 @@ function ProvidersPage() {
     }),
     [category, submittedSearch],
   );
-  const query = useListProviders(queryParams, {
-    query: { queryKey: getListProvidersQueryKey(queryParams) },
+  const requestParams = origin ? {} : queryParams;
+  const query = useListProviders(requestParams, {
+    query: { queryKey: getListProvidersQueryKey(requestParams) },
   });
-  const results: Provider[] = query.isFetching ? [] : (query.data ?? []);
+  const allProviders: Provider[] = query.data ?? [];
+  const providers = origin ? allProviders.filter(provider =>
+    (!category || provider.categories.includes(category)) &&
+    (!submittedSearch || [provider.name, provider.location, provider.description].some(value => value.toLowerCase().includes(submittedSearch.toLowerCase()))),
+  ) : allProviders;
+  const ranked = origin ? nearbyProviders(providers, origin) : [];
+  const unlocated = origin ? providers.filter(provider => !validCoordinates(provider)) : [];
+  const results = origin ? [...ranked.map(item => item.provider), ...unlocated] : providers;
+  const distances = new Map(ranked.map(item => [item.provider.id, item.distance]));
   const unfiltered = !category && !submittedSearch;
   const spotlight =
-    unfiltered && results.length > 2
+    unfiltered && !origin && results.length > 2
       ? results.reduce((best, item) =>
           item.rating > best.rating ? item : best,
         )
@@ -1138,6 +1173,15 @@ function ProvidersPage() {
           ) : null}
         </div>
       </div>
+      <section className="surface-card my-4 space-y-3 p-4" aria-label="Find pet shops near you">
+        <h2 className="font-semibold">{origin ? "Pet Shops by Approximate Location" : "Find Pet Shops Near You"}</h2>
+        <p className="text-sm text-muted-foreground">Allow PetNest to access your location to discover pet shops by approximate city location.</p>
+        <button className="btn btn-primary" type="button" disabled={locating} onClick={locate}>
+          {locating ? "Finding nearby shops..." : "Use My Location"}
+        </button>
+        {locationMessage ? <p className="text-sm" role="status">{locationMessage}</p> : origin && !query.isLoading && !query.isError ? <p className="text-sm" role="status">{nearbySearchMessage(allProviders)}</p> : null}
+        {origin && ranked.some(item => item.provider.locationAccuracy === "city") ? <p className="text-xs text-muted-foreground">City locations: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">? OpenStreetMap contributors</a>.</p> : null}
+      </section>
       {query.isLoading ? (
         <LoadingState />
       ) : query.isError ? (
@@ -1155,14 +1199,14 @@ function ProvidersPage() {
                 {initials(spotlight.name)}
               </span>
               <span className="spotlight-body">
-                <span className="eyebrow eyebrow-sun">Best rated nearby</span>
+                <span className="eyebrow eyebrow-sun">Best rated</span>
                 <span className="spotlight-name">{spotlight.name}</span>
                 <span className="spotlight-meta">
                   <span className="rating">
                     <Star size={13} fill="currentColor" />{" "}
                     {spotlight.rating.toFixed(1)}
                   </span>
-                  <ProviderLocation provider={spotlight} />
+                  <ProviderLocation provider={spotlight} distance={distances.get(spotlight.id)} />
                   <span>{spotlight.reviewCount} reviews</span>
                 </span>
                 <span className="spotlight-copy">{spotlight.description}</span>
@@ -1179,10 +1223,18 @@ function ProvidersPage() {
             </div>
           ) : null}
           <div className="provider-grid">
-            {rest.map((provider) => (
-              <ProviderCard provider={provider} key={provider.id} />
+            {(origin ? ranked.map(item => item.provider) : rest).map((provider) => (
+              <ProviderCard provider={provider} distance={distances.get(provider.id)} key={provider.id} />
             ))}
           </div>
+          {unlocated.length ? (
+            <section className="mt-6">
+              <h2 className="mb-3 font-semibold">Other providers</h2>
+              <div className="provider-grid">
+                {unlocated.map(provider => <ProviderCard provider={provider} key={provider.id} />)}
+              </div>
+            </section>
+          ) : null}
         </>
       ) : (
         <EmptyState
@@ -4345,23 +4397,8 @@ function ProviderManagementPage() {
                   onBlur={() => updateProfile.mutate(draft)}
                 />
               </div>
-              <div className="form-field">
-                <h2 className="section-title">Business Location</h2>
-                <label className="form-label mt-2" htmlFor="provider-business-location">Store / business address</label>
-                <textarea
-                  id="provider-business-location"
-                  className="input h-24 resize-y py-3"
-                  maxLength={300}
-                  placeholder="Street / House No. / Building, Barangay, City / Municipality"
-                  value={draft.location ?? ""}
-                  onChange={(event) => change("location", event.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">Include the street, barangay, and city so customers can find your business.</p>
-                <button className="btn btn-primary mt-2 self-start" type="button" disabled={updateProfile.isPending}
-                  onClick={() => updateProfile.mutate(draft)}>{updateProfile.isPending ? "Saving…" : "Save Location"}</button>
-                {updateProfile.isError ? <p className="text-sm text-destructive" role="alert">{updateProfile.error.message}</p> : null}
-                {updateProfile.isSuccess ? <p className="text-xs text-primary" role="status">Profile saved.</p> : null}
-              </div>
+              {providerSection === "dashboard" ? <BusinessLocation provider={draft} saving={updateProfile.isPending}
+                save={profile => updateProfile.mutateAsync(profile)} /> : null}
               <div className="form-field full">
                 <label className="form-label">Description</label>
                 <textarea

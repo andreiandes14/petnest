@@ -11,6 +11,12 @@ export interface Provider {
   id: number;
   name: string;
   location: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  locationCity?: string | null;
+  locationAccuracy?: "city" | "shop" | null;
+  cityLatitude?: number | null;
+  cityLongitude?: number | null;
   description: string;
   categories: string[];
   rating: number;
