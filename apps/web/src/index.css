@@ -1462,6 +1462,15 @@ textarea.input {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 22px;
 }
+.directory-provider-grid {
+  grid-auto-rows: 1fr;
+}
+.directory-provider-grid .provider-card {
+  display: flex;
+}
+.directory-provider-grid .provider-foot {
+  justify-content: flex-end;
+}
 .provider-card {
   position: relative;
   overflow: hidden;
@@ -1529,7 +1538,7 @@ textarea.input {
   );
 }
 
-/* Directory spotlight: the best-rated place gets a full-width lead card. */
+/* Directory spotlight: the featured provider gets a full-width lead card. */
 .spotlight {
   display: flex;
   align-items: stretch;

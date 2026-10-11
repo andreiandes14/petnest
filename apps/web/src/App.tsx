@@ -735,7 +735,7 @@ function ProviderLocation({ provider, distance }: { provider: Pick<Provider, "id
   </span>;
 }
 
-function ProviderCard({ provider, distance }: { provider: Provider; distance?: number }) {
+function ProviderCard({ provider, distance, showStartingPrice = true }: { provider: Provider; distance?: number; showStartingPrice?: boolean }) {
   const [saved, setSaved] = useState(false);
   const queryString = useSearch();
   const selectedCategory = new URLSearchParams(queryString).get("category");
@@ -815,10 +815,10 @@ function ProviderCard({ provider, distance }: { provider: Provider; distance?: n
             ))}
           </div>
           <div className="provider-foot">
-            <span className="provider-price">
+            {showStartingPrice ? <span className="provider-price">
               {money(provider.startingPrice)}
               <span>starting price</span>
-            </span>
+            </span> : null}
             <span className="btn btn-ghost h-9 min-h-0 px-4 text-xs">
               View <ArrowRight size={13} />
             </span>
@@ -1076,16 +1076,6 @@ function ProvidersPage() {
   const unlocated = origin ? providers.filter(provider => !validCoordinates(provider)) : [];
   const results = origin ? [...ranked.map(item => item.provider), ...unlocated] : providers;
   const distances = new Map(ranked.map(item => [item.provider.id, item.distance]));
-  const unfiltered = !category && !submittedSearch;
-  const spotlight =
-    unfiltered && !origin && results.length > 2
-      ? results.reduce((best, item) =>
-          item.rating > best.rating ? item : best,
-        )
-      : undefined;
-  const rest = spotlight
-    ? results.filter((item) => item.id !== spotlight.id)
-    : results;
   return (
     <div className="animate-in">
       <header className="page-head">
@@ -1189,53 +1179,11 @@ function ProvidersPage() {
         <ErrorState onRetry={() => query.refetch()} />
       ) : results.length ? (
         <>
-          {/* With no filter applied, lead with the best-rated place as a
-              full-width spotlight, then the rest as a grid. */}
-          {spotlight ? (
-            <div className={`spotlight wavy relative tone-${spotlight.id % 4}`}>
-              <Link href={`/providers/${spotlight.id}${category ? `?category=${encodeURIComponent(category)}` : ""}`}
-                className="absolute inset-0 z-10" aria-label={`View provider ${spotlight.name}`}
-                data-testid={`card-spotlight-${spotlight.id}`} />
-              <span className="spotlight-mark" aria-hidden>
-                {initials(spotlight.name)}
-              </span>
-              <span className="spotlight-body">
-                <span className="eyebrow eyebrow-sun">Best rated</span>
-                <span className="spotlight-name">{spotlight.name}</span>
-                <span className="spotlight-meta">
-                  <span className="rating">
-                    <Star size={13} fill="currentColor" />{" "}
-                    {spotlight.rating.toFixed(1)}
-                  </span>
-                  <ProviderLocation provider={spotlight} distance={distances.get(spotlight.id)} />
-                  <span>{spotlight.reviewCount} reviews</span>
-                </span>
-                <span className="spotlight-copy">{spotlight.description}</span>
-                <span className="spotlight-foot">
-                  <span className="provider-price">
-                    {money(spotlight.startingPrice)}
-                    <span>starting price</span>
-                  </span>
-                  <span className="btn btn-primary h-10 min-h-0 text-xs">
-                    View provider <ArrowRight size={13} />
-                  </span>
-                </span>
-              </span>
-            </div>
-          ) : null}
-          <div className="provider-grid">
-            {(origin ? ranked.map(item => item.provider) : rest).map((provider) => (
-              <ProviderCard provider={provider} distance={distances.get(provider.id)} key={provider.id} />
+          <div className="provider-grid directory-provider-grid">
+            {results.map((provider) => (
+              <ProviderCard provider={provider} distance={distances.get(provider.id)} showStartingPrice={false} key={provider.id} />
             ))}
           </div>
-          {unlocated.length ? (
-            <section className="mt-6">
-              <h2 className="mb-3 font-semibold">Other providers</h2>
-              <div className="provider-grid">
-                {unlocated.map(provider => <ProviderCard provider={provider} key={provider.id} />)}
-              </div>
-            </section>
-          ) : null}
         </>
       ) : (
         <EmptyState
