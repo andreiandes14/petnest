@@ -111,6 +111,7 @@ type CareRecord = {
   date: string;
   status: string;
   notes: string;
+  time?: string | null;
   nextDue?: string | null;
   expectedReturnMonths?: number;
   bookingId?: number;
@@ -1165,6 +1166,7 @@ async function ensureCompletedBookingRecord(
     serviceCategory: booking.serviceCategory,
     type: booking.serviceCategory,
     date: booking.date,
+    time: booking.time,
     status: "completed",
     notes: "Completed service",
     createdAt: new Date().toISOString(),
@@ -2658,7 +2660,10 @@ router.get("/pets/:petId/records", async (req, res) => {
     .toArray();
   res.json(
     GetPetRecordsResponse.parse({
-      grooming: petRecords.filter((record) => record.type === "grooming"),
+      grooming: petRecords.filter((record) => record.type === "grooming").map((record) => ({
+        ...record,
+        time: record.time || completedBookings.find((booking) => booking.id === record.bookingId)?.time || null,
+      })),
       vaccinations: petRecords.filter(
         (record) => record.type === "vaccination",
       ),
@@ -3451,6 +3456,7 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
         serviceCategory: booking.serviceCategory,
         type: booking.serviceCategory,
         date: booking.date,
+        time: booking.time,
         status: "completed",
         notes: "Completed service",
         createdAt: new Date().toISOString(),

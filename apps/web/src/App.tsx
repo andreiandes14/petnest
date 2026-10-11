@@ -22,6 +22,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { ApiRequestError, apiRequest } from "@/lib/api-request";
 import { providerAddress, providerMapUrl } from "@/lib/provider-location";
+import { availableGroomingTime, groomingTime, latestGroomingRecords, repeatGroomingService } from "@/lib/grooming-records";
 import { customerOrderStatus } from "@/lib/customer-order-status";
 import { availableFollowupDates, closestFollowupDate, followupDisplayWindow, monthsInRange, offsetDate } from "@/lib/vaccination-followup";
 import { toast } from "@/hooks/use-toast";
@@ -1476,7 +1477,7 @@ function AvailabilityCalendar({
 
 function BookingModal({
   provider,
-  service,
+  service: initialService,
   onClose,
   followup,
 }: {
@@ -1485,6 +1486,8 @@ function BookingModal({
   onClose: () => void;
   followup?: { petId: number; recordId: number; date: string; slots: AvailabilitySlot[] };
 }) {
+  const [service, setService] = useState(initialService);
+  const [repeatRecordId, setRepeatRecordId] = useState("");
   const petsQuery = useListPets({ query: { queryKey: getListPetsQueryKey() } });
   const createBooking = useCreateBooking();
   const [petId, setPetId] = useState(followup ? String(followup.petId) : "");
@@ -1504,7 +1507,8 @@ function BookingModal({
   });
   const recordType =
     service.category === "vaccination" ? "vaccinations" : "grooming";
-  const relevantRecords = recordsQuery.data?.[recordType] ?? [];
+  const savedRecords = recordsQuery.data?.[recordType] ?? [];
+  const relevantRecords = service.category === "grooming" ? latestGroomingRecords(savedRecords) : savedRecords;
   const pet = petsQuery.data?.find(
     (candidate) => candidate.id === Number(petId),
   );
@@ -1512,8 +1516,12 @@ function BookingModal({
     (candidate) => candidate.id === Number(recordId),
   );
 
+  const repeatRecord = relevantRecords.find(item => item.id === Number(repeatRecordId));
+  const repeatService = repeatRecord ? repeatGroomingService(provider.services, repeatRecord.title) : undefined;
+  const scheduleAvailable = Boolean(date && time && timeSlots.some(slot => slot.time === time && slot.status === "available"));
+
   const confirm = () => {
-    if (!petId || !date) return;
+    if (!petId || !scheduleAvailable) return;
     createBooking.mutate(
       {
         data: {
@@ -1609,6 +1617,25 @@ function BookingModal({
               Done
             </button>
           </div>
+        ) : repeatRecord ? (
+          <div className="mt-7 space-y-4" role="alertdialog" aria-labelledby="repeat-grooming-title" aria-describedby="repeat-grooming-message">
+            <h3 id="repeat-grooming-title" className="font-display text-2xl">Repeat Previous Grooming Session?</h3>
+            <p id="repeat-grooming-message">Would you like to book this grooming service again?</p>
+            {!repeatService ? <p className="text-sm text-destructive">This grooming service is not currently available from this provider. Choose another service or provider.</p> : null}
+            <div className="flex gap-3">
+              <button className="btn btn-ghost flex-1" type="button" onClick={() => setRepeatRecordId("")}>Cancel</button>
+              <button className="btn btn-primary flex-1" type="button" disabled={!repeatService} onClick={() => {
+                if (!repeatService) return;
+                setService(repeatService);
+                setRecordId(String(repeatRecord.id));
+                const suggestedTime = groomingTime(repeatRecord.time);
+                setTime(suggestedTime === "Time unavailable" ? "" : suggestedTime);
+                setDate("");
+                setTimeSlots([]);
+                setRepeatRecordId("");
+              }}>Continue Booking</button>
+            </div>
+          </div>
         ) : reviewing ? (
           <div className="mt-7 space-y-4">
             <div className="surface-card bg-muted p-5 text-sm">
@@ -1693,22 +1720,40 @@ function BookingModal({
                 className="input select"
                 id="booking-record"
                 value={recordId}
-                onChange={(event) => setRecordId(event.target.value)}
+                onChange={(event) => {
+                  if (service.category === "grooming" && event.target.value) {
+                    setRepeatRecordId(event.target.value);
+                  } else {
+                    setRecordId(event.target.value);
+                    if (service.category === "grooming") setTime("");
+                  }
+                }}
                 disabled={Boolean(followup) || !petId || recordsQuery.isLoading}
               >
                 <option value="">No previous record</option>
                 {relevantRecords.map((item) => (
                   <option value={item.id} key={item.id}>
-                    {item.title} · {formatDate(item.date)}
+                    {item.title} · {formatDate(item.date)}{service.category === "grooming" ? ` · ${groomingTime(item.time)}` : ""}
                   </option>
                 ))}
               </select>
             </div>
             <div className="form-field">
               <label className="form-label">Available date</label>
-              <AvailabilityCalendar providerId={provider.id} serviceId={service.id} selectedDate={date} onSelect={(nextDate, slots) => { setDate(nextDate); setTimeSlots(slots); setTime(""); }} />
+              <AvailabilityCalendar providerId={provider.id} serviceId={service.id} key={service.id} selectedDate={date} onSelect={(nextDate, slots) => { setDate(nextDate); setTimeSlots(slots); setTime(service.category === "grooming" ? availableGroomingTime(time, slots) : ""); }} />
             </div>
             <div className="form-field">
+              {service.category === "grooming" ? (
+                <>
+                  <label className="form-label" htmlFor="booking-time">Booking time</label>
+                  <select className="input select" id="booking-time" value={time} onChange={event => setTime(event.target.value)}>
+                    <option value="">Choose an available time</option>
+                    {time && !timeSlots.some(slot => slot.time === time) ? <option value={time}>{time} (suggested; choose a date to check availability)</option> : null}
+                    {timeSlots.filter(slot => slot.status === "available").map(slot => <option key={slot.time} value={slot.time}>{slot.time}</option>)}
+                  </select>
+                  <p className="mt-2 text-xs text-muted-foreground">The previous session time is a suggestion. Choose a new appointment date and any available time.</p>
+                </>
+              ) : null}
               <label className="form-label">Available time slots</label>
               {date ? (
                 <div className="grid grid-cols-3 gap-2 sm:grid-cols-4" data-testid="booking-time-slots">
@@ -1745,7 +1790,7 @@ function BookingModal({
             <button
               className="btn btn-primary w-full"
               onClick={() => setReviewing(true)}
-              disabled={!petId || !date || !time}
+              disabled={!petId || !scheduleAvailable}
             >
               Review booking
             </button>

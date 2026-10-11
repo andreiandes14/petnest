@@ -396,6 +396,7 @@ components:
         notes: { type: string }
         nextDue: { type: [string, "null"] }
         expectedReturnMonths: { type: integer, minimum: 1, maximum: 120 }
+        time: { type: [string, "null"] }
         bookingId: { type: number }
         serviceCategory: { type: string, enum: [grooming, vaccination] }
     PetRecords:
