@@ -10,6 +10,7 @@ import {
 import { cityGeocodingResult, photonCityResult, providerLocationUpdate, validPin, type CityLocation } from "../lib/shop-location.js";
 import { detectCity, normalizeCity } from "../../../../shared/city-location.js";
 import { promisify } from "node:util";
+import { vaccinationReturnWindow } from "../../../../shared/vaccination-window.js";
 import { vaccinationReturnTarget } from "../lib/vaccination-followup.js";
 import { createOrderCheckout, processPaidWebhook, verifyPaymongoSignature, PaymentError, paymentWebUrl, deliverPaymentNotifications, type PaymentOrder, type PaymentFields } from "../lib/paymongo.js";
 import {
@@ -3168,6 +3169,11 @@ router.post("/bookings", async (req, res) => {
       return;
     }
     if (service.category === "vaccination" && record.nextDue) {
+      const window = vaccinationReturnWindow(record.nextDue);
+      if (parsed.data.date < window.start || parsed.data.date > window.end) {
+        res.status(400).json({ error: "Choose a vaccination date from the recommended return date through 10 days after it." });
+        return;
+      }
       const followup = await vaccinationFollowupService(record);
       if (!followup || followup.provider.id !== provider.id || followup.service.id !== service.id) {
         res.status(400).json({ error: "Choose the original provider and vaccination service for this follow-up." });

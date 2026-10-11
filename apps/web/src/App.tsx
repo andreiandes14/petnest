@@ -27,7 +27,8 @@ import { nearbyProviders, nearbySearchMessage, requestBrowserLocation, validCoor
 import { providerAddress, providerMapUrl } from "@/lib/provider-location";
 import { availableGroomingTime, groomingTime, latestGroomingRecords, repeatGroomingService } from "@/lib/grooming-records";
 import { customerOrderStatus } from "@/lib/customer-order-status";
-import { availableFollowupDates, closestFollowupDate, followupDisplayWindow, monthsInRange, offsetDate } from "@/lib/vaccination-followup";
+import { vaccinationReturnWindow } from "../../../shared/vaccination-window";
+import { availableFollowupDates, monthsInRange } from "@/lib/vaccination-followup";
 import { toast } from "@/hooks/use-toast";
 import {
   useCreateBooking,
@@ -1467,7 +1468,9 @@ function AvailabilityCalendar({
   serviceId,
   selectedDate,
   onSelect,
+  dateWindow,
 }: {
+  dateWindow?: { start: string; end: string };
   providerId: number;
   serviceId: number;
   selectedDate: string;
@@ -1476,7 +1479,7 @@ function AvailabilityCalendar({
   const currentMonth = new Date(Date.now() + 8 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 7);
-  const [month, setMonth] = useState(selectedDate.slice(0, 7) || currentMonth);
+  const [month, setMonth] = useState(dateWindow ? (selectedDate >= dateWindow.start && selectedDate <= dateWindow.end ? selectedDate : dateWindow.start).slice(0, 7) : selectedDate.slice(0, 7) || currentMonth);
   const availability = useQuery({
     queryKey: ["availability", providerId, serviceId, month],
     queryFn: ({ signal }) =>
@@ -1492,11 +1495,11 @@ function AvailabilityCalendar({
   return (
     <div className="surface-card p-4" data-testid="customer-availability-calendar">
       <div className="flex items-center justify-between gap-3">
-        <button className="btn btn-ghost btn-icon" type="button" aria-label="Previous month" disabled={month <= currentMonth} onClick={() => setMonth(shiftMonth(month, -1))}>
+        <button className="btn btn-ghost btn-icon" type="button" aria-label="Previous month" disabled={month <= (dateWindow?.start.slice(0, 7) ?? currentMonth)} onClick={() => setMonth(shiftMonth(month, -1))}>
           <ChevronLeft size={16} />
         </button>
         <p className="font-semibold">{monthTitle(month)}</p>
-        <button className="btn btn-ghost btn-icon" type="button" aria-label="Next month" onClick={() => setMonth(shiftMonth(month, 1))}>
+        <button className="btn btn-ghost btn-icon" type="button" aria-label="Next month" disabled={Boolean(dateWindow && month >= dateWindow.end.slice(0, 7))} onClick={() => setMonth(shiftMonth(month, 1))}>
           <ChevronRight size={16} />
         </button>
       </div>
@@ -1510,6 +1513,7 @@ function AvailabilityCalendar({
             const value = `${month}-${String(day).padStart(2, '0')}`;
             const times = availability.data?.dates[value] ?? [];
             const slots = availability.data?.slots[value] ?? [];
+            if (dateWindow && (value < dateWindow.start || value > dateWindow.end || times.length === 0)) return <span key={value} />;
             const disabled = times.length === 0;
             const partiallyAvailable = times.length > 0 && slots.some((slot) => slot.status === 'unavailable');
             return <button key={value} type="button" disabled={disabled} onClick={() => onSelect(value, slots)} className={`min-h-10 rounded-lg border text-sm transition ${selectedDate === value ? 'border-primary bg-primary text-primary-foreground' : disabled ? 'cursor-not-allowed border-destructive/30 bg-destructive/10 text-destructive opacity-60' : partiallyAvailable ? 'border-amber-400/60 bg-amber-50 text-amber-900 hover:border-primary' : 'border-border bg-background text-foreground hover:border-primary hover:text-primary'}`} aria-label={`${value}${disabled ? ', unavailable' : partiallyAvailable ? `, partially available, ${times.length} times available` : `, ${times.length} times available`}`}>
@@ -1536,7 +1540,7 @@ function BookingModal({
   provider: ProviderDetail;
   service: ProviderService;
   onClose: () => void;
-  followup?: { petId: number; recordId: number; date: string; slots: AvailabilitySlot[] };
+  followup?: { petId: number; recordId: number; date: string; slots: AvailabilitySlot[]; targetDate: string };
 }) {
   const [service, setService] = useState(initialService);
   const [repeatRecordId, setRepeatRecordId] = useState("");
@@ -1570,7 +1574,9 @@ function BookingModal({
 
   const repeatRecord = relevantRecords.find(item => item.id === Number(repeatRecordId));
   const repeatService = repeatRecord ? repeatGroomingService(provider.services, repeatRecord.title) : undefined;
-  const scheduleAvailable = Boolean(date && time && timeSlots.some(slot => slot.time === time && slot.status === "available"));
+  const bookingWindow = service.category === "vaccination" && (followup?.targetDate || record?.nextDue)
+    ? vaccinationReturnWindow(followup?.targetDate || record!.nextDue!) : undefined;
+  const scheduleAvailable = Boolean((!bookingWindow || (date >= bookingWindow.start && date <= bookingWindow.end)) && date && time && timeSlots.some(slot => slot.time === time && slot.status === "available"));
 
   const confirm = () => {
     if (!petId || !scheduleAvailable) return;
@@ -1792,7 +1798,7 @@ function BookingModal({
             </div>
             <div className="form-field">
               <label className="form-label">Available date</label>
-              <AvailabilityCalendar providerId={provider.id} serviceId={service.id} key={service.id} selectedDate={date} onSelect={(nextDate, slots) => { setDate(nextDate); setTimeSlots(slots); setTime(service.category === "grooming" ? availableGroomingTime(time, slots) : ""); }} />
+              <AvailabilityCalendar providerId={provider.id} serviceId={service.id} dateWindow={bookingWindow} key={`${service.id}-${bookingWindow?.start ?? ""}`} selectedDate={date} onSelect={(nextDate, slots) => { setDate(nextDate); setTimeSlots(slots); setTime(service.category === "grooming" ? availableGroomingTime(time, slots) : ""); }} />
             </div>
             <div className="form-field">
               {service.category === "grooming" ? (
@@ -6159,7 +6165,7 @@ function VaccinationFollowupModal({ pet, record, onClose }: {
   pet: Pet; record: CareRecord; onClose: () => void;
 }) {
   const [selectedDate, setSelectedDate] = useState("");
-  const [moreMonth, setMoreMonth] = useState<string | null>(null);
+  const [showAllDates, setShowAllDates] = useState(false);
   const [bookingDate, setBookingDate] = useState<string | null>(null);
   const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const context = useQuery({
@@ -6170,10 +6176,7 @@ function VaccinationFollowupModal({ pet, record, onClose }: {
     }>(`/api/pets/${pet.id}/records/${record.id}/follow-up`, { signal }),
   });
   const target = context.data?.targetDate ?? record.nextDue!;
-  // This is a browsing window, not a medical recommendation or a booking limit.
-  const days = followupDisplayWindow(import.meta.env.VITE_VACCINATION_FOLLOWUP_WINDOW_DAYS);
-  const start = moreMonth ? `${moreMonth}-01` : offsetDate(target, -days);
-  const end = moreMonth ? offsetDate(`${shiftMonth(moreMonth, 1)}-01`, -1) : offsetDate(target, days);
+  const { start, end } = vaccinationReturnWindow(target);
   const months = monthsInRange(start, end);
   const availability = useQuery({
     queryKey: ["availability", "vaccination-followup", context.data?.provider.id, context.data?.service.id, months],
@@ -6189,38 +6192,29 @@ function VaccinationFollowupModal({ pet, record, onClose }: {
     })),
   });
   const dates = availableFollowupDates(availability.data ?? [], start, end, today);
-  const closest = closestFollowupDate(dates, target);
+  const visibleDates = showAllDates ? dates : dates.slice(0, 5);
   const selectedSlots = (availability.data ?? []).flatMap((response) => response.slots[selectedDate] ?? []);
   if (bookingDate && context.data) return <BookingModal
     provider={context.data.provider} service={context.data.service} onClose={onClose}
-    followup={{ petId: pet.id, recordId: record.id, date: bookingDate, slots: selectedSlots }}
+    followup={{ petId: pet.id, recordId: record.id, date: bookingDate, slots: selectedSlots, targetDate: target }}
   />;
   return (
     <div className="modal-backdrop" role="presentation">
       <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="vaccination-followup-title">
         <h2 id="vaccination-followup-title" className="modal-title">Available Vaccination Dates</h2>
-        <p className="mt-3 text-sm">Recommended Return Period: Around {formatDate(target)}</p>
-        <p className="mt-2 text-xs text-muted-foreground">Choose from the original provider's available schedules. The target is a reference for browsing.</p>
+        <p className="mt-3 text-sm">Recommended Return Date: {formatDate(target)}</p>
+        <p className="mt-2 text-xs text-muted-foreground">Choose an available schedule from {formatDate(start)} through {formatDate(end)}.</p>
         {context.isLoading || (context.data && availability.isLoading) ? <LoadingState label="Checking provider availability" /> :
           context.isError ? <ErrorState message={context.error instanceof Error ? context.error.message : "Follow-up could not be loaded."} onRetry={() => context.refetch()} /> :
           availability.isError ? <ErrorState message="Available dates could not be loaded." onRetry={() => availability.refetch()} /> : (
           <>
-            {moreMonth ? <div className="mt-4 flex items-center justify-between">
-              <button className="btn btn-ghost btn-icon" aria-label="Previous availability month" disabled={moreMonth <= today.slice(0, 7)} onClick={() => { setSelectedDate(""); setMoreMonth(shiftMonth(moreMonth, -1)); }}><ChevronLeft size={16} /></button>
-              <span>{formatDate(`${moreMonth}-01`)}</span>
-              <button className="btn btn-ghost btn-icon" aria-label="Next availability month" onClick={() => { setSelectedDate(""); setMoreMonth(shiftMonth(moreMonth, 1)); }}><ChevronRight size={16} /></button>
-            </div> : null}
             <div className="mt-4 max-h-64 space-y-2 overflow-y-auto">
-              {dates.length ? dates.map((date) => <label key={date} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm">
+              {dates.length ? visibleDates.map((date) => <label key={date} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm">
                 <input type="radio" name="vaccination-followup-date" value={date} checked={selectedDate === date} onChange={() => setSelectedDate(date)} />
-                {formatDate(date)} {date === closest ? <span className="text-xs text-primary">Closest to Recommendation</span> : null}
-              </label>) : <p className="text-sm text-muted-foreground">No provider availability in this period. View more available dates.</p>}
+                {formatDate(date)} {date === target ? <span className="text-xs text-primary">Recommended Return Date</span> : null}
+              </label>) : <p className="text-sm text-muted-foreground">No vaccination schedules are available within the recommended return period. Please contact the provider.</p>}
             </div>
-            <button className="btn btn-ghost mt-3" onClick={() => {
-              setSelectedDate("");
-              const next = moreMonth ? shiftMonth(moreMonth, 1) : shiftMonth(end.slice(0, 7), 1);
-              setMoreMonth(next < today.slice(0, 7) ? today.slice(0, 7) : next);
-            }}>View More Available Dates</button>
+            {!showAllDates && dates.length > 5 ? <button className="btn btn-ghost mt-3" onClick={() => setShowAllDates(true)}>View More Available Dates</button> : null}
           </>
         )}
         <div className="mt-5 flex justify-end gap-2">

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { vaccinationReturnWindow } from '../shared/vaccination-window.ts';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { vaccinationReturnTarget } from '../apps/api/src/lib/vaccination-followup.ts';
@@ -60,7 +61,7 @@ const deps = {
     async insertOne(booking) { bookings.push(booking); },
   },
   petCollection: { async findOne(filter) { return filter.id === 9 && filter.ownerId === 'customer' ? { id: 9, name: 'Pet' } : null; } },
-  vaccinationReturnTarget, GetProviderResponse, CreateBookingBody, CreateBookingResponse,
+  vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, CreateBookingBody, CreateBookingResponse,
   ...scheduling, manilaNow,
   isIsoDate: value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value),
   validText: value => typeof value === 'string' && value.trim().length > 0,
@@ -98,9 +99,22 @@ providerAccess = 1;
 const availability = await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' });
 assert.ok(availability.body.dates['2026-12-04'].includes('09:00'));
 assert.deepEqual(availability.body.dates['2026-12-06'], []); // Provider A is closed Sunday.
+assert.deepEqual(vaccinationReturnWindow('2027-10-21'), { start: '2027-10-21', end: '2027-10-31' });
+assert.deepEqual(vaccinationReturnWindow('2027-12-27'), { start: '2027-12-27', end: '2028-01-06' });
+assert.deepEqual(vaccinationReturnWindow('2028-02-25'), { start: '2028-02-25', end: '2028-03-06' });
+assert.throws(() => vaccinationReturnWindow('2027-02-30'));
+const window = vaccinationReturnWindow('2027-10-21');
+assert.deepEqual(availableFollowupDates([{ dates: {
+  '2027-10-20': ['09:00'], '2027-10-21': ['09:00'], '2027-10-22': [],
+  '2027-10-31': ['09:00'], '2027-11-01': ['09:00'],
+} }], window.start, window.end, '2027-10-01'), ['2027-10-21', '2027-10-31']);
 const bookingInput = { providerId: 1, serviceId: 11, petId: 9, recordId: 101, date: '2026-12-04', time: '09:00' };
 assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-06' })).code, 409);
 assert.equal((await request('/bookings', { ...bookingInput, providerId: 2, serviceId: 22 })).code, 400);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-01' })).code, 400);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-14' })).code, 400);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-02' })).code, 201);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-12' })).code, 201);
 const booked = await request('/bookings', bookingInput);
 assert.equal(booked.code, 201);
 assert.equal(booked.body.date, '2026-12-04');
@@ -108,7 +122,7 @@ assert.equal(booked.body.petId, 9);
 assert.equal(booked.body.providerId, 1);
 assert.equal(booked.body.recordId, 101);
 assert.equal((await request('/bookings', bookingInput)).code, 409); // Taken after another request.
-assert.equal(bookings.length, 1);
+assert.equal(bookings.length, 3);
 assert.equal((await request('/provider/records/:recordId', { expectedReturnMonths: -1 }, { recordId: '101' })).code, 400);
 assert.equal(record.nextDue, '2026-12-02');
 providerB.categories = ['vaccination', 'grooming'];
@@ -116,4 +130,4 @@ providerB.services.push({ ...service, id: 33, name: 'Grooming', category: 'groom
 const grooming = await request('/bookings', { ...bookingInput, providerId: 2, serviceId: 33, recordId: null });
 assert.equal(grooming.code, 201);
 assert.equal(grooming.body.serviceCategory, 'grooming');
-console.log('PASS: calendar-month target, saved recommendation/schema, nearby choices without exact target, more future dates, actual availability, provider isolation, alternative date booking, unavailable/taken slot rejection.');
+console.log('PASS: calendar-month target, saved recommendation/schema, inclusive 10-day return window, calendar boundaries, unavailable date filtering, backend out-of-window rejection, actual availability, provider isolation, alternative date booking, unavailable/taken slot rejection.');
