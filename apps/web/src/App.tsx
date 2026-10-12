@@ -721,14 +721,14 @@ function HeroSearch() {
   );
 }
 
-function ProviderLocation({ provider, distance }: { provider: Pick<Provider, "id" | "name" | "location" | "latitude" | "longitude" | "locationCity" | "locationAccuracy">; distance?: number }) {
+function ProviderLocation({ provider, distance }: { provider: Pick<Provider, "id" | "name" | "location" | "latitude" | "longitude" | "locationCity" | "locationProvince" | "locationAccuracy">; distance?: number }) {
   const address = providerAddress(provider.location);
   const mapUrl = providerMapUrl(address, provider);
   return <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">
     <MapPin size={13} className="shrink-0" aria-hidden="true" />
     <span className="min-w-0 break-words [overflow-wrap:anywhere]">{address || "Location not provided"}</span>
-    {provider.locationCity ? <span className="text-xs text-muted-foreground">Located in {provider.locationCity}</span> : null}
-    {distance !== undefined ? <span className="text-xs text-muted-foreground">{provider.locationAccuracy === "city" && provider.locationCity ? `Approximately ${distance.toFixed(1)} km to ${provider.locationCity}` : provider.locationAccuracy === "shop" ? `Approx. ${distance.toFixed(1)} km to shop pin` : `Approximate distance: ${distance.toFixed(1)} km`}</span> : null}
+    {provider.locationCity ? <span className="text-xs text-muted-foreground">Located in {provider.locationCity}{provider.locationProvince ? `, ${provider.locationProvince}` : ""}</span> : null}
+    {distance !== undefined ? <span className="text-xs text-muted-foreground">{provider.locationAccuracy === "city" && provider.locationCity ? `Approximately ${distance.toFixed(1)} km to ${provider.locationCity}${provider.locationProvince ? `, ${provider.locationProvince}` : ""}` : provider.locationAccuracy === "shop" ? `Approx. ${distance.toFixed(1)} km to shop pin` : `Approximate distance: ${distance.toFixed(1)} km`}</span> : null}
     {mapUrl ? <a href={mapUrl} target="_blank" rel="noopener noreferrer"
       className="relative z-20 shrink-0 font-semibold text-primary underline underline-offset-2"
       aria-label={`View map for ${provider.name}`} data-testid={`link-provider-map-${provider.id}`}>View Map</a> : null}

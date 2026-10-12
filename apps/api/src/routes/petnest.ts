@@ -8,6 +8,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { cityGeocodingResult, photonCityResult, providerLocationUpdate, validPin, type CityLocation } from "../lib/shop-location.js";
+import { detectPhilippineLocation, findPhilippineLocation } from "../../../../shared/philippine-locations.js";
 import { detectCity, normalizeCity } from "../../../../shared/city-location.js";
 import { promisify } from "node:util";
 import { vaccinationReturnWindow } from "../../../../shared/vaccination-window.js";
@@ -80,6 +81,8 @@ type Provider = {
   latitude?: number | null;
   longitude?: number | null;
   locationCity?: string | null;
+  locationProvince?: string | null;
+  locationCode?: string | null;
   locationAccuracy?: "city" | "shop" | null;
   cityLatitude?: number | null;
   cityLongitude?: number | null;
@@ -1960,18 +1963,18 @@ router.patch("/provider/password", async (req, res) => {
 });
 
 // City resolution happens only during explicit profile saves, never autocomplete or bulk scans.
-async function resolveProviderCity(city: string, retry = false): Promise<CityLocation | null> {
+async function resolveProviderCity(city: string, retry = false, province?: string | null): Promise<CityLocation | null> {
   // Reuse actual saved city centres before calling a geocoder.
-  const saved = await providerCollection.find({ $or: [{ cityLatitude: { $ne: null } }, { locationAccuracy: "city" }] }, { projection: { locationCity: 1, cityLatitude: 1, cityLongitude: 1, latitude: 1, longitude: 1, locationAccuracy: 1 } }).toArray();
+  const saved = await providerCollection.find({ $or: [{ cityLatitude: { $ne: null } }, { locationAccuracy: "city" }] }, { projection: { locationCity: 1, locationProvince: 1, cityLatitude: 1, cityLongitude: 1, latitude: 1, longitude: 1, locationAccuracy: 1 } }).toArray();
   for (const provider of saved) {
-    if (!provider.locationCity || normalizeCity(provider.locationCity) !== normalizeCity(city)) continue;
+    if (!provider.locationCity || normalizeCity(provider.locationCity) !== normalizeCity(city) || (province && provider.locationProvince !== province)) continue;
     const candidate = { latitude: provider.cityLatitude ?? (provider.locationAccuracy === "city" ? provider.latitude : null), longitude: provider.cityLongitude ?? (provider.locationAccuracy === "city" ? provider.longitude : null) };
     if (validPin(candidate)) return candidate;
   }
   const endpoint = process.env.GEOCODING_URL || "https://photon.komoot.io/api/";
   const photon = process.env.GEOCODING_FORMAT === "photon" || new URL(endpoint).hostname === "photon.komoot.io";
   const cache = database.collection<{ _id: string; result: CityLocation | null; expiresAt: Date }>("shopGeocodingCache");
-  const key = createHash("sha256").update(`city:v2:${endpoint}:${normalizeCity(city)}`).digest("hex");
+  const key = createHash("sha256").update(`city:v3:${endpoint}:${normalizeCity(city)}:${province ?? ""}`).digest("hex");
   const cached = await cache.findOne({ _id: key, expiresAt: { $gt: new Date() } });
   if (cached && (cached.result || !retry)) return cached.result;
   const limits = database.collection<{ _id: string; nextAt: Date }>("shopGeocodingLimits");
@@ -1982,12 +1985,13 @@ async function resolveProviderCity(city: string, retry = false): Promise<CityLoc
     const url = new URL(endpoint);
     if (url.protocol !== "https:") return null;
     if (photon) {
-      url.searchParams.set("q", `${normalizeCity(city)}, Philippines`);
+      url.searchParams.set("q", `${normalizeCity(city)}${province ? `, ${province}` : ""}, Philippines`);
       url.searchParams.set("limit", "10");
       url.searchParams.set("lang", "en");
     } else {
       url.searchParams.delete("q");
       url.searchParams.set("city", city);
+      if (province) url.searchParams.set("state", province);
       url.searchParams.set("country", "Philippines");
       url.searchParams.set("format", "jsonv2");
       url.searchParams.set("limit", "5");
@@ -1998,7 +2002,7 @@ async function resolveProviderCity(city: string, retry = false): Promise<CityLoc
     const response = await fetch(url, { headers: { "User-Agent": "PetNest-CityLocation/1.0 (+https://petnest-api.vercel.app)", "Accept": "application/json" }, signal: AbortSignal.timeout(10000) });
     if (!response.ok) return null;
     const body: unknown = await response.json();
-    const result = photon ? photonCityResult(body, city) : cityGeocodingResult(body, city);
+    const result = photon ? photonCityResult(body, city, province) : cityGeocodingResult(body, city, province);
     await cache.updateOne({ _id: key }, { $set: { result, expiresAt: new Date(Date.now() + (result ? 7 * 86400000 : 60000)) } }, { upsert: true });
     return result;
   } catch { return null; }
@@ -2039,10 +2043,25 @@ router.patch("/provider/profile", async (req, res) => {
     return;
   }
   const addressChanged = businessLocation !== existing.location.trim().replace(/\s+/g, " ");
-  const detectedCity = detectCity(businessLocation);
+  const detectedLocation = detectPhilippineLocation(businessLocation);
+  const detectedCity = detectedLocation?.name || detectCity(businessLocation);
   const suppliedCity = providerInput.locationCity?.trim() || null;
-  const city = businessLocation ? detectedCity || suppliedCity || (!addressChanged ? existing.locationCity : null) || null : null;
-  if (city && (city.length > 100 || !/^[\p{L} .'-]+$/u.test(city))) {
+  const explicitlySelected = req.body.locationSelectionChanged === true;
+  const selectedLocation = suppliedCity ? findPhilippineLocation(suppliedCity, providerInput.locationProvince) : null;
+  if (explicitlySelected && !selectedLocation) {
+    res.status(400).json({ error: "Choose a City / Municipality from the Philippine location suggestions." }); return;
+  }
+  const locality = explicitlySelected || !addressChanged ? selectedLocation || detectedLocation : detectedLocation || selectedLocation;
+  const city = businessLocation ? locality?.name || detectedCity || suppliedCity || (!addressChanged ? existing.locationCity : null) || null : null;
+  const province = locality ? locality.province : (!addressChanged && city === existing.locationCity ? existing.locationProvince ?? null : null);
+  if (!city && existing.locationAccuracy === "shop") {
+    res.status(409).json({ error: "Choose the city or municipality before changing your saved shop location." }); return;
+  }
+  const changedCity = Boolean(existing.locationCity && city && (normalizeCity(existing.locationCity) !== normalizeCity(city) || (existing.locationProvince && province && existing.locationProvince !== province)));
+  if (changedCity && existing.locationAccuracy === "shop" && req.body.locationChangeConfirmed !== true) {
+    res.status(409).json({ error: "Confirm the new city before replacing your previously saved shop location." }); return;
+  }
+  if (city && !locality && (city.length > 100 || !/^[\p{L} .'-]+$/u.test(city))) {
     res.status(400).json({ error: "Enter a valid City / Municipality." }); return;
   }
   let selectedPin: CityLocation | undefined;
@@ -2052,10 +2071,12 @@ router.patch("/provider/profile", async (req, res) => {
     }
     selectedPin = { latitude: providerInput.latitude, longitude: providerInput.longitude };
   }
-  const shopCoordinates = await providerLocationUpdate(existing, city, name => resolveProviderCity(name, req.body.locationRetry === true), selectedPin);
+  const shopCoordinates = await providerLocationUpdate(changedCity ? { ...existing, locationCity: null } : existing, city, name => resolveProviderCity(name, req.body.locationRetry === true, province), selectedPin);
   const changes: Omit<Provider, "id"> = {
     ...providerInput,
     ...shopCoordinates,
+    locationProvince: province,
+    locationCode: locality?.code ?? (!addressChanged && !changedCity ? existing.locationCode ?? null : null),
     location: /^(undefined|null)$/i.test(businessLocation) ? "" : businessLocation,
     ...(providerInput.fulfillmentMethods !== undefined
       ? { fulfillmentMethods: supportedFulfillmentMethods(providerInput.fulfillmentMethods) }

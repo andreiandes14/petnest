@@ -1,6 +1,6 @@
 import { normalizeCity } from "../../../../shared/city-location.js";
 export type CityLocation = { latitude: number; longitude: number };
-export function photonCityResult(value: unknown, city: string): CityLocation | null {
+export function photonCityResult(value: unknown, city: string, province?: string | null): CityLocation | null {
   if (!value || typeof value !== "object") return null;
   const features = (value as Record<string, unknown>).features;
   if (!Array.isArray(features)) return null;
@@ -15,9 +15,9 @@ export function photonCityResult(value: unknown, city: string): CityLocation | n
     if (String(properties.countrycode).toUpperCase() !== "PH" || geometry.type !== "Point" || !Array.isArray(coordinates) || coordinates.length !== 2 || typeof coordinates[0] !== "number" || typeof coordinates[1] !== "number") return [];
     if (isCity && properties.osm_value !== "city") return [];
     return [{ name: properties.name, addresstype: properties.osm_value,
-      lon: String(coordinates[0]), lat: String(coordinates[1]), address: { state: properties.state } }];
+      lon: String(coordinates[0]), lat: String(coordinates[1]), address: { state: properties.state, province: properties.county } }];
   });
-  return cityGeocodingResult(converted, city);
+  return cityGeocodingResult(converted, city, province);
 }
 type SavedLocation = { locationCity?: string | null; locationAccuracy?: string | null; latitude?: number | null; longitude?: number | null; cityLatitude?: number | null; cityLongitude?: number | null };
 export function validPin(pin: { latitude?: number | null; longitude?: number | null }): pin is CityLocation {
@@ -40,7 +40,7 @@ export async function cityLocationUpdate(previous: { locationCity?: string | nul
   }
   return { locationCity: city, locationAccuracy: city ? "city" as const : null, latitude: pin?.latitude ?? null, longitude: pin?.longitude ?? null };
 }
-export function cityGeocodingResult(value: unknown, city: string): CityLocation | null {
+export function cityGeocodingResult(value: unknown, city: string, province?: string | null): CityLocation | null {
   if (!Array.isArray(value)) return null;
   const matches = value.flatMap((item: unknown) => {
     if (!item || typeof item !== "object") return [];
@@ -52,7 +52,8 @@ export function cityGeocodingResult(value: unknown, city: string): CityLocation 
     const latitude = Number(result.lat), longitude = Number(result.lon);
     if (!Number.isFinite(latitude) || Math.abs(latitude) > 90 || !Number.isFinite(longitude) || Math.abs(longitude) > 180) return [];
     const address = result.address && typeof result.address === "object" ? result.address as Record<string, unknown> : {};
-    const context = String(address.state ?? address.province ?? address.county ?? "").toLowerCase();
+    const context = String(address.province ?? address.county ?? address.state ?? "").toLowerCase();
+    if (province && ![address.province, address.county, address.state].some(part => typeof part === "string" && normalizeCity(part) === normalizeCity(province))) return [];
     return [{ latitude, longitude, context }];
   });
   // A city may have both a boundary and a centre node. Accept duplicates in the

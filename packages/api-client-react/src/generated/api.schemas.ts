@@ -24,6 +24,8 @@ export interface Provider {
   latitude?: number | null;
   longitude?: number | null;
   locationCity?: string | null;
+  locationProvince?: string | null;
+  locationCode?: string | null;
   locationAccuracy?: "city" | "shop" | null;
   cityLatitude?: number | null;
   cityLongitude?: number | null;

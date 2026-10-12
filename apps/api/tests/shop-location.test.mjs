@@ -76,3 +76,37 @@ test('Photon resolves Muntinlupa and Santa Rosa City without selecting another s
   assert.equal(photonCityResult({ features: [feature('Other City', 'city', 'Laguna', 121, 14)] }, 'Santa Rosa City'), null);
   assert.equal(photonCityResult({ features: [] }, 'Muntinlupa City'), null);
 });
+
+const dataModule = moduleUrl(readFileSync(new URL('../../../shared/philippine-locations-data.ts', import.meta.url), 'utf8'));
+const nationalSource = readFileSync(new URL('../../../shared/philippine-locations.ts', import.meta.url), 'utf8')
+  .replace('"./philippine-locations-data.js"', JSON.stringify(dataModule))
+  .replace('"./city-location.js"', JSON.stringify(cityModule));
+const { philippineLocations, detectPhilippineLocation, findPhilippineLocation, searchPhilippineLocations, locationLabel } = await import(moduleUrl(nationalSource));
+test('nationwide PSGC data detects Calamba with province and rejects ambiguous bare names', () => {
+  assert.equal(philippineLocations.length, 1643);
+  assert.equal(new Set(philippineLocations.map(item => item.code)).size, 1643);
+  assert.equal(new Set(philippineLocations.map(item => item.region)).size, 18);
+  const calamba = detectPhilippineLocation('Buenavista Executive Homes, Calamba, Laguna');
+  assert.equal(calamba.name, 'Calamba City');
+  assert.equal(calamba.province, 'Laguna');
+  assert.equal(locationLabel(calamba), 'Calamba City, Laguna');
+  assert.equal(detectPhilippineLocation('Subdivision, Calamba'), null);
+  assert.equal(detectPhilippineLocation('Calamba Homes, Laguna'), null);
+  assert.equal(findPhilippineLocation('Calamba', 'Misamis Occidental').name, 'Calamba');
+  assert.equal(findPhilippineLocation('Calamba City, Laguna').code, calamba.code);
+});
+test('search supports provinces, regions and independent cities nationwide', () => {
+  assert.equal(searchPhilippineLocations('Calamba').length, 2);
+  for (const query of ['Cavite', 'Batangas', 'Rizal', 'Bulacan', 'Cebu', 'Davao']) assert.ok(searchPhilippineLocations(query).length);
+  assert.equal(detectPhilippineLocation('Camella, Muntinlupa City').name, 'Muntinlupa City');
+  assert.equal(findPhilippineLocation('Cebu City').province, null);
+  assert.equal(searchPhilippineLocations('').length, 0);
+  assert.equal(findPhilippineLocation('Invented City'), null);
+  assert.ok(searchPhilippineLocations('San').length <= 20);
+});
+test('province-qualified geocoding excludes same-name places in other provinces', () => {
+  const result = [match('Calamba', '14.2', '121.1', 'Laguna'), match('Calamba', '8.5', '123.6', 'Misamis Occidental')];
+  assert.deepEqual(cityGeocodingResult(result, 'Calamba City', 'Laguna'), { latitude: 14.2, longitude: 121.1 });
+  assert.equal(cityGeocodingResult(result, 'Calamba City', 'Cavite'), null);
+  assert.deepEqual(photonCityResult({ features: [{ properties: { name: 'Calamba', osm_value: 'city', countrycode: 'PH', state: 'Laguna' }, geometry: { type: 'Point', coordinates: [121.1, 14.2] } }] }, 'Calamba City', 'Laguna'), { latitude: 14.2, longitude: 121.1 });
+});
