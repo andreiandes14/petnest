@@ -73,6 +73,8 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  Eye,
+  EyeOff,
   FileText,
   Heart,
   House,
@@ -7387,6 +7389,7 @@ function SignInPage() {
   const { isLoaded, setUser } = useAuth();
   const [, setLocation] = useLocation();
   const [form, setForm] = useState({ email: "", password: "" });
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -7449,17 +7452,29 @@ function SignInPage() {
             <label className="form-label" htmlFor="signin-password">
               Password
             </label>
-            <input
-              className="input"
-              id="signin-password"
-              type="password"
-              autoComplete="current-password"
-              required
-              value={form.password}
-              onChange={(event) =>
-                setForm({ ...form, password: event.target.value })
-              }
-            />
+            <div className="relative">
+              <input
+                className="input pr-12"
+                id="signin-password"
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+                required
+                value={form.password}
+                onChange={(event) =>
+                  setForm({ ...form, password: event.target.value })
+                }
+              />
+              <button
+                type="button"
+                className="absolute inset-y-0 right-1 flex w-10 items-center justify-center rounded-lg text-muted-foreground hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-controls="signin-password"
+                aria-pressed={showPassword}
+                onClick={() => setShowPassword(visible => !visible)}
+              >
+                {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+              </button>
+            </div>
           </div>
         </div>
         {error ? (
@@ -7474,11 +7489,12 @@ function SignInPage() {
         >
           {submitting ? "Signing in…" : "Sign in"}
         </button>
-        <Link href="/sign-up" className="btn btn-ghost mt-3 w-full">
-          Create account
-        </Link>
-        <p className="auth-divider">Or sign in with</p>
-        <SocialRow />
+        <p className="mt-6 text-center text-sm font-semibold text-muted-foreground">
+          Don't have an account?{" "}
+          <Link href="/sign-up" className="font-bold text-primary hover:underline">
+            Create account
+          </Link>
+        </p>
       </form>
     </div>
   );
@@ -7493,6 +7509,8 @@ function SignUpPage() {
     password: "",
     confirmPassword: "",
   });
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -7580,10 +7598,11 @@ function SignUpPage() {
             <label className="form-label" htmlFor="signup-password">
               Password
             </label>
+            <div className="relative">
             <input
-              className="input"
+              className="input pr-12"
               id="signup-password"
-              type="password"
+              type={showPassword ? "text" : "password"}
               autoComplete="new-password"
               minLength={8}
               required
@@ -7592,6 +7611,17 @@ function SignUpPage() {
                 setForm({ ...form, password: event.target.value })
               }
             />
+              <button
+                type="button"
+                className="absolute inset-y-0 right-1 flex w-10 items-center justify-center rounded-lg text-muted-foreground hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-controls="signup-password"
+                aria-pressed={showPassword}
+                onClick={() => setShowPassword(visible => !visible)}
+              >
+                {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+              </button>
+            </div>
             <p className="text-xs text-muted-foreground">
               Minimum 8 characters.
             </p>
@@ -7600,10 +7630,11 @@ function SignUpPage() {
             <label className="form-label" htmlFor="signup-confirm-password">
               Confirm password
             </label>
+            <div className="relative">
             <input
-              className="input"
+              className="input pr-12"
               id="signup-confirm-password"
-              type="password"
+              type={showConfirmPassword ? "text" : "password"}
               autoComplete="new-password"
               minLength={8}
               required
@@ -7612,6 +7643,17 @@ function SignUpPage() {
                 setForm({ ...form, confirmPassword: event.target.value })
               }
             />
+              <button
+                type="button"
+                className="absolute inset-y-0 right-1 flex w-10 items-center justify-center rounded-lg text-muted-foreground hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                aria-controls="signup-confirm-password"
+                aria-pressed={showConfirmPassword}
+                onClick={() => setShowConfirmPassword(visible => !visible)}
+              >
+                {showConfirmPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+              </button>
+            </div>
           </div>
         </div>
         {error ? (
@@ -7626,8 +7668,6 @@ function SignUpPage() {
         >
           {submitting ? "Creating account…" : "Create account"}
         </button>
-        <p className="auth-divider">Or sign up with</p>
-        <SocialRow />
         <p className="mt-6 text-center text-sm font-semibold text-muted-foreground">
           Already have an account?{" "}
           <Link
