@@ -2608,6 +2608,7 @@ type AdminActivityLog = {
   occurredAt: string;
 };
 type ProviderRecord = CareRecord & {
+  archived?: boolean;
   petId: number;
   ownerId: string;
   nextDue?: string | null;
@@ -3496,6 +3497,8 @@ function ProviderManagementPage() {
     notes: "",
   });
   const [recordCategory, setRecordCategory] = useState<"grooming" | "vaccination">("grooming");
+  const [modalRecordCategory, setModalRecordCategory] = useState<"grooming" | "vaccination">("grooming");
+  const petRecordsBackdrop = useRef<HTMLDivElement>(null);
   const [showServiceForm, setShowServiceForm] = useState(false);
   const [editingServiceId, setEditingServiceId] = useState<number | null>(null);
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
@@ -3878,6 +3881,49 @@ function ProviderManagementPage() {
       }>(`/api/provider/pets/${selectedProviderPet?.id}/records`),
     enabled: Boolean(selectedProviderPet),
   });
+  useEffect(() => {
+    if (!selectedProviderPet || !selectedProviderPetQuery.data || !petRecordsBackdrop.current) return;
+    const overlays = [...document.querySelectorAll<HTMLElement>(".modal-backdrop")].filter(element => element.getClientRects().length > 0);
+    const overlay = overlays.at(-1) ?? petRecordsBackdrop.current;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const bodyOverflow = document.body.style.overflow;
+    const htmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    const blocked: { element: HTMLElement; inert: boolean }[] = [];
+    // Inert siblings at every ancestor level, leaving only the active dialog interactive.
+    for (let branch: HTMLElement | null = overlay; branch?.parentElement; branch = branch.parentElement) {
+      for (const sibling of [...branch.parentElement.children]) {
+        if (sibling !== branch && sibling instanceof HTMLElement) {
+          blocked.push({ element: sibling, inert: sibling.inert });
+          sibling.inert = true;
+        }
+      }
+      if (branch.parentElement === document.body) break;
+    }
+    const controls = () => [...overlay.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]')].filter(element => element.getClientRects().length > 0);
+    const focusInside = () => controls()[0]?.focus({ preventScroll: true });
+    const keepFocus = (event: FocusEvent) => { if (event.target instanceof Node && !overlay.contains(event.target)) focusInside(); };
+    const trapTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const items = controls();
+      const first = items[0], last = items.at(-1);
+      if (!first || !last) { event.preventDefault(); return; }
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("focusin", keepFocus);
+    document.addEventListener("keydown", trapTab);
+    focusInside();
+    return () => {
+      document.removeEventListener("focusin", keepFocus);
+      document.removeEventListener("keydown", trapTab);
+      for (const { element, inert } of blocked) element.inert = inert;
+      document.body.style.overflow = bodyOverflow;
+      document.documentElement.style.overflow = htmlOverflow;
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, [selectedProviderPet, selectedProviderPetQuery.data, scheduleRecord, completionRecord, archiveTarget]);
   const addRecord = useMutation({
     mutationFn: () =>
       adminRequest<ProviderRecord>("/api/provider/records", {
@@ -4047,7 +4093,7 @@ function ProviderManagementPage() {
                 <button
                   className="service-row text-left"
                   key={pet.id}
-                  onClick={() => setSelectedProviderPet(pet)}
+                  onClick={() => { setModalRecordCategory(recordCategory); setSelectedProviderPet(pet); }}
                 >
                   <div>
                     <p className="font-semibold">{pet.name}</p>
@@ -4069,7 +4115,7 @@ function ProviderManagementPage() {
             )
           )}
           {selectedProviderPet && selectedProviderPetQuery.data ? (
-            <div className="modal-backdrop" role="presentation">
+            <div ref={petRecordsBackdrop} className="modal-backdrop" role="presentation" onClick={event => event.stopPropagation()}>
               <div
                 className="modal animate-in"
                 role="dialog"
@@ -4102,8 +4148,8 @@ function ProviderManagementPage() {
                     </button>
                   </div>
                 </div>
-                <RecordCategoryTabs category={recordCategory} select={setRecordCategory} />
-                {assignedCareCategories.includes("grooming") && recordCategory === "grooming" ? (
+                <RecordCategoryTabs category={modalRecordCategory} select={setModalRecordCategory} />
+                {assignedCareCategories.includes("grooming") && modalRecordCategory === "grooming" ? (
                 <div className="mt-6">
                   <h3 className="font-display text-xl">Grooming History</h3>
                   <div className="list-stack mt-3">
@@ -4124,7 +4170,7 @@ function ProviderManagementPage() {
                   </div>
                 </div>
                 ) : null}
-                {assignedCareCategories.includes("vaccination") && recordCategory === "vaccination" ? (
+                {assignedCareCategories.includes("vaccination") && modalRecordCategory === "vaccination" ? (
                 <div className="mt-6">
                   <h3 className="font-display text-xl">Vaccination History</h3>
                   <div className="list-stack mt-3">
@@ -4136,7 +4182,7 @@ function ProviderManagementPage() {
                           <div className="mt-2"><VaccinationProgressBadge progress={record.vaccinationProgress} /></div>
                           {record.notes ? <p className="mt-2 text-sm text-muted-foreground">{record.notes}</p> : null}
                           <p className="mt-2 text-sm font-semibold text-primary">Next Vaccination: {formatDate(record.nextDue)}</p>
-                          {record.vaccinationProgress === "completed" ? <div className="mt-3 flex justify-end">
+                          {record.archived ? <p className="mt-3 text-xs text-muted-foreground">Archived ? Restore from Provider Archive</p> : record.vaccinationProgress === "completed" ? <div className="mt-3 flex justify-end">
                             <button className="btn btn-ghost" onClick={() => { setArchiveState.reset(); setArchiveTarget({ kind: "record", id: record.id, label: record.title, archived: true }); }}>Archive</button>
                           </div> : (
                           <div className="mt-3 flex flex-wrap justify-end gap-2">
@@ -6311,13 +6357,12 @@ function RecordsPanel({ pet }: { pet: Pet }) {
                       </p>
                     ) : null}
                   </div>
-                  <span
-                    className={`status status-${record.status.toLowerCase()}`}
-                  >
-                    {record.type === "vaccination" ? `Appointment: ${statusLabel(record.status)}` : record.status}
-                  </span>
+                  {record.type === "vaccination" ? <VaccinationProgressBadge progress={record.vaccinationProgress} /> : (
+                    <span className={`status status-${record.status.toLowerCase()}`}>
+                      {record.status}
+                    </span>
+                  )}
                 </div>
-                {record.type === "vaccination" ? <div className="mt-3"><p className="mb-1 text-xs text-muted-foreground">Vaccination course</p><VaccinationProgressBadge progress={record.vaccinationProgress} /></div> : null}
                 {record.notes ? (
                   <p className="mt-4 text-sm leading-6 text-muted-foreground">
                     {record.notes}

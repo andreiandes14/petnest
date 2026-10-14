@@ -2813,38 +2813,37 @@ router.get("/provider/pets", async (req, res) => {
   if (!access?.providerId) return;
   const provider = await providerCollection.findOne({ id: access.providerId });
   const assignedCare = assignedCareCategories(provider);
-  const bookings = await bookingCollection
-    .find(
-      {
-        providerId: access.providerId,
-        serviceCategory: { $in: assignedCare },
-        archived: { $ne: true },
-      },
-      { projection: { petId: 1, ownerId: 1, serviceName: 1, date: 1, time: 1 } },
-    )
-    .sort({ date: -1, time: -1, id: -1 })
-    .toArray();
-  const petIds = [...new Set(bookings.map((booking) => booking.petId))];
+  const [bookings, records] = await Promise.all([
+    bookingCollection.find({ providerId: access.providerId, serviceCategory: { $in: assignedCare } },
+      { projection: { id: 1, petId: 1, ownerId: 1, serviceName: 1, date: 1, time: 1 } }).sort({ date: -1, time: -1, id: -1 }).toArray(),
+    recordCollection.find({ providerId: access.providerId, type: { $in: assignedCare } },
+      { projection: { id: 1, petId: 1, ownerId: 1, title: 1, date: 1, time: 1 } }).sort({ date: -1, time: -1, id: -1 }).toArray(),
+  ]);
+  const history = [
+    ...bookings.map(booking => ({ id: booking.id, petId: booking.petId, ownerId: booking.ownerId, service: booking.serviceName, date: booking.date, time: booking.time ?? "", kind: "booking" })),
+    ...records.map(record => ({ id: record.id, petId: record.petId, ownerId: record.ownerId, service: record.title, date: record.date, time: record.time ?? "", kind: "record" })),
+  ].sort((a, b) => b.date.localeCompare(a.date) || b.time.localeCompare(a.time) || a.kind.localeCompare(b.kind) || b.id - a.id);
+  const petIds = [...new Set(history.map(entry => entry.petId))];
   const pets = await petCollection
     .find({ id: { $in: petIds } }, { projection: { _id: 0, ownerId: 0 } })
     .toArray();
   const owners = await userCollection
     .find(
-      { id: { $in: bookings.map((booking) => booking.ownerId) } },
+      { id: { $in: history.map(entry => entry.ownerId) } },
       { projection: { _id: 0, id: 1, name: 1, email: 1 } },
     )
     .toArray();
   res.json(
     pets.map((pet) => {
-      const latestBooking = bookings.find((booking) => booking.petId === pet.id);
-      const ownerId = latestBooking?.ownerId;
+      const latestHistory = history.find(entry => entry.petId === pet.id);
+      const ownerId = latestHistory?.ownerId;
       const owner = owners.find((candidate) => candidate.id === ownerId);
       return {
         ...pet,
         ownerName: owner?.name ?? "Customer",
         ownerEmail: owner?.email ?? "",
-        lastService: latestBooking?.serviceName ?? "Service",
-        lastBooking: latestBooking?.date ?? null,
+        lastService: latestHistory?.service ?? "Service",
+        lastBooking: latestHistory?.date ?? null,
       };
     }),
   );
@@ -2864,7 +2863,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
     providerId: access.providerId,
     petId,
     serviceCategory: { $in: assignedCare },
-  });
+  }) ?? await recordCollection.findOne({ providerId: access.providerId, petId, type: { $in: assignedCare } });
   if (!relationship) {
     res
       .status(404)
@@ -2882,7 +2881,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
     ),
     recordCollection
       .find(
-        { petId, providerId: access.providerId, type: { $in: assignedCare }, archived: { $ne: true } },
+        { petId, providerId: access.providerId, type: { $in: assignedCare } },
         { projection: { _id: 0 } },
       )
       .sort({ date: -1 })
