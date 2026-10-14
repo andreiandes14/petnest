@@ -1,3 +1,4 @@
+import { parseBusinessHours, bookingDuration, businessHoursMessage } from "../../../../shared/business-hours.js";
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
   createHmac,
@@ -547,39 +548,8 @@ function timeToMinutes(value: string): number | null {
   return hours * 60 + minutes;
 }
 
-const weekdayIndexes: Record<string, number> = {
-  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
-};
-
-function parseClock(value: string, meridiem: string): number | null {
-  const [hourText, minuteText = "0"] = value.split(":");
-  let hour = Number(hourText);
-  const minute = Number(minuteText);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 1 || hour > 12 || minute > 59) return null;
-  if (hour === 12) hour = 0;
-  if (meridiem.toUpperCase() === "PM") hour += 12;
-  return hour * 60 + minute;
-}
-
 function providerSchedule(hours: string) {
-  const dayTokens = hours.toLowerCase().match(/mon|tue|wed|thu|fri|sat|sun/g) ?? [];
-  const timeTokens = [...hours.matchAll(/(\d{1,2}(?::\d{2})?)\s*(AM|PM)/gi)];
-  if (timeTokens.length < 2) return null;
-  const open = parseClock(timeTokens[0][1], timeTokens[0][2]);
-  const close = parseClock(timeTokens[1][1], timeTokens[1][2]);
-  if (open === null || close === null || close <= open) return null;
-  const workingDays = new Set<number>();
-  if (dayTokens.length === 0) {
-    for (let day = 0; day < 7; day += 1) workingDays.add(day);
-  } else {
-    const firstDay = weekdayIndexes[dayTokens[0]!]!;
-    const lastDay = weekdayIndexes[dayTokens[1] ?? dayTokens[0]!]!;
-    for (let day = firstDay; ; day = (day + 1) % 7) {
-      workingDays.add(day);
-      if (day === lastDay) break;
-    }
-  }
-  return { workingDays, open, close };
+  return parseBusinessHours(hours);
 }
 
 function minutesToTime(minutes: number) {
@@ -1759,9 +1729,13 @@ router.get("/providers/:providerId/availability", async (req, res) => {
   const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false } });
   const service = provider?.services.find((item) => item.id === serviceId && item.available);
   const schedule = provider ? providerSchedule(provider.hours) : null;
-  if (!provider || !service || !provider.categories.includes(service.category) || !schedule || !["grooming", "vaccination"].includes(service.category)) {
+  const duration = service ? bookingDuration(service.durationMinutes) : null;
+  if (!provider || !service || !provider.categories.includes(service.category) || !["grooming", "vaccination"].includes(service.category)) {
     res.status(404).json({ error: "Availability is not configured for this service." });
     return;
+  }
+  if (!schedule || duration === null) {
+    res.status(409).json({ error: !schedule ? "The provider must configure valid business hours before appointments can be booked." : "The provider must configure a valid service duration." }); return;
   }
   const [year, monthNumber] = month.split("-").map(Number);
   if (monthNumber < 1 || monthNumber > 12 || year < 2000 || year > 2200) {
@@ -1792,13 +1766,13 @@ router.get("/providers/:providerId/availability", async (req, res) => {
     }
     const bookings = monthBookings.filter((booking) => booking.date === date);
     dates[date] = [];
-    for (let start = schedule.open; start + service.durationMinutes <= schedule.close; start += 30) {
-      const end = start + service.durationMinutes;
+    for (let start = schedule.open; start <= schedule.close - 30; start += 30) {
+      const end = start + duration;
       const conflicts = bookings.some((booking) => {
         const bookedStart = timeToMinutes(booking.time);
         const bookedService = provider.services.find((candidate) => candidate.name === booking.serviceName && candidate.category === booking.serviceCategory);
         if (bookedStart === null) return false;
-        const bookedEnd = bookedStart + (bookedService?.durationMinutes ?? 30);
+        const bookedEnd = bookedStart + (bookingDuration(bookedService?.durationMinutes) ?? 30);
         return start < bookedEnd && bookedStart < end;
       });
       const time = minutesToTime(start);
@@ -2028,6 +2002,9 @@ router.patch("/provider/profile", async (req, res) => {
     return;
   }
   const { id: _id, ...providerInput } = parsed.data;
+  const configuredHours = providerSchedule(providerInput.hours);
+  if (!configuredHours) { res.status(400).json({ error: businessHoursMessage }); return; }
+  providerInput.hours = configuredHours.normalized;
   const businessLocation = providerInput.location.trim().replace(/\s+/g, " ");
   if (businessLocation.length > 300 || /[\u0000-\u001f\u007f]/.test(businessLocation)) {
     res.status(400).json({ error: "Enter a business address of up to 300 characters without control characters." });
@@ -3214,12 +3191,16 @@ router.post("/bookings", async (req, res) => {
     return;
   }
   const schedule = providerSchedule(provider.hours);
+  const duration = bookingDuration(service.durationMinutes);
+  if (!schedule || duration === null) {
+    res.status(409).json({ error: !schedule ? "The provider must configure valid business hours before appointments can be booked." : "The provider must configure a valid service duration." }); return;
+  }
   const requestedWeekday = new Date(`${parsed.data.date}T00:00:00.000Z`).getUTCDay();
   if (
     !schedule ||
     !schedule.workingDays.has(requestedWeekday) ||
     requestedStart < schedule.open ||
-    requestedStart + service.durationMinutes > schedule.close ||
+    requestedStart > schedule.close - 30 ||
     (requestedStart - schedule.open) % 30 !== 0
   ) {
     res.status(409).json({ error: "This date or time is outside the provider's availability." });
@@ -3285,8 +3266,8 @@ router.post("/bookings", async (req, res) => {
     const existingStart = timeToMinutes(existing.time);
     if (existingStart === null) return false;
     const existingEnd =
-      existingStart + (existingService?.durationMinutes ?? 30);
-    const requestedEnd = requestedStart + service.durationMinutes;
+      existingStart + (bookingDuration(existingService?.durationMinutes) ?? 30);
+    const requestedEnd = requestedStart + duration;
     return requestedStart < existingEnd && existingStart < requestedEnd;
   });
   if (conflict) {

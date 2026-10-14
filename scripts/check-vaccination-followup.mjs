@@ -1,3 +1,4 @@
+import { parseBusinessHours, bookingDuration } from '../shared/business-hours.ts';
 import assert from 'node:assert/strict';
 import { vaccinationReturnWindow } from '../shared/vaccination-window.ts';
 import { readFileSync } from 'node:fs';
@@ -30,7 +31,7 @@ assert.deepEqual(availableFollowupDates([{ dates: { '2027-02-04': ['09:00'] } }]
 const source = readFileSync(new URL('../apps/api/src/routes/petnest.ts', import.meta.url), 'utf8');
 const transpile = text => ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const manilaNow = () => ({ date: '2026-10-02', minutes: 480 });
-const scheduling = new Function('manilaNow', `${transpile(source.slice(source.indexOf('function isValidBookingDate('), source.indexOf('function manilaNow(')))}; return { isValidBookingDate, timeToMinutes, minutesToTime, providerSchedule };`)(manilaNow);
+const scheduling = new Function('manilaNow', 'parseBusinessHours', `${transpile(source.slice(source.indexOf('function isValidBookingDate('), source.indexOf('function manilaNow(')))}; return { isValidBookingDate, timeToMinutes, minutesToTime, providerSchedule };`)(manilaNow, parseBusinessHours);
 const service = { id: 11, name: 'Vaccination', category: 'vaccination', available: true, durationMinutes: 30, price: 100, description: '' };
 const provider = { id: 1, name: 'Provider A', location: '', description: '', categories: ['vaccination'], rating: 0, reviewCount: 0, startingPrice: 100, imageUrl: '', verified: true, contact: '', hours: 'Mon-Sat 9AM-5PM', services: [service], products: [] };
 const providerB = { ...provider, id: 2, name: 'Provider B', services: [{ ...service, id: 22 }] };
@@ -67,7 +68,7 @@ const deps = {
     async insertOne(booking) { bookings.push(booking); },
   },
   petCollection: { async findOne(filter) { return filter.id === 9 && filter.ownerId === 'customer' ? { id: 9, name: 'Pet' } : null; } },
-  vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, GetPetRecordsParams, GetPetRecordsResponse, CreateBookingBody, CreateBookingResponse,
+  bookingDuration, vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, GetPetRecordsParams, GetPetRecordsResponse, CreateBookingBody, CreateBookingResponse,
   assignedCareCategories: provider => provider?.categories.filter(category => ["grooming", "vaccination"].includes(category)) ?? [],
   ensureCompletedBookingRecord: async () => {},
   ...scheduling, manilaNow,
@@ -202,4 +203,51 @@ assert.equal(record.expectedReturnMonths, 2);
 assert.equal((await request('/provider/records/list')).body[0].id, 101);
 assert.equal((await request('/pets/:petId/records/:recordId/follow-up', {}, { petId: '9', recordId: '101' })).code, 409);
 assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-05' })).code, 409);
-console.log('PASS: completed edit/schedule/booking rejection, provider-owned idempotent archive/restore, archived active-record rejection, customer history preserved, restored completion retained; Ongoing booking-window and progress regressions.');
+// The same provider-hour rules serve new/repeat grooming and vaccination bookings.
+provider.hours = '8AM - 9PM';
+let hoursAvailability = await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' });
+assert.equal(hoursAvailability.body.slots['2026-12-05'][0].time, '08:00');
+assert.equal(hoursAvailability.body.slots['2026-12-05'].at(-1).time, '20:30');
+provider.hours = '10:30 AM - 7:30 PM';
+hoursAvailability = await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' });
+assert.equal(hoursAvailability.body.slots['2026-12-05'][0].time, '10:30');
+assert.equal(hoursAvailability.body.slots['2026-12-05'].at(-1).time, '19:00');
+service.durationMinutes = 60;
+hoursAvailability = await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' });
+assert.equal(hoursAvailability.body.slots['2026-12-05'].at(-1).time, '19:00');
+assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date: '2026-12-05', time: '09:00' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date: '2026-12-05', time: '19:30' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date: '2026-12-05', time: '11:15' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date: '2026-12-05', time: '19:00' })).code, 201);
+hoursAvailability = await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' });
+assert.equal(hoursAvailability.body.slots['2026-12-05'].find(slot => slot.time === '19:00').status, 'unavailable');
+assert.equal(hoursAvailability.body.slots['2026-12-05'].find(slot => slot.time === '18:30').status, 'unavailable');
+const confirmedCount = bookings.length;
+provider.hours = '10AM - 6PM';
+hoursAvailability = await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' });
+assert.equal(hoursAvailability.body.slots['2026-12-05'][0].time, '10:00');
+assert.equal(hoursAvailability.body.slots['2026-12-05'].at(-1).time, '17:30');
+assert.equal(bookings.length, confirmedCount); // Saving narrower hours doesn't change old bookings.
+service.durationMinutes = undefined;
+hoursAvailability = await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' });
+assert.equal(hoursAvailability.body.slots['2026-12-05'].at(-1).time, '17:30');
+service.durationMinutes = 30;
+// Closing cutoff is a fixed 30 minutes, independent of service duration.
+provider.hours = '9AM-5PM';
+service.durationMinutes = 90;
+hoursAvailability = await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' });
+assert.equal(hoursAvailability.body.slots['2026-12-12'].at(-1).time, '16:30');
+record.vaccinationProgress = 'ongoing';
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-12', time: '16:30' })).code, 201);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-12', time: '17:00' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-12', time: '17:30' })).code, 409);
+providerB.hours = '10AM-6PM';
+providerB.services.find(item => item.id === 33).durationMinutes = 90;
+const groomingSlots = await request('/providers/:providerId/availability', {}, { providerId: '2' }, { serviceId: '33', month: '2026-12' });
+assert.equal(groomingSlots.body.slots['2026-12-05'].at(-1).time, '17:30');
+assert.equal((await request('/bookings', { providerId: 2, serviceId: 33, petId: 9, recordId: null, date: '2026-12-05', time: '17:30' })).code, 201);
+assert.equal((await request('/bookings', { providerId: 2, serviceId: 33, petId: 9, recordId: null, date: '2026-12-05', time: '18:00' })).code, 409);
+provider.hours = 'invalid hours';
+assert.equal((await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date: '2026-12-05', time: '11:00' })).code, 409);
+console.log('PASS: provider-specific opening/closing, closing-minus-30 cutoff regardless of duration, hours updates, conflict and off-grid rejection, old bookings preserved; vaccination return-window, archive and progress regressions.');

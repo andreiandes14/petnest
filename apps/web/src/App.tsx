@@ -1,3 +1,4 @@
+import { BusinessHours } from "@/components/business-hours";
 import {
   Fragment,
   createContext,
@@ -1456,7 +1457,7 @@ function AvailabilityCalendar({
       <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-muted-foreground">
         {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((day) => <span key={day}>{day}</span>)}
       </div>
-      {availability.isLoading ? <p className="py-6 text-center text-sm text-muted-foreground">Checking availability…</p> : availability.isError ? <p className="py-6 text-center text-sm text-destructive">Availability could not be loaded.</p> : (
+      {availability.isLoading ? <p className="py-6 text-center text-sm text-muted-foreground">Checking availability…</p> : availability.isError ? <p className="py-6 text-center text-sm text-destructive">{availability.error instanceof Error ? availability.error.message : "Availability could not be loaded."}</p> : (
         <div className="mt-2 grid grid-cols-7 gap-1">
           {Array.from({ length: firstWeekday }).map((_, index) => <span key={`blank-${index}`} />)}
           {Array.from({ length: days }, (_, index) => index + 1).map((day) => {
@@ -3575,6 +3576,7 @@ function ProviderManagementPage() {
       }),
     onSuccess: (profile) => {
       setDraft(profile);
+      queryClient.invalidateQueries({ queryKey: ["availability"] });
       queryClient.invalidateQueries({ queryKey: ["provider", "profile"] });
       queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
       queryClient.invalidateQueries({ queryKey: getGetProviderQueryKey(profile.id) });
@@ -4397,15 +4399,7 @@ function ProviderManagementPage() {
                   onBlur={() => updateProfile.mutate(draft)}
                 />
               </div>
-              <div className="form-field">
-                <label className="form-label">Hours</label>
-                <input
-                  className="input"
-                  value={draft.hours}
-                  onChange={(event) => change("hours", event.target.value)}
-                  onBlur={() => updateProfile.mutate(draft)}
-                />
-              </div>
+              <BusinessHours hours={draft.hours} saving={updateProfile.isPending} save={hours => updateProfile.mutateAsync({ ...draft, hours })} />
             </div>
             <div className={providerSection === "services" ? "flex items-center justify-between gap-3" : "hidden"}>
               <h2 className="section-title">My services</h2>
@@ -6219,7 +6213,7 @@ function VaccinationFollowupModal({ pet, record, onClose }: {
         <p className="mt-2 text-xs text-muted-foreground">Choose an available schedule from {formatDate(start)} through {formatDate(end)}.</p>
         {context.isLoading || (context.data && availability.isLoading) ? <LoadingState label="Checking provider availability" /> :
           context.isError ? <ErrorState message={context.error instanceof Error ? context.error.message : "Follow-up could not be loaded."} onRetry={() => context.refetch()} /> :
-          availability.isError ? <ErrorState message="Available dates could not be loaded." onRetry={() => availability.refetch()} /> : (
+          availability.isError ? <ErrorState message={availability.error instanceof Error ? availability.error.message : "Available dates could not be loaded."} onRetry={() => availability.refetch()} /> : (
           <>
             <div className="mt-4 max-h-64 space-y-2 overflow-y-auto">
               {dates.length ? visibleDates.map((date) => <label key={date} className="flex cursor-pointer items-center gap-3 rounded-lg border p-3 text-sm">
