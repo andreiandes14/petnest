@@ -403,6 +403,7 @@ components:
         status: { type: string }
         notes: { type: string }
         nextDue: { type: [string, "null"] }
+        vaccinationProgress: { type: [string, "null"], enum: [ongoing, completed, null] }
         expectedReturnMonths: { type: integer, minimum: 1, maximum: 120 }
         time: { type: [string, "null"] }
         bookingId: { type: number }

@@ -133,6 +133,7 @@ export interface CareRecord {
   /** @nullable */
   nextDue?: string | null;
   expectedReturnMonths?: number;
+  vaccinationProgress?: "ongoing" | "completed" | null;
   time?: string | null;
   bookingId?: number;
   serviceCategory?: CareRecordServiceCategory;

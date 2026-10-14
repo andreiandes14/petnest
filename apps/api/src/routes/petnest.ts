@@ -127,6 +127,7 @@ type CareRecord = {
   time?: string | null;
   nextDue?: string | null;
   expectedReturnMonths?: number;
+  vaccinationProgress?: "ongoing" | "completed" | null;
   bookingId?: number;
   serviceCategory?: "grooming" | "vaccination";
 };
@@ -468,6 +469,7 @@ type OwnedPet = Pet & {
   updatedAt?: string;
 };
 type StoredCareRecord = CareRecord & {
+  archived?: boolean;
   petId: number;
   ownerId: string;
   providerId?: number;
@@ -1182,6 +1184,7 @@ async function ensureCompletedBookingRecord(
     time: booking.time,
     status: "completed",
     notes: "Completed service",
+    ...(booking.serviceCategory === "vaccination" ? { vaccinationProgress: "ongoing" as const } : {}),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -2765,6 +2768,7 @@ router.get("/pets/:petId/records", async (req, res) => {
 });
 
 async function vaccinationFollowupService(record: StoredCareRecord) {
+  if (record.vaccinationProgress === "completed" || record.archived) return null;
   const booking = record.bookingId ? await bookingCollection.findOne({
     id: record.bookingId, ownerId: record.ownerId, petId: record.petId,
     status: "completed", serviceCategory: "vaccination",
@@ -2819,7 +2823,7 @@ router.get("/provider/records", async (req, res) => {
   await Promise.all(completedBookings.map(ensureCompletedBookingRecord));
   const records = await recordCollection
     .find(
-      { providerId: access.providerId, type: type ?? { $in: assignedCare } },
+      { providerId: access.providerId, type: type ?? { $in: assignedCare }, archived: { $ne: true } },
       { projection: { _id: 0 } },
     )
     .sort({ date: -1 })
@@ -2901,7 +2905,7 @@ router.get("/provider/pets/:petId/records", async (req, res) => {
     ),
     recordCollection
       .find(
-        { petId, providerId: access.providerId, type: { $in: assignedCare } },
+        { petId, providerId: access.providerId, type: { $in: assignedCare }, archived: { $ne: true } },
         { projection: { _id: 0 } },
       )
       .sort({ date: -1 })
@@ -2938,15 +2942,20 @@ router.post("/provider/records", async (req, res) => {
     !Number.isInteger(petId) ||
     petId <= 0 ||
     !isIsoDate(body.date) ||
-    (type === "vaccination" && (!isIsoDate(nextDue) || nextDue < body.date)) ||
+    (type === "vaccination" && body.nextDue !== undefined && body.nextDue !== null && typeof body.nextDue !== "string") ||
+    (type === "vaccination" && nextDue !== null && (!isIsoDate(nextDue) || nextDue < body.date)) ||
     (body.notes !== undefined && typeof body.notes !== "string")
   ) {
     res
       .status(400)
       .json({ error: type === "vaccination"
-        ? "Choose valid vaccination and next vaccination dates. The next date cannot be earlier."
+        ? "Choose a valid vaccination date. Any next vaccination date cannot be earlier."
         : "Record type, pet, and a valid date are required." });
     return;
+  }
+  if (body.vaccinationProgress !== undefined && body.vaccinationProgress !== null &&
+      (type !== "vaccination" || body.vaccinationProgress !== "ongoing")) {
+    res.status(400).json({ error: "Choose a valid vaccination course progress." }); return;
   }
   const provider = await providerCollection.findOne({ id: access.providerId });
   if (provider && !provider.categories.includes(type)) {
@@ -2992,6 +3001,7 @@ router.post("/provider/records", async (req, res) => {
     status: "completed",
     notes: typeof body.notes === "string" ? body.notes.trim() : "",
     nextDue: type === "vaccination" ? nextDue : null,
+    ...(type === "vaccination" ? { vaccinationProgress: "ongoing" as const } : {}),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -3035,6 +3045,24 @@ router.patch("/provider/records/:recordId", async (req, res) => {
     res.status(403).json({ error: "This service is not assigned to your provider account." });
     return;
   }
+  if (existing.archived) { res.status(409).json({ error: "Restore the archived record before using active-record actions." }); return; }
+  if (existing.type === "vaccination" && existing.vaccinationProgress === "completed" && body.vaccinationProgress !== "completed") {
+    res.status(409).json({ error: "This vaccination course is completed and cannot be edited or scheduled." }); return;
+  }
+  if (body.vaccinationProgress !== undefined) {
+    if (existing.type !== "vaccination" || body.vaccinationProgress !== "completed") {
+      res.status(400).json({ error: "Only vaccination course completion can be set here." }); return;
+    }
+    // Idempotent and atomic: completion never changes appointments or recommendations.
+    if (existing.vaccinationProgress === "completed") { res.json(existing); return; }
+    const completed = await recordCollection.findOneAndUpdate(
+      { id: recordId, providerId: access.providerId, archived: { $ne: true }, vaccinationProgress: { $ne: "completed" } },
+      { $set: { vaccinationProgress: "completed", updatedAt: new Date().toISOString() } },
+      { returnDocument: "after", projection: { _id: 0 } },
+    );
+    res.json(completed ?? await recordCollection.findOne({ id: recordId, providerId: access.providerId }));
+    return;
+  }
   const effectiveDate = (changes.date as string | undefined) ?? existing.date;
   if (body.expectedReturnMonths !== undefined || (body.date !== undefined && existing.expectedReturnMonths)) {
     const months = body.expectedReturnMonths ?? existing.expectedReturnMonths;
@@ -3056,7 +3084,7 @@ router.patch("/provider/records/:recordId", async (req, res) => {
     changes.expectedReturnMonths = undefined;
   }
   const record = await recordCollection.findOneAndUpdate(
-    { id: recordId, providerId: access.providerId },
+    { id: recordId, providerId: access.providerId, archived: { $ne: true }, ...(existing.type === "vaccination" ? { vaccinationProgress: { $ne: "completed" } } : {}) },
     { $set: Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)),
       ...(body.nextDue !== undefined ? { $unset: { expectedReturnMonths: "" } } : {}) },
     { returnDocument: "after", projection: { _id: 0 } },
@@ -3067,6 +3095,27 @@ router.patch("/provider/records/:recordId", async (req, res) => {
   }
   if (record.type === "vaccination") await syncPetNextVaccination(record.petId, record.ownerId);
   res.json(record);
+});
+
+router.patch("/provider/records/:recordId/archive", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const recordId = Number(req.params.recordId);
+  if (!Number.isInteger(recordId) || recordId <= 0 || typeof req.body?.archived !== "boolean") {
+    res.status(400).json({ error: "Choose a valid vaccination record archive state." }); return;
+  }
+  const existing = await recordCollection.findOne({ id: recordId, providerId: access.providerId, type: "vaccination" });
+  if (!existing) { res.status(404).json({ error: "Vaccination record not found." }); return; }
+  const provider = await providerCollection.findOne({ id: access.providerId });
+  if (!provider?.categories.includes("vaccination")) { res.status(403).json({ error: "Vaccination is not assigned to your provider account." }); return; }
+  if (existing.vaccinationProgress !== "completed") { res.status(409).json({ error: "Only completed vaccination courses can be archived or restored." }); return; }
+  if (Boolean(existing.archived) === req.body.archived) { res.json(existing); return; }
+  const record = await recordCollection.findOneAndUpdate(
+    { id: recordId, providerId: access.providerId, type: "vaccination", vaccinationProgress: "completed", archived: { $ne: req.body.archived } },
+    { $set: { archived: req.body.archived, updatedAt: new Date().toISOString() } },
+    { returnDocument: "after", projection: { _id: 0 } },
+  );
+  res.json(record ?? await recordCollection.findOne({ id: recordId, providerId: access.providerId }));
 });
 
 router.get("/bookings", async (req, res) => {
@@ -3189,6 +3238,9 @@ router.post("/bookings", async (req, res) => {
       });
       return;
     }
+    if (service.category === "vaccination" && (record.vaccinationProgress === "completed" || record.archived)) {
+      res.status(409).json({ error: "This vaccination course is completed or archived and cannot be booked for follow-up." }); return;
+    }
     if (service.category === "vaccination" && record.nextDue) {
       const window = vaccinationReturnWindow(record.nextDue);
       if (parsed.data.date < window.start || parsed.data.date > window.end) {
@@ -3210,6 +3262,12 @@ router.post("/bookings", async (req, res) => {
     return;
   }
   try {
+  if (service.category === "vaccination" && parsed.data.recordId !== null) {
+    const currentRecord = await recordCollection.findOne({ id: parsed.data.recordId, petId: pet.id, ownerId: access.userId, type: "vaccination" });
+    if (!currentRecord || currentRecord.vaccinationProgress === "completed" || currentRecord.archived) {
+      res.status(409).json({ error: "This vaccination record is no longer eligible for follow-up." }); return;
+    }
+  }
   const providerBookings = await bookingCollection
     .find({
       providerId: provider.id,
@@ -3807,7 +3865,7 @@ router.get("/provider/archive", async (req, res) => {
     return;
   }
   const careCategories = assignedCareCategories(provider);
-  const [orders, bookings] = await Promise.all([
+  const [orders, bookings, vaccinationRecords] = await Promise.all([
     provider.categories.includes("pet-supplies")
       ? orderCollection
           .find(
@@ -3828,9 +3886,11 @@ router.get("/provider/archive", async (req, res) => {
       )
       .sort({ date: -1, id: -1 })
       .toArray(),
+    careCategories.includes("vaccination") ? recordCollection.find({ providerId: access.providerId, type: "vaccination", archived: true }, { projection: { _id: 0, ownerId: 0 } }).sort({ date: -1, id: -1 }).toArray() : [],
   ]);
   res.json({
     orders,
+    vaccinationRecords,
     bookings: bookings.filter((booking) => booking.serviceCategory === "grooming"),
     vaccinations: bookings.filter((booking) => booking.serviceCategory === "vaccination"),
   });

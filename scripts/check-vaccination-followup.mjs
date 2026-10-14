@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { vaccinationReturnTarget } from '../apps/api/src/lib/vaccination-followup.ts';
 import { availableFollowupDates, closestFollowupDate, followupDisplayWindow, monthsInRange } from '../apps/web/src/lib/vaccination-followup.ts';
-import { CreateBookingBody, CreateBookingResponse, GetProviderResponse, GetPetRecordsResponse } from '../packages/api-zod/dist/index.js';
+import { CreateBookingBody, CreateBookingResponse, GetProviderResponse, GetPetRecordsResponse, GetPetRecordsParams } from '../packages/api-zod/dist/index.js';
 
 assert.equal(vaccinationReturnTarget('2026-10-02', 2), '2026-12-02');
 assert.equal(vaccinationReturnTarget('2027-01-31', 1), '2027-02-28');
@@ -37,10 +37,14 @@ const providerB = { ...provider, id: 2, name: 'Provider B', services: [{ ...serv
 const providers = [provider, providerB];
 const record = { id: 101, petId: 9, ownerId: 'customer', providerId: 1, serviceId: 11, providerName: 'Provider A', type: 'vaccination', title: 'Vaccination', date: '2026-10-02', status: 'completed', notes: '', nextDue: null };
 const bookings = [];
+const createdRecords = [];
+let creationBooking = null;
+let recordWrites = 0;
 const handlers = new Map();
 let providerAccess = 1;
 const matches = (value, filter) => Object.entries(filter).every(([key, wanted]) => {
   if (wanted && typeof wanted === 'object') return (
+    ('$in' in wanted ? wanted.$in.includes(value[key]) : true) &&
     ('$nin' in wanted ? !wanted.$nin.includes(value[key]) : true) &&
     ('$gte' in wanted ? value[key] >= wanted.$gte : true) &&
     ('$lte' in wanted ? value[key] <= wanted.$lte : true) &&
@@ -52,16 +56,20 @@ const deps = {
   requireCustomer: async () => ({ userId: 'customer' }), requireProvider: async () => ({ providerId: providerAccess }),
   providerCollection: { async findOne(filter) { return providers.find(item => matches(item, filter)) ?? null; } },
   recordCollection: {
+    find(filter) { return { sort() { return this; }, async toArray() { return matches(record, filter) ? [record] : []; } }; },
+    async insertOne(value) { createdRecords.push(value); return { acknowledged: true }; },
     async findOne(filter) { return matches(record, filter) ? record : null; },
-    async findOneAndUpdate(filter, update) { if (!matches(record, filter)) return null; Object.assign(record, update.$set); for (const key of Object.keys(update.$unset ?? {})) delete record[key]; return record; },
+    async findOneAndUpdate(filter, update) { if (!matches(record, filter)) return null; recordWrites++; Object.assign(record, update.$set); for (const key of Object.keys(update.$unset ?? {})) delete record[key]; return record; },
   },
   bookingCollection: {
-    async findOne() { return null; },
-    find(filter) { return { project() { return this; }, async toArray() { return bookings.filter(item => matches(item, filter)); } }; },
+    async findOne(filter) { return creationBooking && matches(creationBooking, filter) ? creationBooking : null; },
+    find(filter) { return { project() { return this; }, sort() { return this; }, async toArray() { return bookings.filter(item => matches(item, filter)); } }; },
     async insertOne(booking) { bookings.push(booking); },
   },
   petCollection: { async findOne(filter) { return filter.id === 9 && filter.ownerId === 'customer' ? { id: 9, name: 'Pet' } : null; } },
-  vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, CreateBookingBody, CreateBookingResponse,
+  vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, GetPetRecordsParams, GetPetRecordsResponse, CreateBookingBody, CreateBookingResponse,
+  assignedCareCategories: provider => provider?.categories.filter(category => ["grooming", "vaccination"].includes(category)) ?? [],
+  ensureCompletedBookingRecord: async () => {},
   ...scheduling, manilaNow,
   isIsoDate: value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value),
   validText: value => typeof value === 'string' && value.trim().length > 0,
@@ -75,6 +83,11 @@ function install(startMarker, endMarker, result = '') {
   return new Function(...Object.keys(deps), `${transpile(source.slice(start, end))}${result}`)(...Object.values(deps));
 }
 deps.vaccinationFollowupService = install('async function vaccinationFollowupService(', 'router.get("/provider/records"', '; return vaccinationFollowupService;');
+install('router.get("/provider/archive"', 'router.get("/admin/orders"');
+install('router.get("/provider/records"', 'router.get("/provider/pets"');
+handlers.set("/provider/records/list", handlers.get("/provider/records"));
+install('router.get("/pets/:petId/records"', 'async function vaccinationFollowupService(');
+install('router.post("/provider/records"', 'router.patch("/provider/records/:recordId"');
 install('router.patch("/provider/records/:recordId"', 'router.get("/bookings"');
 install('router.get("/providers/:providerId/availability"', 'router.get("/services"');
 install('router.post("/bookings"', 'router.delete("/bookings/:bookingId"');
@@ -130,4 +143,63 @@ providerB.services.push({ ...service, id: 33, name: 'Grooming', category: 'groom
 const grooming = await request('/bookings', { ...bookingInput, providerId: 2, serviceId: 33, recordId: null });
 assert.equal(grooming.code, 201);
 assert.equal(grooming.body.serviceCategory, 'grooming');
-console.log('PASS: calendar-month target, saved recommendation/schema, inclusive 10-day return window, calendar boundaries, unavailable date filtering, backend out-of-window rejection, actual availability, provider isolation, alternative date booking, unavailable/taken slot rejection.');
+// Completion is provider-confirmed, independent of appointments and boosters.
+assert.equal(record.vaccinationProgress, undefined);
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'ongoing' }, { recordId: '101' })).code, 400);
+const writesBeforeCompletion = recordWrites;
+const completedResponses = await Promise.all([1, 2].map(() => request('/provider/records/:recordId', { vaccinationProgress: 'completed' }, { recordId: '101' })));
+assert.ok(completedResponses.every(response => response.code === 200));
+assert.equal(recordWrites, writesBeforeCompletion + 1);
+assert.equal(record.vaccinationProgress, 'completed');
+assert.equal(record.status, 'completed');
+assert.equal(record.nextDue, '2026-12-02');
+assert.equal(record.expectedReturnMonths, 2);
+assert.equal(GetPetRecordsResponse.parse({ grooming: [], vaccinations: [record] }).vaccinations[0].vaccinationProgress, 'completed');
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'invalid' }, { recordId: '101' })).code, 409);
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: null }, { recordId: '101' })).code, 409);
+providerAccess = 2;
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'completed' }, { recordId: '101' })).code, 404);
+providerAccess = 1;
+provider.categories = ['grooming'];
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'completed' }, { recordId: '101' })).code, 403);
+provider.categories = ['vaccination'];
+creationBooking = { providerId: 1, petId: 9, serviceCategory: 'vaccination', status: 'completed', serviceName: 'Vaccination', ownerId: 'customer' };
+const input = { type: 'vaccination', petId: 9, date: '2026-10-02', title: 'Vaccination' };
+assert.equal((await request('/provider/records', input)).code, 201);
+assert.equal(createdRecords[0].vaccinationProgress, 'ongoing');
+assert.equal(createdRecords[0].nextDue, null);
+assert.equal(createdRecords[0].ownerId, 'customer');
+assert.equal((await request('/provider/records', { ...input, nextDue: '2026-12-02' })).code, 201);
+assert.equal(createdRecords[1].vaccinationProgress, 'ongoing');
+assert.equal((await request('/provider/records', { ...input, vaccinationProgress: ['ongoing'] })).code, 400);
+assert.equal((await request('/provider/records', { ...input, vaccinationProgress: 'completed' })).code, 400);
+assert.equal((await request('/provider/records', { ...input, vaccinationProgress: null })).code, 201);
+assert.equal(createdRecords[2].vaccinationProgress, 'ongoing');
+assert.equal((await request('/provider/records/:recordId', { notes: 'forbidden' }, { recordId: '101' })).code, 409);
+assert.equal((await request('/provider/records/:recordId', { nextDue: '2027-01-01' }, { recordId: '101' })).code, 409);
+assert.equal((await request('/pets/:petId/records/:recordId/follow-up', {}, { petId: '9', recordId: '101' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-05' })).code, 409);
+providerAccess = 2;
+assert.equal((await request('/provider/records/:recordId/archive', { archived: true }, { recordId: '101' })).code, 404);
+providerAccess = 1;
+record.vaccinationProgress = 'ongoing';
+assert.equal((await request('/provider/records/:recordId/archive', { archived: true }, { recordId: '101' })).code, 409);
+record.vaccinationProgress = 'completed';
+const beforeArchive = recordWrites;
+assert.equal((await request('/provider/records/:recordId/archive', { archived: true }, { recordId: '101' })).code, 200);
+assert.equal((await request('/provider/records/:recordId/archive', { archived: true }, { recordId: '101' })).code, 200);
+assert.equal(recordWrites, beforeArchive + 1);
+assert.equal(record.archived, true);
+assert.equal((await request('/provider/records/list')).body.length, 0);
+assert.equal((await request('/provider/archive')).body.vaccinationRecords[0].id, 101);
+assert.equal((await request('/pets/:petId/records', {}, { petId: '9' })).body.vaccinations[0].id, 101);
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'completed' }, { recordId: '101' })).code, 409);
+assert.equal((await request('/provider/records/:recordId', { notes: 'forbidden' }, { recordId: '101' })).code, 409);
+assert.equal((await request('/provider/records/:recordId/archive', { archived: false }, { recordId: '101' })).code, 200);
+assert.equal(record.vaccinationProgress, 'completed');
+assert.equal(record.nextDue, '2026-12-02');
+assert.equal(record.expectedReturnMonths, 2);
+assert.equal((await request('/provider/records/list')).body[0].id, 101);
+assert.equal((await request('/pets/:petId/records/:recordId/follow-up', {}, { petId: '9', recordId: '101' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-05' })).code, 409);
+console.log('PASS: completed edit/schedule/booking rejection, provider-owned idempotent archive/restore, archived active-record rejection, customer history preserved, restored completion retained; Ongoing booking-window and progress regressions.');

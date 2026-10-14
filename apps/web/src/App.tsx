@@ -2565,6 +2565,7 @@ type ProviderArchive = {
   orders: ProviderOrder[];
   bookings: AdminBooking[];
   vaccinations: AdminBooking[];
+  vaccinationRecords?: ProviderRecord[];
 };
 type AdminAccount = {
   id: string;
@@ -3493,6 +3494,7 @@ function ProviderManagementPage() {
     nextDue: "",
     notes: "",
   });
+  const [recordCategory, setRecordCategory] = useState<"grooming" | "vaccination">("grooming");
   const [showServiceForm, setShowServiceForm] = useState(false);
   const [editingServiceId, setEditingServiceId] = useState<number | null>(null);
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
@@ -3500,6 +3502,8 @@ function ProviderManagementPage() {
   const [showRecordForm, setShowRecordForm] = useState<
     "grooming" | "vaccination" | null
   >(null);
+  const [completionRecord, setCompletionRecord] = useState<ProviderRecord | null>(null);
+  const completionRequest = useRef(false);
   const [scheduleRecord, setScheduleRecord] = useState<ProviderRecord | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
   const [expectedReturnMonths, setExpectedReturnMonths] = useState("");
@@ -3518,8 +3522,9 @@ function ProviderManagementPage() {
   );
   const [bookingCategory, setBookingCategory] = useState<"grooming" | "vaccination">("grooming");
   const [archiveCategory, setArchiveCategory] = useState<"orders" | "bookings" | "vaccinations">("orders");
+  const archiveRequest = useRef(false);
   const [archiveTarget, setArchiveTarget] = useState<{
-    kind: "order" | "booking";
+    kind: "order" | "booking" | "record";
     id: number;
     label: string;
     archived: boolean;
@@ -3747,7 +3752,7 @@ function ProviderManagementPage() {
       adminRequest(
         target.kind === "order"
           ? `/api/provider/orders/${target.id}/archive`
-          : `/api/provider/bookings/${target.id}/archive`,
+          : target.kind === "record" ? `/api/provider/records/${target.id}/archive` : `/api/provider/bookings/${target.id}/archive`,
         {
           method: "PATCH",
           body: JSON.stringify({ archived: target.archived }),
@@ -3758,6 +3763,9 @@ function ProviderManagementPage() {
       queryClient.invalidateQueries({ queryKey: ["provider", "orders"] });
       queryClient.invalidateQueries({ queryKey: ["provider", "bookings"] });
       queryClient.invalidateQueries({ queryKey: ["provider", "archive"] });
+      queryClient.invalidateQueries({ queryKey: ["provider", "records"] });
+      queryClient.invalidateQueries({ queryKey: ["provider", "pet-records"] });
+      recordsQuery.refetch();
       setNotice(target.archived ? "Record archived." : "Record restored.");
     },
   });
@@ -3896,12 +3904,13 @@ function ProviderManagementPage() {
     },
   });
   const updateRecord = useMutation({
-    mutationFn: ({ id, changes }: { id: number; changes: { notes?: string; nextDue?: string; expectedReturnMonths?: number } }) =>
+    mutationFn: ({ id, changes }: { id: number; changes: { notes?: string; nextDue?: string; expectedReturnMonths?: number; vaccinationProgress?: "completed" } }) =>
       adminRequest<ProviderRecord>(`/api/provider/records/${id}`, {
         method: "PATCH",
         body: JSON.stringify(changes),
       }),
     onSuccess: (record, variables) => {
+      if (variables.changes.vaccinationProgress === "completed") setCompletionRecord(null);
       setScheduleRecord(null);
       setScheduleDate("");
       recordsQuery.refetch();
@@ -4091,12 +4100,13 @@ function ProviderManagementPage() {
                     </button>
                   </div>
                 </div>
-                {assignedCareCategories.includes("grooming") ? (
+                <RecordCategoryTabs category={recordCategory} select={setRecordCategory} />
+                {assignedCareCategories.includes("grooming") && recordCategory === "grooming" ? (
                 <div className="mt-6">
                   <h3 className="font-display text-xl">Grooming History</h3>
                   <div className="list-stack mt-3">
                     {selectedProviderPetQuery.data.records.filter((record) => record.type === "grooming").length ? (
-                      selectedProviderPetQuery.data.records.filter((record) => record.type === "grooming").map((record) => (
+                      selectedProviderPetQuery.data.records.filter((record) => record.type === "grooming").sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map((record) => (
                       <div className="record-item" key={record.id}>
                         <p className="font-semibold">{record.title}</p>
                         <p className="text-xs text-muted-foreground">
@@ -4112,23 +4122,35 @@ function ProviderManagementPage() {
                   </div>
                 </div>
                 ) : null}
-                {assignedCareCategories.includes("vaccination") ? (
+                {assignedCareCategories.includes("vaccination") && recordCategory === "vaccination" ? (
                 <div className="mt-6">
                   <h3 className="font-display text-xl">Vaccination History</h3>
                   <div className="list-stack mt-3">
                     {selectedProviderPetQuery.data.records.filter((record) => record.type === "vaccination").length ? (
-                      selectedProviderPetQuery.data.records.filter((record) => record.type === "vaccination").map((record) => (
+                      selectedProviderPetQuery.data.records.filter((record) => record.type === "vaccination").sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map((record) => (
                         <div className="record-item" key={record.id}>
                           <p className="font-semibold">{record.title}</p>
                           <p className="text-xs text-muted-foreground">Given: {formatDate(record.date)} · {record.providerName} · {statusLabel(record.status)}</p>
+                          <div className="mt-2"><VaccinationProgressBadge progress={record.vaccinationProgress} /></div>
                           {record.notes ? <p className="mt-2 text-sm text-muted-foreground">{record.notes}</p> : null}
                           <p className="mt-2 text-sm font-semibold text-primary">Next Vaccination: {formatDate(record.nextDue)}</p>
-                          <button className="btn btn-ghost mt-3" onClick={() => {
+                          {record.vaccinationProgress === "completed" ? <div className="mt-3 flex justify-end">
+                            <button className="btn btn-ghost" onClick={() => { setArchiveState.reset(); setArchiveTarget({ kind: "record", id: record.id, label: record.title, archived: true }); }}>Archive</button>
+                          </div> : (
+                          <div className="mt-3 flex flex-wrap justify-end gap-2">
+                          <button className="btn btn-ghost" onClick={() => {
                             setScheduleRecord(record);
                             setScheduleDate(record.nextDue ?? "");
                     setExpectedReturnMonths(record.expectedReturnMonths ? String(record.expectedReturnMonths) : "");
                             updateRecord.reset();
-                          }}>Update Next Vaccination</button>
+                          }}>Set Next Vaccination</button>
+                          <button className="btn btn-ghost" onClick={() => {
+                            const notes = window.prompt("Update notes", record.notes);
+                            if (notes !== null) updateRecord.mutate({ id: record.id, changes: { notes } });
+                          }}>Edit Notes</button>
+                          <button className="btn btn-secondary" disabled={updateRecord.isPending} onClick={() => { updateRecord.reset(); setCompletionRecord(record); }}>Completed</button>
+                          </div>
+                          )}
                         </div>
                       ))
                     ) : <p className="text-sm text-muted-foreground">No completed vaccination services yet.</p>}
@@ -5290,8 +5312,19 @@ function ProviderManagementPage() {
                   ))}
                 </div>
               ) : <p className="mt-5 text-sm text-muted-foreground">No archived Pet Supplies orders.</p>
-            ) : (providerArchiveQuery.data?.[archiveCategory] ?? []).length ? (
+            ) : ((providerArchiveQuery.data?.[archiveCategory] ?? []).length || (archiveCategory === "vaccinations" && providerArchiveQuery.data?.vaccinationRecords?.length)) ? (
               <div className="list-stack mt-5">
+                {archiveCategory === "vaccinations" ? (providerArchiveQuery.data?.vaccinationRecords ?? []).map(record => <div className="service-row" key={`archive-record-${record.id}`}>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold">{record.title} ? Pet #{record.petId}</p>
+                    <p className="text-xs text-muted-foreground">{record.providerName} ? {formatDate(record.date)}{record.bookingId ? ` ? Booking #${record.bookingId}` : ""}</p>
+                    <div className="mt-2"><VaccinationProgressBadge progress={record.vaccinationProgress} /></div>
+                    {record.notes ? <p className="mt-2 text-sm text-muted-foreground">{record.notes}</p> : null}
+                    {record.nextDue ? <p className="mt-2 text-sm text-primary">Next Vaccination Schedule: {formatDate(record.nextDue)}</p> : null}
+                    {record.expectedReturnMonths ? <p className="mt-1 text-xs text-muted-foreground">Recommended return interval: {record.expectedReturnMonths} months</p> : null}
+                  </div>
+                  <button className="btn btn-ghost" onClick={() => { setArchiveState.reset(); setArchiveTarget({ kind: "record", id: record.id, label: record.title, archived: false }); }}>Restore</button>
+                </div>) : null}
                 {(providerArchiveQuery.data?.[archiveCategory] ?? []).map((booking) => (
                   <div className="service-row" key={`archive-booking-${booking.id}`}>
                     <div className="flex-1">
@@ -5346,6 +5379,7 @@ function ProviderManagementPage() {
             </button>
           ) : null}
         </div>
+        <RecordCategoryTabs category={recordCategory} select={setRecordCategory} />
         {showRecordForm ? (
           <div className="modal-backdrop" role="presentation">
             <div
@@ -5414,7 +5448,6 @@ function ProviderManagementPage() {
                     type="date"
                     aria-label="Next vaccination date"
                     min={recordForm.date || undefined}
-                    required
                     value={recordForm.nextDue}
                     onChange={(event) =>
                       setRecordForm({
@@ -5450,7 +5483,7 @@ function ProviderManagementPage() {
           </div>
         ) : null}
         <div className="list-stack mt-5">
-          {(recordsQuery.data ?? []).map((record) => (
+          {(recordsQuery.data ?? []).filter(record => record.type === recordCategory).sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map((record) => (
             <div className="service-row" key={record.id}>
               <div className="flex-1">
                 <p className="font-semibold">{record.title}</p>
@@ -5461,34 +5494,60 @@ function ProviderManagementPage() {
                   {record.notes}
                 </p>
                 {record.type === "vaccination" ? (
-                  <p className="mt-2 text-sm font-semibold text-primary">
-                    Next Vaccination Schedule: {formatDate(record.nextDue)}
-                  </p>
+                  <div className="mt-2">
+                    <VaccinationProgressBadge progress={record.vaccinationProgress} />
+                    <p className="mt-2 text-sm font-semibold text-primary">
+                    Next Vaccination Schedule: {record.nextDue ? formatDate(record.nextDue) : "Not scheduled"}
+                    </p>
+                  </div>
                 ) : null}
               </div>
-              <div className="flex flex-wrap gap-2">
+              {record.type === "vaccination" && record.vaccinationProgress === "completed" ?
+                <button className="btn btn-ghost" onClick={() => { setArchiveState.reset(); setArchiveTarget({ kind: "record", id: record.id, label: record.title, archived: true }); }}>Archive</button> : (
+              <div className={record.type === "vaccination" ? "ml-auto flex flex-wrap justify-end gap-2" : "flex flex-wrap gap-2"}>
                 <button className="btn btn-ghost" onClick={() => {
                   const notes = window.prompt("Update notes", record.notes);
                   if (notes !== null) updateRecord.mutate({ id: record.id, changes: { notes } });
                 }}>Edit notes</button>
                 {record.type === "vaccination" ? (
+                  <>
                   <button className="btn btn-ghost" onClick={() => {
                     setScheduleRecord(record);
                     setScheduleDate(record.nextDue ?? "");
                     setExpectedReturnMonths(record.expectedReturnMonths ? String(record.expectedReturnMonths) : "");
                     updateRecord.reset();
                   }}>Set Next Vaccination</button>
+                  {record.vaccinationProgress !== "completed" ? <button className="btn btn-secondary" disabled={updateRecord.isPending} onClick={() => { updateRecord.reset(); setCompletionRecord(record); }}>Completed</button> : <span className="status status-completed">Completed</span>}
+                  </>
+
                 ) : null}
               </div>
+              )}
             </div>
           ))}
         </div>
+        {updateRecord.isError ? <p className="mt-3 text-sm text-destructive" role="alert">{updateRecord.error.message}</p> : null}
         {addRecord.isError ? (
           <p className="mt-3 text-sm text-destructive">
             {addRecord.error.message}
           </p>
         ) : null}
       </section>
+      {completionRecord ? <div className="modal-backdrop" role="presentation">
+        <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="vaccination-completion-title">
+          <h2 id="vaccination-completion-title" className="modal-title">Mark Vaccination as Completed?</h2>
+          <p className="mt-3 text-sm">Are you sure this vaccination course is finished? The customer's vaccination record will be marked as Completed.</p>
+          {updateRecord.isError ? <p className="mt-3 text-sm text-destructive" role="alert">{updateRecord.error.message}</p> : null}
+          <div className="mt-5 flex justify-end gap-2">
+            <button className="btn btn-ghost" disabled={updateRecord.isPending} onClick={() => setCompletionRecord(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={updateRecord.isPending} onClick={() => {
+              if (completionRequest.current || updateRecord.isPending) return;
+              completionRequest.current = true;
+              updateRecord.mutate({ id: completionRecord.id, changes: { vaccinationProgress: "completed" } }, { onSettled: () => { completionRequest.current = false; } });
+            }}>{updateRecord.isPending ? "Saving..." : "Confirm Completion"}</button>
+          </div>
+        </div>
+      </div> : null}
       {scheduleRecord ? (
         <div className="modal-backdrop" role="presentation">
           <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="schedule-title">
@@ -5518,18 +5577,22 @@ function ProviderManagementPage() {
         <div className="modal-backdrop" role="presentation">
           <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="archive-confirm-title">
             <h2 id="archive-confirm-title" className="modal-title">
-              {archiveTarget.archived ? "Archive record?" : "Restore record?"}
+              {archiveTarget.kind === "record" && archiveTarget.archived ? "Archive Vaccination Record?" : archiveTarget.archived ? "Archive record?" : "Restore record?"}
             </h2>
             <p className="mt-3 text-sm text-muted-foreground">
               {archiveTarget.archived
-                ? "Are you sure you want to archive this record?"
+                ? archiveTarget.kind === "record" ? "This vaccination record will be moved to your Archive. It will remain available in the customer's vaccination history." : "Are you sure you want to archive this record?"
                 : `Restore ${archiveTarget.label} to its normal section?`}
             </p>
             {setArchiveState.isError ? <p className="mt-3 text-sm font-semibold text-destructive">{setArchiveState.error.message}</p> : null}
             <div className="mt-6 flex gap-2">
               <button className="btn btn-ghost" disabled={setArchiveState.isPending} onClick={() => setArchiveTarget(null)}>Cancel</button>
-              <button className="btn btn-primary" disabled={setArchiveState.isPending} onClick={() => setArchiveState.mutate(archiveTarget)}>
-                {archiveTarget.archived ? "Archive" : "Restore"}
+              <button className="btn btn-primary" disabled={setArchiveState.isPending} onClick={() => {
+                if (archiveRequest.current || setArchiveState.isPending) return;
+                archiveRequest.current = true;
+                setArchiveState.mutate(archiveTarget, { onSettled: () => { archiveRequest.current = false; } });
+              }}>
+                {archiveTarget.archived ? archiveTarget.kind === "record" ? "Archive Record" : "Archive" : "Restore"}
               </button>
             </div>
           </div>
@@ -6176,6 +6239,17 @@ function VaccinationFollowupModal({ pet, record, onClose }: {
   );
 }
 
+function VaccinationProgressBadge({ progress }: { progress?: "ongoing" | "completed" | null }) {
+  const label = progress === "completed" ? "Completed" : "Ongoing";
+  return <span className={`status ${progress === "completed" ? "status-completed" : "status-pending"}`} aria-label={`Vaccination course: ${label}`}>{label}</span>;
+}
+
+function RecordCategoryTabs({ category, select }: { category: "grooming" | "vaccination"; select: (category: "grooming" | "vaccination") => void }) {
+  return <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label="Record category">
+    {(["grooming", "vaccination"] as const).map(type => <button key={type} type="button" className={`btn ${category === type ? "btn-primary" : "btn-ghost"}`} aria-pressed={category === type} onClick={() => select(type)}>{type === "grooming" ? "Grooming Records" : "Vaccination Records"}</button>)}
+  </div>;
+}
+
 function RecordsPanel({ pet }: { pet: Pet }) {
   const [followupRecord, setFollowupRecord] = useState<CareRecord | null>(null);
   const [tab, setTab] = useState<"grooming" | "vaccinations">("grooming");
@@ -6246,15 +6320,16 @@ function RecordsPanel({ pet }: { pet: Pet }) {
                   <span
                     className={`status status-${record.status.toLowerCase()}`}
                   >
-                    {record.status}
+                    {record.type === "vaccination" ? `Appointment: ${statusLabel(record.status)}` : record.status}
                   </span>
                 </div>
+                {record.type === "vaccination" ? <div className="mt-3"><p className="mb-1 text-xs text-muted-foreground">Vaccination course</p><VaccinationProgressBadge progress={record.vaccinationProgress} /></div> : null}
                 {record.notes ? (
                   <p className="mt-4 text-sm leading-6 text-muted-foreground">
                     {record.notes}
                   </p>
                 ) : null}
-                {record.type === "vaccination" ? (
+                {record.type === "vaccination" && record.vaccinationProgress !== "completed" ? (
                   <div className="mt-4 rounded-xl bg-primary/5 p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Vaccination Follow-up</p>
                     <p className="mt-2 text-sm">Last Vaccination: {formatDate(record.date)}</p>
