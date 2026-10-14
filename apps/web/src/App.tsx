@@ -6215,21 +6215,21 @@ function RecordsPanel({ pet }: { pet: Pet }) {
           <span>{query.data?.vaccinations.length ?? 0}</span>
         </button>
       </div>
-      <div>
+      <div className="pet-history-section">
         {query.isLoading ? (
           <LoadingState label="Opening their care records" />
         ) : query.isError ? (
           <ErrorState onRetry={() => query.refetch()} />
         ) : records.length ? (
-          <div className="list-stack">
+          <div className="pet-history-grid">
             {records.map((record) => (
               <div
                 className="record-item"
                 key={record.id}
                 data-testid={`record-care-${record.id}`}
               >
-                <div className="flex items-start justify-between gap-4">
-                  <div>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
                     <p className="eyebrow">{record.type}</p>
                     <h3 className="mt-1 font-display text-2xl">
                       {record.title}
