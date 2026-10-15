@@ -3526,6 +3526,10 @@ function ProviderManagementPage() {
     newPassword: "",
     confirmNewPassword: "",
   });
+  const [passwordVisibility, setPasswordVisibility] = useState({ currentPassword: false, newPassword: false, confirmNewPassword: false });
+  useEffect(() => {
+    setPasswordVisibility({ currentPassword: false, newPassword: false, confirmNewPassword: false });
+  }, [showChangePassword]);
   const [passwordError, setPasswordError] = useState("");
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const [notice, setNotice] = useState("");
@@ -4381,11 +4385,13 @@ function ProviderManagementPage() {
                       ["newPassword", "New Password", "new-password"],
                       ["confirmNewPassword", "Confirm New Password", "new-password"],
                     ] as const).map(([field, label, autoComplete]) => (
-                      <label className="form-field" key={field}>
-                        <span className="form-label">{label} *</span>
+                      <div className="form-field" key={field}>
+                        <label className="form-label" htmlFor={`provider-password-${field}`}>{label} *</label>
+                        <div className="relative">
                         <input
-                          className="input"
-                          type="password"
+                          className="input pr-12"
+                          id={`provider-password-${field}`}
+                          type={passwordVisibility[field] ? "text" : "password"}
                           autoComplete={autoComplete}
                           required
                           value={passwordForm[field]}
@@ -4398,7 +4404,18 @@ function ProviderManagementPage() {
                             changeProviderPassword.reset();
                           }}
                         />
-                      </label>
+                          <button
+                            type="button"
+                            className="absolute inset-y-0 right-1 flex w-10 items-center justify-center rounded-lg text-muted-foreground hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                            aria-label={`${passwordVisibility[field] ? "Hide" : "Show"} ${label.toLowerCase()}`}
+                            aria-controls={`provider-password-${field}`}
+                            aria-pressed={passwordVisibility[field]}
+                            onClick={() => setPasswordVisibility(current => ({ ...current, [field]: !current[field] }))}
+                          >
+                            {passwordVisibility[field] ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </div>
                   {passwordError || changeProviderPassword.isError ? (
