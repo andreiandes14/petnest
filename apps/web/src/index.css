@@ -2685,3 +2685,28 @@ textarea.input {
     position: static;
   }
 }
+
+/* Temporary closure leaves the card recognizable without a navigation target. */
+.shop-closure-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border-radius: inherit;
+  background: hsl(250 30% 12% / 0.65);
+  color: white;
+  font-size: 22px;
+  font-weight: 800;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 250ms ease;
+}
+.shop-closed .shop-closure-overlay { opacity: 1; }
+.shop-closed .provider-foot .btn { opacity: 0.5; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .shop-closure-overlay { transition: none; }
+}

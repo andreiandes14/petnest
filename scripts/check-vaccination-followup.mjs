@@ -1,3 +1,4 @@
+import { shopClosed } from '../shared/shop-closure.ts';
 import { parseBusinessHours, bookingDuration } from '../shared/business-hours.ts';
 import assert from 'node:assert/strict';
 import { vaccinationReturnWindow } from '../shared/vaccination-window.ts';
@@ -68,7 +69,7 @@ const deps = {
     async insertOne(booking) { bookings.push(booking); },
   },
   petCollection: { async findOne(filter) { return filter.id === 9 && filter.ownerId === 'customer' ? { id: 9, name: 'Pet' } : null; } },
-  bookingDuration, vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, GetPetRecordsParams, GetPetRecordsResponse, CreateBookingBody, CreateBookingResponse,
+  shopClosed, bookingDuration, vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, GetPetRecordsParams, GetPetRecordsResponse, CreateBookingBody, CreateBookingResponse,
   assignedCareCategories: provider => provider?.categories.filter(category => ["grooming", "vaccination"].includes(category)) ?? [],
   ensureCompletedBookingRecord: async () => {},
   ...scheduling, manilaNow,
@@ -250,4 +251,12 @@ assert.equal((await request('/bookings', { providerId: 2, serviceId: 33, petId: 
 provider.hours = 'invalid hours';
 assert.equal((await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' })).code, 409);
 assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date: '2026-12-05', time: '11:00' })).code, 409);
+provider.hours = '9AM-5PM';
+provider.closedUntil = new Date(Date.now() + 60000).toISOString();
+const beforeClosureBookings = bookings.length;
+assert.equal((await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date: '2026-12-19', time: '16:30' })).code, 409);
+assert.equal(bookings.length, beforeClosureBookings);
+provider.closedUntil = new Date(Date.now() - 1000).toISOString();
+assert.equal((await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' })).code, 200);
 console.log('PASS: provider-specific opening/closing, closing-minus-30 cutoff regardless of duration, hours updates, conflict and off-grid rejection, old bookings preserved; vaccination return-window, archive and progress regressions.');

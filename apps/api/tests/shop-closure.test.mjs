@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+const compile = source => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(compile(source)).toString('base64')}`;
+const { shopClosed, nextManilaMidnight } = await import(moduleUrl(readFileSync(new URL('../../../shared/shop-closure.ts', import.meta.url), 'utf8')));
+const source = readFileSync(new URL('../src/routes/petnest.ts', import.meta.url), 'utf8');
+test('closure expires exactly at Philippine midnight without a scheduled write', () => {
+ const before = Date.parse('2026-10-15T15:59:59Z');
+ const until = nextManilaMidnight(before);
+ assert.equal(until, '2026-10-15T16:00:00.000Z');
+ assert.equal(shopClosed({closedUntil:until},before),true);
+ assert.equal(shopClosed({closedUntil:until},Date.parse(until)),false);
+ assert.equal(nextManilaMidnight(Date.parse(until)), '2026-10-16T16:00:00.000Z');
+ assert.equal(shopClosed({closedUntil:null},before),false);
+ assert.equal(shopClosed({closedUntil:'invalid'},before),false);
+});
+test('only the owner or admin can close/reopen; access and history are unchanged', async () => {
+ let access={role:'provider',providerId:1};
+ const provider={id:1,active:true,hours:'9AM-5PM'};
+ const history={bookings:[{status:'confirmed'}],orders:[{status:'pending'}]};const snapshot=JSON.stringify(history);
+ const routes=new Map();
+ const deps={router:{patch(paths,fn){for(const path of paths)routes.set(path,fn);}},getAccess:async()=>access,providerCollection:{async findOneAndUpdate(filter,update){if(filter.id!==1)return null;Object.assign(provider,update.$set);return {...provider};}},nextManilaMidnight,GetProviderResponse:{parse:value=>value}};
+ new Function(...Object.keys(deps),compile(source.slice(source.indexOf('router.patch(["/provider/closure"'),source.indexOf('router.get("/admin/providers"'))))(...Object.values(deps));
+ const request=async(params,body)=>{const res={code:200,status(code){this.code=code;return this;},json(body){this.body=body;return this;}};await routes.get('/provider/closure')({params,body},res);return res;};
+ assert.equal((await request({}, {closed:true})).code,200);assert.ok(shopClosed(provider));assert.equal(provider.active,true);assert.equal(provider.hours,'9AM-5PM');
+ assert.equal((await request({}, {closed:false})).code,200);assert.equal(shopClosed(provider),false);
+ assert.equal((await request({providerId:'2'}, {closed:true})).code,403);
+ access={role:'customer',providerId:1};assert.equal((await request({}, {closed:true})).code,403);
+ access={role:'admin'};assert.equal((await request({providerId:'1'}, {closed:true})).code,200);
+ assert.equal((await request({providerId:'1'}, {closed:'yes'})).code,400);
+ assert.equal(JSON.stringify(history),snapshot);
+});
+test('direct new-order requests reject a closed shop before order/stock mutations', async()=>{
+ let handler;const provider={closedUntil:new Date(Date.now()+60000).toISOString()};
+ const start=source.indexOf('router.post("/orders",');const guard=source.indexOf('  if (shopClosed(provider))',start);const end=source.indexOf('\n',guard);
+ const deps={router:{post(path,fn){handler=fn;}},requireCustomer:async()=>({userId:'customer'}),CreateOrderBody:{safeParse:body=>({success:true,data:body})},providerCollection:{async findOne(){return provider;}},shopClosed};
+ new Function(...Object.keys(deps),compile(source.slice(start,end)+'\nres.json({allowed:true});\n});'))(...Object.values(deps));
+ const res={code:200,status(code){this.code=code;return this;},json(body){this.body=body;return this;}};
+ await handler({body:{providerId:1}},res);assert.equal(res.code,409);
+});

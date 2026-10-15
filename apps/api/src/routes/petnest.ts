@@ -1,3 +1,4 @@
+import { shopClosed, nextManilaMidnight } from "../../../../shared/shop-closure.js";
 import { parseBusinessHours, bookingDuration, businessHoursMessage } from "../../../../shared/business-hours.js";
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
@@ -82,6 +83,7 @@ type Provider = {
   latitude?: number | null;
   longitude?: number | null;
   locationCity?: string | null;
+  closedUntil?: string | null;
   locationProvince?: string | null;
   locationCode?: string | null;
   locationAccuracy?: "city" | "shop" | null;
@@ -1723,6 +1725,7 @@ router.get("/providers/:providerId", async (req, res) => {
     res.status(404).json({ error: "Provider not found" });
     return;
   }
+  if (shopClosed(provider)) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
   res.json(
     GetProviderResponse.parse({
       ...provider,
@@ -1755,6 +1758,7 @@ router.get("/providers/:providerId/availability", async (req, res) => {
   if (!schedule || duration === null) {
     res.status(409).json({ error: !schedule ? "The provider must configure valid business hours before appointments can be booked." : "The provider must configure a valid service duration." }); return;
   }
+  if (shopClosed(provider)) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
   const [year, monthNumber] = month.split("-").map(Number);
   if (monthNumber < 1 || monthNumber > 12 || year < 2000 || year > 2200) {
     res.status(400).json({ error: "Choose a valid month." });
@@ -2073,6 +2077,7 @@ router.patch("/provider/profile", async (req, res) => {
   const changes: Omit<Provider, "id"> = {
     ...providerInput,
     ...shopCoordinates,
+    closedUntil: existing.closedUntil ?? null,
     locationProvince: province,
     locationCode: locality?.code ?? (!addressChanged && !changedCity ? existing.locationCode ?? null : null),
     location: /^(undefined|null)$/i.test(businessLocation) ? "" : businessLocation,
@@ -2095,6 +2100,21 @@ router.patch("/provider/profile", async (req, res) => {
     res.status(404).json({ error: "Assigned provider not found" });
     return;
   }
+  res.json(GetProviderResponse.parse(provider));
+});
+
+router.patch(["/provider/closure", "/admin/providers/:providerId/closure"], async (req, res) => {
+  const access = await getAccess(req, res);
+  if (!access) return;
+  const providerId = req.params.providerId ? Number(req.params.providerId) : access.providerId;
+  if (!Number.isInteger(providerId) || !providerId || (access.role !== "admin" && (access.role !== "provider" || access.providerId !== providerId))) {
+    res.status(403).json({ error: "Access to this provider is required." }); return;
+  }
+  if (typeof req.body?.closed !== "boolean") { res.status(400).json({ error: "Choose whether to close or reopen the shop." }); return; }
+  const provider = await providerCollection.findOneAndUpdate({ id: providerId, removedAt: { $exists: false } },
+    { $set: { closedUntil: req.body.closed ? nextManilaMidnight() : null, updatedAt: new Date().toISOString() } },
+    { returnDocument: "after", projection: { _id: 0 } });
+  if (!provider) { res.status(404).json({ error: "Provider not found." }); return; }
   res.json(GetProviderResponse.parse(provider));
 });
 
@@ -3183,6 +3203,7 @@ router.post("/bookings", async (req, res) => {
     id: parsed.data.providerId,
     active: { $ne: false },
   });
+  if (shopClosed(provider)) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
   const service = provider?.services.find(
     (item) => item.id === parsed.data.serviceId,
   );
@@ -4060,6 +4081,7 @@ router.post("/orders", async (req, res) => {
     res.status(400).json({ error: "Choose a valid provider." });
     return;
   }
+  if (shopClosed(provider)) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
   if (!provider.categories.includes("pet-supplies")) {
     res.status(400).json({ error: "This provider does not offer pet supplies." });
     return;

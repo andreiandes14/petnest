@@ -1,3 +1,4 @@
+import { ShopClosureControl, useShopClosed } from "@/components/shop-closure";
 import { BusinessHours } from "@/components/business-hours";
 import {
   Fragment,
@@ -739,15 +740,16 @@ function ProviderLocation({ provider, distance }: { provider: Pick<Provider, "id
 }
 
 function ProviderCard({ provider, distance, showStartingPrice = true }: { provider: Provider; distance?: number; showStartingPrice?: boolean }) {
+  const closed = useShopClosed(provider.closedUntil);
   const [saved, setSaved] = useState(false);
   const queryString = useSearch();
   const selectedCategory = new URLSearchParams(queryString).get("category");
   return (
     <div className="wavy-shadow">
-      <div className="provider-card surface-card wavy block">
-        <Link href={`/providers/${provider.id}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`}
+      <div className={`provider-card surface-card wavy block ${closed ? "shop-closed" : ""}`}>
+        {!closed ? <Link href={`/providers/${provider.id}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`}
           className="absolute inset-0 z-10" aria-label={`View provider ${provider.name}`}
-          data-testid={`card-provider-${provider.id}`} />
+          data-testid={`card-provider-${provider.id}`} /> : null}
         <div className="provider-media">
           {provider.imageUrl ? (
             <img
@@ -822,11 +824,12 @@ function ProviderCard({ provider, distance, showStartingPrice = true }: { provid
               {money(provider.startingPrice)}
               <span>starting price</span>
             </span> : null}
-            <span className="btn btn-ghost h-9 min-h-0 px-4 text-xs">
+            <span className="btn btn-ghost h-9 min-h-0 px-4 text-xs" aria-disabled={closed}>
               View <ArrowRight size={13} />
             </span>
           </div>
         </div>
+        <div className="shop-closure-overlay" aria-hidden={!closed}><span>Closed for Today</span></div>
       </div>
     </div>
   );
@@ -834,7 +837,7 @@ function ProviderCard({ provider, distance, showStartingPrice = true }: { provid
 
 function Home({ authenticated = true }: { authenticated?: boolean }) {
   const providersQuery = useListProviders(undefined, {
-    query: { queryKey: getListProvidersQueryKey() },
+    query: { queryKey: getListProvidersQueryKey(), refetchInterval: 30000 },
   });
   const summaryQuery = useGetDashboardSummary({
     query: {
@@ -1068,7 +1071,7 @@ function ProvidersPage() {
   );
   const requestParams = origin ? {} : queryParams;
   const query = useListProviders(requestParams, {
-    query: { queryKey: getListProvidersQueryKey(requestParams) },
+    query: { queryKey: getListProvidersQueryKey(requestParams), refetchInterval: 30000 },
   });
   const allProviders: Provider[] = query.data ?? [];
   const providers = origin ? allProviders.filter(provider =>
@@ -3478,6 +3481,7 @@ function ProviderManagementPage() {
     queryKey: ["provider", "profile"],
     queryFn: () => adminRequest<ProviderDetail>("/api/provider/profile"),
     enabled: isProvider,
+    refetchInterval: 30000,
   });
   const [draft, setDraft] = useState<ProviderDetail | null>(null);
   const [serviceForm, setServiceForm] = useState({
@@ -4110,7 +4114,7 @@ function ProviderManagementPage() {
                   <div>
                     <p className="font-semibold">{pet.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      {pet.species} · {pet.breed} · Owner: {pet.ownerName}
+                      {pet.species} · {pet.breed} · Owner: {pet.ownerEmail?.trim() || "Email unavailable"}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       Last service: {pet.lastService} · Last booking: {formatDate(pet.lastBooking)}
@@ -4141,7 +4145,7 @@ function ProviderManagementPage() {
                       {selectedProviderPetQuery.data.pet.name}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Owner: {selectedProviderPetQuery.data.owner.name}
+                      Owner: {selectedProviderPetQuery.data.owner.email?.trim() || "Email unavailable"}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       Last service: {selectedProviderPet.lastService} · Last booking: {formatDate(selectedProviderPet.lastBooking)}
@@ -4217,6 +4221,14 @@ function ProviderManagementPage() {
       ) : null}
       {providerTab === "records" ? null : (
         <>
+          {providerSection === "dashboard" ? <ShopClosureControl closedUntil={draft.closedUntil} save={async closed => {
+            const profile = await adminRequest<ProviderDetail>("/api/provider/closure", { method: "PATCH", body: JSON.stringify({ closed }) });
+            setDraft(profile);
+            queryClient.invalidateQueries({ queryKey: ["provider", "profile"] });
+            queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+            queryClient.invalidateQueries({ queryKey: getGetProviderQueryKey(profile.id) });
+            queryClient.invalidateQueries({ queryKey: ["availability"] });
+          }} /> : null}
           <section className={providerSection === "dashboard" ? "surface-card mt-6 p-6" : "hidden"}>
             <div className="flex items-center justify-between gap-3">
               <div>
