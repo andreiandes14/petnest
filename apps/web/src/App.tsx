@@ -4148,13 +4148,6 @@ function ProviderManagementPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    {assignedCareCategories.includes("vaccination") ? (
-                      <button className="btn btn-secondary" onClick={() => {
-                        setRecordForm({ type: "vaccination", petId: String(selectedProviderPet.id), title: "", date: "", nextDue: "", notes: "" });
-                        setSelectedProviderPet(null);
-                        setShowRecordForm("vaccination");
-                      }}>Set Next Vaccination</button>
-                    ) : null}
                     <button className="modal-close" onClick={() => setSelectedProviderPet(null)} aria-label="Close pet records">
                       <X size={17} />
                     </button>
@@ -5416,34 +5409,6 @@ function ProviderManagementPage() {
       <section className={providerSection === "records" ? "surface-card mt-6 p-6" : "hidden"}>
         <p className="eyebrow">Provider records</p>
         <h2 className="section-title mt-1">Grooming and vaccination history</h2>
-        <div className="mt-4 flex flex-wrap gap-3">
-          {assignedCareCategories.includes("vaccination") ? (
-            <button
-              className="btn btn-secondary"
-              onClick={() => {
-                setRecordForm({ ...recordForm, type: "vaccination" });
-                setShowRecordForm(
-                  showRecordForm === "vaccination" ? null : "vaccination",
-                );
-              }}
-            >
-              + Add vaccination record
-            </button>
-          ) : null}
-          {assignedCareCategories.includes("grooming") ? (
-            <button
-              className="btn btn-secondary"
-              onClick={() => {
-                setRecordForm({ ...recordForm, type: "grooming" });
-                setShowRecordForm(
-                  showRecordForm === "grooming" ? null : "grooming",
-                );
-              }}
-            >
-              + Add grooming record
-            </button>
-          ) : null}
-        </div>
         <RecordCategoryTabs category={recordCategory} select={setRecordCategory} />
         {showRecordForm ? (
           <div className="modal-backdrop" role="presentation">
