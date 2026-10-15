@@ -99,6 +99,7 @@ type Provider = {
   services: ProviderService[];
   products: ProviderProduct[];
   fulfillmentMethods?: FulfillmentMethod[];
+  removedAt?: string;
   active?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -500,6 +501,7 @@ type UserProfile = {
   providerId?: number;
   passwordHash?: string;
   isActive?: boolean;
+  removedAt?: string;
   deactivatedAt?: string;
   createdAt: string;
   updatedAt: string;
@@ -758,12 +760,16 @@ async function getAccess(req: Request, res: Response): Promise<Access | null> {
   }
   const user = await userCollection.findOne({
     id: session.userId,
+    removedAt: { $exists: false },
     isActive: { $ne: false },
   });
   if (!user) {
     res.clearCookie(sessionCookie, { path: "/" });
     res.status(401).json({ error: "Authentication required" });
     return null;
+  }
+  if (user.role === "provider" && !(await providerCollection.findOne({ id: user.providerId, active: { $ne: false }, removedAt: { $exists: false } }))) {
+    res.status(403).json({ error: "Provider access is disabled." }); return null;
   }
   return { userId: user.id, role: user.role, providerId: user.providerId };
 }
@@ -1312,13 +1318,16 @@ router.post("/auth/login", async (req, res) => {
     res.status(400).json({ error: "Email and password are required." });
     return;
   }
-  const user = await userCollection.findOne({ email, isActive: { $ne: false } });
+  const user = await userCollection.findOne({ email, isActive: { $ne: false }, removedAt: { $exists: false } });
   if (
     !user?.passwordHash ||
     !(await verifyPassword(password, user.passwordHash))
   ) {
     res.status(401).json({ error: "Email or password is incorrect." });
     return;
+  }
+  if (user.role === "provider" && !(await providerCollection.findOne({ id: user.providerId, active: { $ne: false }, removedAt: { $exists: false } }))) {
+    res.status(403).json({ error: "Provider access is disabled." }); return;
   }
   await startSession(res, user.id);
   res.json({ user: publicUser(user) });
@@ -1394,6 +1403,7 @@ router.get("/admin/accounts", async (req, res) => {
       {
         role: { $in: ["customer", "provider"] },
         isActive: { $ne: false },
+        removedAt: { $exists: false },
       },
       {
         projection: {
@@ -1406,6 +1416,18 @@ router.get("/admin/accounts", async (req, res) => {
     .toArray();
   res.json(accounts.map((account) => ({ ...account, isActive: true })));
 });
+
+async function removeProviderAccess(providerId: number) {
+  const existing = await providerCollection.findOne({ id: providerId });
+  if (!existing) return null;
+  const now = existing.removedAt ?? new Date().toISOString();
+  const provider = await providerCollection.findOneAndUpdate({ id: providerId },
+    { $set: { active: false, removedAt: now, updatedAt: now } }, { returnDocument: "after", projection: { _id: 0 } });
+  const accounts = await userCollection.find({ role: "provider", providerId }, { projection: { id: 1 } }).toArray();
+  await userCollection.updateMany({ role: "provider", providerId }, { $set: { isActive: false, removedAt: now, updatedAt: now } });
+  await sessionCollection.deleteMany({ userId: { $in: accounts.map(account => account.id) } });
+  return provider;
+}
 
 router.delete("/admin/accounts/:userId", async (req, res) => {
   const access = await requireAdmin(req, res);
@@ -1426,6 +1448,7 @@ router.delete("/admin/accounts/:userId", async (req, res) => {
       { id: userId, role: { $in: ["customer", "provider"] } },
       [{ $set: {
         isActive: false,
+        removedAt: { $ifNull: ["$removedAt", now] },
         deactivatedAt: { $ifNull: ["$deactivatedAt", now] },
         updatedAt: now,
       } }],
@@ -1436,12 +1459,7 @@ router.delete("/admin/accounts/:userId", async (req, res) => {
       return;
     }
     await sessionCollection.deleteMany({ userId: account.id });
-    if (account.role === "provider" && account.providerId) {
-      await providerCollection.updateOne(
-        { id: account.providerId },
-        { $set: { active: false, updatedAt: now } },
-      );
-    }
+    if (account.role === "provider" && account.providerId) await removeProviderAccess(account.providerId);
     await notifyAdmins({
       eventKey: `account:${account.id}:deactivated:${account.deactivatedAt ?? now}`,
       type: "account_deactivated",
@@ -2083,12 +2101,15 @@ router.patch("/provider/profile", async (req, res) => {
 router.get("/admin/providers", async (req, res) => {
   const access = await requireAdmin(req, res);
   if (!access) return;
-  res.json(
-    await providerCollection
-      .find({}, { projection: { _id: 0 } })
-      .sort({ id: 1 })
-      .toArray(),
-  );
+  const [providers, accounts] = await Promise.all([
+    providerCollection.find({ removedAt: { $exists: false } }, { projection: { _id: 0 } }).sort({ id: 1 }).toArray(),
+    userCollection.find({ role: "provider" }, { projection: { providerId: 1, isActive: 1, removedAt: 1 } }).toArray(),
+  ]);
+  res.json(providers.flatMap(provider => {
+    const linked = accounts.filter(account => account.providerId === provider.id);
+    if (linked.length && linked.every(account => account.removedAt)) return [];
+    return [{ ...provider, accountState: !linked.length ? "missing" : linked.some(account => !account.removedAt && account.isActive !== false) ? "active" : "inactive" }];
+  }));
 });
 
 router.post("/admin/providers", async (req, res) => {
@@ -2182,6 +2203,13 @@ router.patch("/admin/providers/:providerId", async (req, res) => {
     res.status(404).json({ error: "Provider not found" });
     return;
   }
+  const linkedAccounts = await userCollection.find({ role: "provider", providerId }).toArray();
+  if (existing.removedAt || (linkedAccounts.length && linkedAccounts.every(account => account.removedAt))) {
+    res.status(409).json({ error: "Removed providers cannot be reactivated through profile editing." }); return;
+  }
+  if (req.body.active === true && !linkedAccounts.some(account => !account.removedAt)) {
+    res.status(409).json({ error: "A linked provider account is required before reactivation." }); return;
+  }
   const input = providerInput(
     (req.body ?? {}) as Record<string, unknown>,
     existing,
@@ -2197,12 +2225,16 @@ router.patch("/admin/providers/:providerId", async (req, res) => {
     {
       $set: {
         ...input,
-        active: req.body.active !== false,
+        active: typeof req.body.active === "boolean" ? req.body.active : existing.active,
         updatedAt: new Date().toISOString(),
       },
     },
     { returnDocument: "after", projection: { _id: 0 } },
   );
+  if (typeof req.body.active === "boolean") {
+    await userCollection.updateMany({ role: "provider", providerId, removedAt: { $exists: false } }, { $set: { isActive: req.body.active, updatedAt: new Date().toISOString() } });
+    if (!req.body.active) await sessionCollection.deleteMany({ userId: { $in: linkedAccounts.map(account => account.id) } });
+  }
   if (
     provider &&
     JSON.stringify([...existing.categories].sort()) !==
@@ -2240,11 +2272,7 @@ router.delete("/admin/providers/:providerId", async (req, res) => {
     res.status(404).json({ error: "Provider not found" });
     return;
   }
-  const provider = await providerCollection.findOneAndUpdate(
-    { id: providerId },
-    { $set: { active: false, updatedAt: new Date().toISOString() } },
-    { returnDocument: "after", projection: { _id: 0 } },
-  );
+  const provider = await removeProviderAccess(providerId);
   if (!provider) {
     res.status(404).json({ error: "Provider not found" });
     return;

@@ -2670,7 +2670,7 @@ function AdminAccountsPage() {
       <p className="eyebrow">Admin workspace</p>
       <h1 className="page-title">Account management.</h1>
       <p className="page-subtitle">
-        Deactivate customer and provider access while preserving historical records.
+        Manage registered accounts while preserving historical records.
       </p>
       <section className="surface-card mt-8 p-6">
         <div className="flex items-center justify-between gap-4">
@@ -2964,7 +2964,10 @@ function AdminBookingsPage() {
   );
 }
 
-type AdminProvider = ProviderDetail & { active?: boolean };
+type AdminProvider = ProviderDetail & {
+  accountState?: "active" | "inactive" | "missing";
+  active?: boolean;
+};
 const emptyProviderForm = {
   name: "",
   email: "",
@@ -3031,6 +3034,7 @@ function AdminProvidersPage() {
       }),
     onSuccess: () => {
       setStatusTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "accounts"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
       queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
     },
@@ -3042,6 +3046,7 @@ function AdminProvidersPage() {
       }),
     onSuccess: () => {
       setRemoveTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "accounts"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "providers"] });
       queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
     },
@@ -3195,6 +3200,7 @@ function AdminProvidersPage() {
                   {provider.categories.join(" · ")} ·{" "}
                   {provider.active === false ? "Inactive" : "Active"}
                 </p>
+                {provider.accountState === "missing" ? <p className="mt-1 text-xs text-muted-foreground">No linked provider account. Review or remove this profile.</p> : provider.accountState === "inactive" ? <p className="mt-1 text-xs text-muted-foreground">Linked account is inactive.</p> : null}
               </div>
               <button
                 className="btn btn-ghost"
@@ -3242,6 +3248,7 @@ function AdminProvidersPage() {
                 : "hidden from new customer bookings"}
               . Historical bookings and pet records remain unchanged.
             </p>
+            {deactivate.isError ? <p className="mt-3 text-sm text-destructive" role="alert">{deactivate.error.message}</p> : null}
             <div className="mt-6 flex gap-2">
               <button
                 className="btn btn-ghost"
@@ -3280,8 +3287,9 @@ function AdminProvidersPage() {
             </h2>
             <p className="mt-3 text-sm text-muted-foreground">
               Remove {removeTarget.name} from the provider directory? Historical
-              bookings, pet records, and service history will remain intact.
+              bookings, pet records, orders, payments, and service history will remain intact. Provider login and access will be disabled.
             </p>
+            {removeProvider.isError ? <p className="mt-3 text-sm text-destructive" role="alert">{removeProvider.error.message}</p> : null}
             <div className="mt-6 flex gap-2">
               <button
                 className="btn btn-ghost"
@@ -3294,7 +3302,7 @@ function AdminProvidersPage() {
                 disabled={removeProvider.isPending}
                 onClick={() => removeProvider.mutate(removeTarget.id)}
               >
-                Remove provider
+                Confirm Removal
               </button>
             </div>
           </div>
