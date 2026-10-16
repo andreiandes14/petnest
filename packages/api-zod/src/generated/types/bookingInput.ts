@@ -7,6 +7,7 @@
  */
 
 export interface BookingInput {
+  depositAcknowledged?: boolean;
   providerId: number;
   serviceId: number;
   petId: number;

@@ -642,6 +642,27 @@
   display: flex;
   gap: 10px;
 }
+.booking-header-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+}
+.booking-service-filter {
+  display: grid;
+  gap: 6px;
+  width: 190px;
+  max-width: 100%;
+}
+.booking-service-filter .input {
+  border-color: hsl(var(--primary) / 0.25);
+  border-radius: 14px;
+}
+@media (max-width: 767px) {
+  .booking-header-controls { width: 100%; align-items: flex-start; }
+  .booking-header-controls .page-head-counts { flex-wrap: wrap; }
+  .booking-service-filter { width: 100%; }
+}
 .head-count {
   padding: 10px 16px;
   border-radius: 999px;
@@ -1835,6 +1856,11 @@ textarea.input {
   background: hsl(356 76% 93%);
   color: hsl(356 66% 40%);
 }
+.booking-status.status-cancelled {
+  background: hsl(356 76% 93%);
+  color: hsl(356 66% 40%);
+  border: 1px solid hsl(356 66% 82%);
+}
 
 /* --- Stats --- */
 .stat-grid {
@@ -2709,4 +2735,43 @@ textarea.input {
 .shop-closed .provider-foot .btn { opacity: 0.5; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   .shop-closure-overlay { transition: none; }
+}
+
+.status-awaiting_payment, .status-payment_processing { background: hsl(var(--brand-sun) / 0.35); color: hsl(35 92% 30%); }
+.status-no_show { background: hsl(356 76% 93%); color: hsl(356 66% 40%); }
+
+/* Body-level portal: never clipped by booking lists or transformed cards. */
+.booking-deposit-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: hsl(250 30% 25% / 0.55);
+}
+.booking-deposit-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 101;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  padding: 24px;
+  border: 1px solid hsl(var(--primary) / 0.2);
+  border-radius: 24px;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  box-shadow: 0 26px 70px hsl(250 30% 25% / 0.32);
+}
+.booking-deposit-title { flex-shrink: 0; margin: 0; }
+.booking-deposit-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-top: 16px; }
+.booking-deposit-actions { flex-shrink: 0; display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px; }
+@media (max-width: 479px) {
+  .booking-deposit-dialog { padding: 20px; border-radius: 20px; }
+  .booking-deposit-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .booking-deposit-actions .btn { width: 100%; }
 }

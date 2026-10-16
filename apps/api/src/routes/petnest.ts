@@ -1,3 +1,9 @@
+import { reviewEligible, validReviewInput } from "../lib/reviews.js";
+import { BOOKING_DEPOSIT } from "../../../../shared/booking-deposit.js";
+import { withRecordPetNames } from "../lib/record-pet-names.js";
+import { withVaccinationCourseStatus } from "../lib/booking-course-status.js";
+import { reconcileCheckout } from "../lib/paymongo.js";
+import { bookingPaymentRepository } from "../lib/booking-payments.js";
 import { shopClosed, nextManilaMidnight } from "../../../../shared/shop-closure.js";
 import { parseBusinessHours, bookingDuration, businessHoursMessage } from "../../../../shared/business-hours.js";
 import { Router, type IRouter, type Request, type Response } from "express";
@@ -15,7 +21,7 @@ import { detectCity, normalizeCity } from "../../../../shared/city-location.js";
 import { promisify } from "node:util";
 import { vaccinationReturnWindow } from "../../../../shared/vaccination-window.js";
 import { vaccinationReturnTarget } from "../lib/vaccination-followup.js";
-import { createOrderCheckout, processPaidWebhook, verifyPaymongoSignature, PaymentError, paymentWebUrl, deliverPaymentNotifications, type PaymentOrder, type PaymentFields } from "../lib/paymongo.js";
+import { createOrderCheckout, processPaidWebhook, verifyPaymongoSignature, PaymentError, paymentWebUrl, deliverPaymentNotifications, type PaymentOrder, type PaymentFields, paymentEventReference } from "../lib/paymongo.js";
 import {
   MongoClient,
   type Collection,
@@ -131,12 +137,18 @@ type CareRecord = {
   time?: string | null;
   nextDue?: string | null;
   expectedReturnMonths?: number;
-  vaccinationProgress?: "ongoing" | "completed" | null;
+  vaccinationProgress?: "ongoing" | "completed" | "cancelled" | null;
   bookingId?: number;
   serviceCategory?: "grooming" | "vaccination";
 };
 
 type Booking = {
+  depositRequired?: boolean;
+  paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
+  bookingDepositPaid?: number;
+  remainingServiceBalance?: number;
+  noShowAt?: string;
+  depositForfeitedAt?: string;
   id: number;
   providerId: number;
   providerName: string;
@@ -482,7 +494,13 @@ type StoredCareRecord = CareRecord & {
   createdAt?: string;
   updatedAt?: string;
 };
-type StoredBooking = Booking & {
+type StoredBooking = Booking & PaymentFields & {
+  depositDisposition?: "credited" | "forfeited";
+  depositCreditedAt?: string;
+  noShowProviderId?: number;
+  noShowMarkedByUserId?: string;
+  depositAcknowledgedAt?: string;
+  depositPolicyVersion?: number;
   ownerId: string;
   archived?: boolean;
   createdAt?: string;
@@ -577,6 +595,18 @@ const client = new MongoClient(mongoUri);
 const database = client.db();
 const providerCollection: Collection<Provider> =
   database.collection("providers");
+type VerifiedReview = { id: string; bookingId: number; ownerId: string; providerId: number; rating: number; comment: string; createdAt: string };
+const reviewCollection = database.collection<VerifiedReview>("reviews");
+async function withReviewRatings<T extends { id: number; rating: number; reviewCount: number }>(providers: T[]) {
+  const totals = await reviewCollection.aggregate<{ _id: number; count: number; total: number }>([
+    { $match: { providerId: { $in: providers.map(p => p.id) } } },
+    { $group: { _id: "$providerId", count: { $sum: 1 }, total: { $sum: "$rating" } } },
+  ]).toArray();
+  return providers.map(p => {
+    const added = totals.find(t => t._id === p.id);
+    return { ...p, reviewCount: added?.count ?? 0, rating: added ? added.total / added.count : 0 };
+  });
+}
 const petCollection: Collection<OwnedPet> = database.collection("pets");
 const recordCollection: Collection<StoredCareRecord> =
   database.collection("careRecords");
@@ -1596,6 +1626,57 @@ router.patch("/customer/profile", async (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+router.get("/providers/:providerId/reviews", async (req, res) => {
+  const providerId = Number(req.params.providerId);
+  if (!Number.isSafeInteger(providerId) || providerId < 1) { res.status(400).json({ error: "Choose a valid provider." }); return; }
+  const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false }, removedAt: { $exists: false } });
+  if (!provider) { res.status(404).json({ error: "Provider not found." }); return; }
+  const reviews = await reviewCollection.find({ providerId }).sort({ createdAt: -1, id: -1 }).toArray();
+  const [customers, bookings] = reviews.length ? await Promise.all([
+    userCollection.find({ id: { $in: [...new Set(reviews.map(r => r.ownerId))] } }, { projection: { id: 1, name: 1, removedAt: 1 } }).toArray(),
+    bookingCollection.find({ id: { $in: reviews.map(r => r.bookingId) }, providerId }, { projection: { id: 1, ownerId: 1, serviceCategory: 1 } }).toArray(),
+  ]) : [[], []];
+  res.json({ providerName: provider.name, averageRating: reviews.length ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length : 0,
+    reviewCount: reviews.length, reviews: reviews.map(review => {
+      const customer = customers.find(c => c.id === review.ownerId && !c.removedAt);
+      const booking = bookings.find(b => b.id === review.bookingId && b.ownerId === review.ownerId);
+      return { id: review.id, rating: review.rating, date: review.createdAt, comment: review.comment,
+        customerName: customer?.name?.trim() || "PetNest customer",
+        serviceCategory: booking && ["grooming", "vaccination"].includes(booking.serviceCategory) ? booking.serviceCategory : null };
+    }) });
+});
+
+router.get("/reviews/eligibility", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const completed = await bookingCollection.find({ ownerId: access.userId, status: "completed", serviceCategory: { $in: ["grooming", "vaccination"] } }).toArray();
+  const reviewed = completed.length ? await reviewCollection.find({ bookingId: { $in: completed.map(b => b.id) } }, { projection: { bookingId: 1 } }).toArray() : [];
+  const ids = new Set(reviewed.map(r => r.bookingId));
+  res.json(completed.filter(b => !ids.has(b.id)).map(b => ({ bookingId: b.id, providerId: b.providerId, serviceName: b.serviceName, date: b.date })));
+});
+
+router.post("/providers/:providerId/reviews", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const providerId = Number(req.params.providerId);
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (!Number.isSafeInteger(providerId) || providerId < 1 || !validReviewInput(body)) {
+    res.status(400).json({ error: "Choose a completed booking, a rating from 1 to 5, and a review up to 1000 characters." }); return;
+  }
+  const booking = await bookingCollection.findOne({ id: Number(body.bookingId), ownerId: access.userId, providerId });
+  if (!reviewEligible(booking, access.userId, providerId)) { res.status(403).json({ error: "Only your completed Grooming or Vaccination booking with this provider can be reviewed." }); return; }
+  try {
+    // MongoDB, not a client-side check, prevents concurrent duplicate submissions.
+    await reviewCollection.createIndex({ bookingId: 1 }, { unique: true });
+    await reviewCollection.insertOne({ id: randomUUID(), bookingId: booking!.id, ownerId: access.userId, providerId,
+      rating: Number(body.rating), comment: String(body.comment).trim(), createdAt: new Date().toISOString() });
+    res.status(201).json({ saved: true });
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+    res.status(code === 11000 ? 409 : 503).json({ error: code === 11000 ? "This booking has already been reviewed." : "Review could not be saved. Please try again." });
+  }
+});
+
 router.get("/providers", async (req, res) => {
   const parsed = ListProvidersQueryParams.safeParse(req.query);
   if (!parsed.success) {
@@ -1620,7 +1701,7 @@ router.get("/providers", async (req, res) => {
     .find(filter, { projection: { _id: 0, services: 0, products: 0 } })
     .sort({ id: 1 })
     .toArray();
-  res.json(ListProvidersResponse.parse(providers));
+  res.json(ListProvidersResponse.parse(await withReviewRatings(providers)));
 });
 
 router.get("/providers/:providerId", async (req, res) => {
@@ -1728,7 +1809,7 @@ router.get("/providers/:providerId", async (req, res) => {
   if (shopClosed(provider)) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
   res.json(
     GetProviderResponse.parse({
-      ...provider,
+      ...(await withReviewRatings([provider]))[0],
       services: provider.services.filter((service) =>
         provider.categories.includes(service.category),
       ),
@@ -1773,7 +1854,7 @@ router.get("/providers/:providerId/availability", async (req, res) => {
   const monthBookings = await bookingCollection.find({
     providerId,
     date: { $gte: `${month}-01`, $lte: `${month}-${String(lastDate).padStart(2, "0")}` },
-    status: { $nin: ["completed", "cancelled"] },
+    status: { $nin: ["completed", "cancelled", "no_show"] },
   }).project({ date: 1, time: 1, serviceName: 1, serviceCategory: 1 }).toArray();
   const current = manilaNow();
   const dates: Record<string, string[]> = {};
@@ -2727,7 +2808,7 @@ router.delete("/pets/:petId", async (req, res) => {
     await bookingCollection.findOne({
       petId,
       ownerId: access.userId,
-      status: { $nin: ["completed", "cancelled"] },
+      status: { $nin: ["completed", "cancelled", "no_show"] },
     })
   ) {
     res
@@ -2793,7 +2874,7 @@ router.get("/pets/:petId/records", async (req, res) => {
 });
 
 async function vaccinationFollowupService(record: StoredCareRecord) {
-  if (record.vaccinationProgress === "completed" || record.archived) return null;
+  if (["completed", "cancelled"].includes(record.vaccinationProgress ?? "") || record.archived) return null;
   const booking = record.bookingId ? await bookingCollection.findOne({
     id: record.bookingId, ownerId: record.ownerId, petId: record.petId,
     status: "completed", serviceCategory: "vaccination",
@@ -2853,7 +2934,11 @@ router.get("/provider/records", async (req, res) => {
     )
     .sort({ date: -1 })
     .toArray();
-  res.json(records);
+  const pets = records.length ? await petCollection.find({
+    id: { $in: [...new Set(records.map(record => record.petId))] },
+    ownerId: { $in: [...new Set(records.map(record => record.ownerId))] },
+  }, { projection: { _id: 0, id: 1, ownerId: 1, name: 1 } }).toArray() : [];
+  res.json(withRecordPetNames(records, pets));
 });
 
 router.get("/provider/pets", async (req, res) => {
@@ -3074,18 +3159,30 @@ router.patch("/provider/records/:recordId", async (req, res) => {
     res.status(409).json({ error: "This vaccination course is completed and cannot be edited or scheduled." }); return;
   }
   if (body.vaccinationProgress !== undefined) {
-    if (existing.type !== "vaccination" || body.vaccinationProgress !== "completed") {
-      res.status(400).json({ error: "Only vaccination course completion can be set here." }); return;
+    if (existing.type !== "vaccination" || (body.vaccinationProgress !== "completed" && body.vaccinationProgress !== "cancelled")) {
+      res.status(400).json({ error: "Choose vaccination course completion or cancellation." }); return;
     }
-    // Idempotent and atomic: completion never changes appointments or recommendations.
-    if (existing.vaccinationProgress === "completed") { res.json(existing); return; }
-    const completed = await recordCollection.findOneAndUpdate(
-      { id: recordId, providerId: access.providerId, archived: { $ne: true }, vaccinationProgress: { $ne: "completed" } },
-      { $set: { vaccinationProgress: "completed", updatedAt: new Date().toISOString() } },
+    if (existing.vaccinationProgress === body.vaccinationProgress) { res.json(existing); return; }
+    if (["completed", "cancelled"].includes(existing.vaccinationProgress ?? "")) {
+      res.status(409).json({ error: "This vaccination course has already ended." }); return;
+    }
+    // Only course progress changes; appointments, recommendations and payments stay intact.
+    const changed = await recordCollection.findOneAndUpdate(
+      { id: recordId, providerId: access.providerId, archived: { $ne: true }, vaccinationProgress: { $nin: ["completed", "cancelled"] } },
+      { $set: { vaccinationProgress: body.vaccinationProgress, updatedAt: new Date().toISOString() } },
       { returnDocument: "after", projection: { _id: 0 } },
     );
-    res.json(completed ?? await recordCollection.findOne({ id: recordId, providerId: access.providerId }));
+    if (!changed) {
+      const latest = await recordCollection.findOne({ id: recordId, providerId: access.providerId });
+      if (latest?.vaccinationProgress === body.vaccinationProgress) { res.json(latest); return; }
+      res.status(409).json({ error: "The vaccination course changed. Please refresh the records." }); return;
+    }
+    res.json(changed);
     return;
+  }
+  if (existing.vaccinationProgress === "cancelled" &&
+      (body.nextDue !== undefined || body.expectedReturnMonths !== undefined || body.date !== undefined)) {
+    res.status(409).json({ error: "Cancelled vaccination courses cannot be scheduled." }); return;
   }
   const effectiveDate = (changes.date as string | undefined) ?? existing.date;
   if (body.expectedReturnMonths !== undefined || (body.date !== undefined && existing.expectedReturnMonths)) {
@@ -3108,7 +3205,7 @@ router.patch("/provider/records/:recordId", async (req, res) => {
     changes.expectedReturnMonths = undefined;
   }
   const record = await recordCollection.findOneAndUpdate(
-    { id: recordId, providerId: access.providerId, archived: { $ne: true }, ...(existing.type === "vaccination" ? { vaccinationProgress: { $ne: "completed" } } : {}) },
+    { id: recordId, providerId: access.providerId, archived: { $ne: true }, ...(existing.type === "vaccination" ? { vaccinationProgress: { $nin: (body.nextDue !== undefined || body.expectedReturnMonths !== undefined || body.date !== undefined) ? ["completed", "cancelled"] : ["completed"] } } : {}) },
     { $set: Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)),
       ...(body.nextDue !== undefined ? { $unset: { expectedReturnMonths: "" } } : {}) },
     { returnDocument: "after", projection: { _id: 0 } },
@@ -3149,7 +3246,14 @@ router.get("/bookings", async (req, res) => {
     .find({ ownerId: access.userId }, { projection: { _id: 0, ownerId: 0 } })
     .sort({ id: -1 })
     .toArray();
-  res.json(ListBookingsResponse.parse(bookings));
+  await Promise.all(bookings.filter(booking => booking.depositRequired && booking.paymentStatus === "PAID" && booking.paymentNotificationStatus === "PENDING").map(async booking => {
+    const repo = bookingPaymentRepository(bookingCollection);
+    const payment = await repo.findOne({ id: booking.id });
+    if (payment) await deliverPaymentNotifications(repo, payment, notifyPaidBooking);
+  }));
+  const vaccinationPetIds = [...new Set(bookings.filter(b => b.serviceCategory === "vaccination").map(b => b.petId))];
+  const courses = vaccinationPetIds.length ? await recordCollection.find({ ownerId: access.userId, petId: { $in: vaccinationPetIds }, type: "vaccination" }).toArray() : [];
+  res.json(ListBookingsResponse.parse(withVaccinationCourseStatus(bookings, courses, access.userId)));
 });
 
 router.get("/bookings/:bookingId", async (req, res) => {
@@ -3194,6 +3298,7 @@ router.post("/bookings", async (req, res) => {
       .json({ error: "Choose a valid booking date that is today or later." });
     return;
   }
+  if (parsed.data.depositAcknowledged !== true) { res.status(400).json({ error: "Please acknowledge the booking deposit policy before submitting." }); return; }
   const requestedStart = timeToMinutes(parsed.data.time);
   if (requestedStart === null) {
     res.status(400).json({ error: "Choose a valid booking time." });
@@ -3233,6 +3338,9 @@ router.post("/bookings", async (req, res) => {
       .json({ error: "This service is not offered by the provider." });
     return;
   }
+  if (!Number.isFinite(service.price) || service.price < BOOKING_DEPOSIT) {
+    res.status(409).json({ error: "Services priced below PHP 50 cannot accept a PHP 50 booking deposit. Please contact the provider." }); return;
+  }
   const current = manilaNow();
   if (parsed.data.date === current.date && requestedStart <= current.minutes) {
     res.status(409).json({ error: "Choose a time later than the current time." });
@@ -3267,7 +3375,7 @@ router.post("/bookings", async (req, res) => {
       });
       return;
     }
-    if (service.category === "vaccination" && (record.vaccinationProgress === "completed" || record.archived)) {
+    if (service.category === "vaccination" && (["completed", "cancelled"].includes(record.vaccinationProgress ?? "") || record.archived)) {
       res.status(409).json({ error: "This vaccination course is completed or archived and cannot be booked for follow-up." }); return;
     }
     if (service.category === "vaccination" && record.nextDue) {
@@ -3293,7 +3401,7 @@ router.post("/bookings", async (req, res) => {
   try {
   if (service.category === "vaccination" && parsed.data.recordId !== null) {
     const currentRecord = await recordCollection.findOne({ id: parsed.data.recordId, petId: pet.id, ownerId: access.userId, type: "vaccination" });
-    if (!currentRecord || currentRecord.vaccinationProgress === "completed" || currentRecord.archived) {
+    if (!currentRecord || ["completed", "cancelled"].includes(currentRecord.vaccinationProgress ?? "") || currentRecord.archived) {
       res.status(409).json({ error: "This vaccination record is no longer eligible for follow-up." }); return;
     }
   }
@@ -3301,7 +3409,7 @@ router.post("/bookings", async (req, res) => {
     .find({
       providerId: provider.id,
       date: parsed.data.date,
-      status: { $nin: ["completed", "cancelled"] },
+      status: { $nin: ["completed", "cancelled", "no_show"] },
     })
     .project({ time: 1, serviceName: 1, serviceCategory: 1 })
     .toArray();
@@ -3337,6 +3445,7 @@ router.post("/bookings", async (req, res) => {
     date: parsed.data.date,
     time: parsed.data.time,
     status: "pending",
+    depositRequired: true, paymentStatus: "UNPAID", depositAcknowledgedAt: new Date().toISOString(), depositPolicyVersion: 2,
     price: service.price,
     ownerId: access.userId,
     createdAt: new Date().toISOString(),
@@ -3395,7 +3504,7 @@ router.post("/bookings/:bookingId/cancellation-request", async (req, res) => {
     return;
   }
   if (
-    ["completed", "cancelled", "cancellation_pending"].includes(booking.status)
+    ["completed", "cancelled", "no_show", "cancellation_pending"].includes(booking.status)
   ) {
     res.status(409).json({
       error: "This booking cannot accept another cancellation request.",
@@ -3547,6 +3656,7 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
   const allowedStatuses = [
     "confirmed",
     "completed",
+    "no_show",
     "approve_cancellation",
     "reject_cancellation",
   ];
@@ -3596,7 +3706,7 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
       });
       return;
     }
-    if (["completed", "cancelled"].includes(current.status)) {
+    if (["completed", "cancelled", "no_show"].includes(current.status)) {
       res
         .status(409)
         .json({ error: "Completed or cancelled bookings cannot be changed." });
@@ -3614,10 +3724,26 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
         .json({ error: "Only confirmed bookings can be completed." });
       return;
     }
-    update = { status, updatedAt: new Date().toISOString() };
+    if (current.depositRequired && ["completed", "no_show"].includes(status) && current.paymentStatus !== "PAID") {
+      res.status(409).json({ error: "The booking deposit must be verified before this action." }); return;
+    }
+    if (status === "no_show") {
+      if (current.cancellationReason) { res.status(409).json({ error: "This booking includes prior cancellation notice. Apply the separate cancellation and refund policy instead." }); return; }
+      if (req.body.noShowWithoutNotice !== true) { res.status(400).json({ error: "Confirm that the customer failed to attend without prior notice." }); return; }
+      const now = manilaNow();
+      const start = timeToMinutes(current.time);
+      if (current.status !== "confirmed" || start === null || current.date > now.date || (current.date === now.date && start > now.minutes)) {
+        res.status(409).json({ error: "Only a confirmed appointment whose scheduled time has arrived can be marked No-Show." }); return;
+      }
+    }
+    const credit = status === "completed" && current.depositRequired && current.paymentStatus === "PAID"
+      ? { depositDisposition: "credited" as const, depositCreditedAt: new Date().toISOString(), remainingServiceBalance: Math.max(0, current.price - BOOKING_DEPOSIT) } : {};
+    update = { ...credit, status: status === "confirmed" && current.depositRequired ? "awaiting_payment" : status, updatedAt: new Date().toISOString(),
+      ...(status === "no_show" ? { noShowAt: new Date().toISOString(), noShowProviderId: access.providerId, noShowMarkedByUserId: access.userId, remainingServiceBalance: 0, ...(current.depositRequired && current.paymentStatus === "PAID" ? { depositForfeitedAt: new Date().toISOString(), depositDisposition: "forfeited" } : {}) } : {}) };
+
   }
   const booking = await bookingCollection.findOneAndUpdate(
-    { id: bookingId, providerId: access.providerId },
+    { id: bookingId, providerId: access.providerId, status: current.status },
     { $set: update },
     { returnDocument: "after", projection: { _id: 0 } },
   );
@@ -3658,12 +3784,14 @@ router.patch("/provider/bookings/:bookingId/status", async (req, res) => {
       type: `booking_${status}`,
       message:
         status === "confirmed"
-          ? `Your ${bookingKind} booking has been confirmed.`
+          ? booking.depositRequired ? `Your ${bookingKind} booking was accepted. Pay the PHP 50 deposit to confirm the appointment.` : `Your ${bookingKind} booking has been confirmed.`
           : `Your ${bookingKind} booking has been completed.`,
       relatedRecordId: booking.id,
       relatedRecordType: "booking",
       href: "/bookings",
     });
+  } else if (status === "no_show") {
+    await createNotification({ eventKey: `booking:${booking.id}:no-show`, recipientUserId: booking.ownerId, recipientRole: "customer", type: "booking_no_show", message: `Your ${bookingKind} appointment was marked No-Show by the provider.`, relatedRecordId: booking.id, relatedRecordType: "booking", href: "/bookings" });
   } else if (status === "approve_cancellation" || status === "reject_cancellation") {
     const approved = status === "approve_cancellation";
     await createNotification({
@@ -3704,7 +3832,7 @@ router.patch("/provider/bookings/:bookingId/archive", async (req, res) => {
   }
   if (
     req.body.archived &&
-    !["completed", "cancelled"].includes(existing.status.trim().toLowerCase())
+    !["completed", "cancelled", "no_show"].includes(existing.status.trim().toLowerCase())
   ) {
     res.status(409).json({ error: "Only completed or cancelled bookings can be archived." });
     return;
@@ -3765,6 +3893,40 @@ async function notifyPaidOrder(order: PaymentOrder) {
 
 }
 
+async function notifyPaidBooking(payment: PaymentOrder) {
+  await createNotification({ eventKey: `booking:${payment.id}:deposit-paid`, recipientUserId: payment.ownerId, recipientRole: "customer", type: "booking_deposit_paid", message: `Your booking #${payment.id} deposit is paid and the appointment is confirmed.`, relatedRecordId: payment.id, relatedRecordType: "booking", href: "/bookings" }, true);
+  const account = await userCollection.findOne({ role: "provider", providerId: payment.providerId, isActive: { $ne: false } });
+  if (account) await createNotification({ recipientUserId: account.id, recipientRole: "provider", eventKey: `booking:${payment.id}:deposit-paid`, type: "booking_deposit_paid", message: `Booking #${payment.id} deposit is paid and the appointment is confirmed.`, relatedRecordId: payment.id, relatedRecordType: "booking", href: "/provider/bookings" }, true);
+}
+router.post("/bookings/:bookingId/payment/verify", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const id = Number(req.params.bookingId);
+  if (!Number.isSafeInteger(id) || id < 1) { res.status(400).json({ error: "Choose a valid booking." }); return; }
+  try {
+    res.json(await reconcileCheckout(bookingPaymentRepository(bookingCollection), id, access.userId, process.env.PAYMONGO_SECRET_KEY, notifyPaidBooking));
+  } catch (error) {
+    res.status(error instanceof PaymentError ? error.status : 503).json({ error: error instanceof PaymentError ? error.message : "Payment verification is delayed. Please check again shortly; do not pay again." });
+  }
+});
+
+router.post("/bookings/:bookingId/payment", async (req, res) => {
+  const access = await requireCustomer(req, res);
+  if (!access) return;
+  const id = Number(req.params.bookingId);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Choose a valid booking." }); return; }
+  try {
+    const booking = await bookingCollection.findOne({ id, ownerId: access.userId });
+    if (!booking) throw new PaymentError(404, "Booking not found.");
+    if (!booking.depositRequired || booking.status !== "awaiting_payment") throw new PaymentError(409, "Only accepted, unpaid booking deposits can be paid.");
+    if (booking.paymongoCheckoutSessionId) {
+      const verified = await reconcileCheckout(bookingPaymentRepository(bookingCollection), id, access.userId, process.env.PAYMONGO_SECRET_KEY, notifyPaidBooking);
+      if (verified.paid) throw new PaymentError(409, "This booking is already paid. Please refresh your bookings.");
+    }
+    res.json(await createOrderCheckout(bookingPaymentRepository(bookingCollection), id, access.userId, { secretKey: process.env.PAYMONGO_SECRET_KEY, webUrl: paymentWebUrl(process.env) }));
+  } catch (error) { res.status(error instanceof PaymentError ? error.status : 503).json({ error: error instanceof PaymentError ? error.message : "Booking payment could not be prepared. Please try again." }); }
+});
+
 router.get("/orders", async (req, res) => {
   const access = await requireCustomer(req, res);
   if (!access) return;
@@ -3810,7 +3972,9 @@ router.post("/webhooks/paymongo", async (req, res) => {
     try { payload = JSON.parse(req.body.toString("utf8")); }
     catch { throw new PaymentError(400, "Invalid payment payload."); }
     stage = "payment_validation_or_persistence";
-    const result = await processPaidWebhook(orderCollection, payload, notifyPaidOrder);
+    const result = paymentEventReference(payload).startsWith("PETNEST-BOOKING-")
+      ? await processPaidWebhook(bookingPaymentRepository(bookingCollection), payload, notifyPaidBooking)
+      : await processPaidWebhook(orderCollection, payload, notifyPaidOrder);
     if (result?.notificationsPending) req.log?.warn({ stage: "payment_notifications" }, "Payment saved; notification delivery deferred");
     res.json({ received: true });
   } catch (error) {
@@ -4263,7 +4427,7 @@ router.get("/dashboard/summary", async (req, res) => {
     petCollection.countDocuments({ ownerId: access.userId }),
     bookingCollection.countDocuments({
       ownerId: access.userId,
-      status: { $nin: ["completed", "cancelled"] },
+      status: { $nin: ["completed", "cancelled", "no_show"] },
     }),
     recordCollection.countDocuments({ ownerId: access.userId }),
     bookingCollection.findOne(

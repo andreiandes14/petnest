@@ -404,7 +404,7 @@ components:
         status: { type: string }
         notes: { type: string }
         nextDue: { type: [string, "null"] }
-        vaccinationProgress: { type: [string, "null"], enum: [ongoing, completed, null] }
+        vaccinationProgress: { type: [string, "null"], enum: [ongoing, completed, cancelled, null] }
         expectedReturnMonths: { type: integer, minimum: 1, maximum: 120 }
         time: { type: [string, "null"] }
         bookingId: { type: number }
@@ -423,6 +423,7 @@ components:
       type: object
       required: [providerId, serviceId, petId, recordId, date, time]
       properties:
+        depositAcknowledged: { type: boolean }
         providerId: { type: number }
         serviceId: { type: number }
         petId: { type: number }
@@ -448,6 +449,14 @@ components:
           price,
         ]
       properties:
+        vaccinationCourseStatus: { type: string, enum: [ongoing, completed, cancelled], readOnly: true }
+        depositRequired: { type: boolean }
+        paymentStatus: { type: string, enum: [UNPAID, PENDING, PAID, FAILED, CANCELLED] }
+        paymentAttemptState: { type: string, enum: [CREATING, ACTIVE, UNCERTAIN, FAILED, PAID] }
+        bookingDepositPaid: { type: number }
+        remainingServiceBalance: { type: number }
+        noShowAt: { type: string }
+        depositForfeitedAt: { type: string }
         id: { type: number }
         providerId: { type: number }
         providerName: { type: string }

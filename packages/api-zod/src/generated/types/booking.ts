@@ -9,6 +9,15 @@ import type { BookingCancellationDecision } from './bookingCancellationDecision.
 import type { BookingServiceCategory } from './bookingServiceCategory.js';
 
 export interface Booking {
+  vaccinationCourseStatus?: "ongoing" | "completed" | "cancelled";
+  depositRequired?: boolean;
+  paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
+  paymentAttemptState?: "CREATING" | "ACTIVE" | "UNCERTAIN" | "FAILED" | "PAID";
+  bookingDepositPaid?: number;
+  remainingServiceBalance?: number;
+  noShowAt?: string;
+  depositForfeitedAt?: string;
+
   id: number;
   providerId: number;
   providerName: string;

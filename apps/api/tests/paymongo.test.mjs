@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const source = readFileSync(new URL('../src/lib/paymongo.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-const { createOrderCheckout, processPaidWebhook, verifyPaymongoSignature, orderLineItems, checkoutEligible, paymentWebUrl, deliverPaymentNotifications } =
+const { paymentEventReference, createOrderCheckout, processPaidWebhook, verifyPaymongoSignature, orderLineItems, checkoutEligible, paymentWebUrl, deliverPaymentNotifications } =
   await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
 // Synthetic fixtures only. Never load .env, call PayMongo, or touch the real database in these tests.
 const config = { secretKey: 'sk_test_synthetic_fixture', webUrl: 'http://localhost:5173' };
@@ -169,7 +169,7 @@ function paymentRoutes(repo, calls=[], webhookSecret=undefined) {
     router:{post:(path,handler)=>registered.set(path,handler)},Buffer,JSON,Number,String,
     process:{env:{PAYMONGO_SECRET_KEY:config.secretKey,PAYMONGO_WEBHOOK_SECRET:webhookSecret,NODE_ENV:'development'}},
     requireCustomer:async(req,res)=>{if(req.customer)return{userId:req.customer,role:'customer'};res.status(401).json({error:'Authentication required'});return null;},
-    orderCollection:repo,PaymentError:(awaitedModule.PaymentError),verifyPaymongoSignature,processPaidWebhook,paymentWebUrl,deliverPaymentNotifications,
+    paymentEventReference,orderCollection:repo,PaymentError:(awaitedModule.PaymentError),verifyPaymongoSignature,processPaidWebhook,paymentWebUrl,deliverPaymentNotifications,
     createOrderCheckout:(orders,id,user,configuration)=>createOrderCheckout(orders,id,user,configuration,provider(calls)),
     createNotification:async(input,strict)=>{assert.equal(strict,true);notifications.set(`${input.recipientUserId}:${input.eventKey}`,input);},
     userCollection:{findOne:async()=>({id:'provider-account'})},

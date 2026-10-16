@@ -1,3 +1,5 @@
+import { withRecordPetNames } from '../apps/api/src/lib/record-pet-names.ts';
+import { BOOKING_DEPOSIT } from '../shared/booking-deposit.ts';
 import { shopClosed } from '../shared/shop-closure.ts';
 import { parseBusinessHours, bookingDuration } from '../shared/business-hours.ts';
 import assert from 'node:assert/strict';
@@ -54,6 +56,7 @@ const matches = (value, filter) => Object.entries(filter).every(([key, wanted]) 
   return value[key] === wanted;
 });
 const deps = {
+  withRecordPetNames,
   router: { get(path, fn) { handlers.set(path, fn); }, post(path, fn) { handlers.set(path, fn); }, patch(path, fn) { handlers.set(path, fn); } },
   requireCustomer: async () => ({ userId: 'customer' }), requireProvider: async () => ({ providerId: providerAccess }),
   providerCollection: { async findOne(filter) { return providers.find(item => matches(item, filter)) ?? null; } },
@@ -68,8 +71,8 @@ const deps = {
     find(filter) { return { project() { return this; }, sort() { return this; }, async toArray() { return bookings.filter(item => matches(item, filter)); } }; },
     async insertOne(booking) { bookings.push(booking); },
   },
-  petCollection: { async findOne(filter) { return filter.id === 9 && filter.ownerId === 'customer' ? { id: 9, name: 'Pet' } : null; } },
-  shopClosed, bookingDuration, vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, GetPetRecordsParams, GetPetRecordsResponse, CreateBookingBody, CreateBookingResponse,
+  petCollection: { find() { return { async toArray() { return [{ id: 9, ownerId: 'customer', name: 'Pet' }]; } }; }, async findOne(filter) { return filter.id === 9 && filter.ownerId === 'customer' ? { id: 9, name: 'Pet' } : null; } },
+  BOOKING_DEPOSIT, shopClosed, bookingDuration, vaccinationReturnWindow, vaccinationReturnTarget, GetProviderResponse, GetPetRecordsParams, GetPetRecordsResponse, CreateBookingBody, CreateBookingResponse,
   assignedCareCategories: provider => provider?.categories.filter(category => ["grooming", "vaccination"].includes(category)) ?? [],
   ensureCompletedBookingRecord: async () => {},
   ...scheduling, manilaNow,
@@ -96,7 +99,7 @@ install('router.post("/bookings"', 'router.delete("/bookings/:bookingId"');
 
 async function request(path, body = {}, params = {}, query = {}) {
   const res = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
-  await handlers.get(path)({ body, params, query }, res);
+  await handlers.get(path)({ body: path === "/bookings" ? { depositAcknowledged: true, ...body } : body, params, query }, res);
   return res;
 }
 assert.equal((await request('/provider/records/:recordId', { expectedReturnMonths: 2 }, { recordId: '101' })).code, 200);
@@ -130,6 +133,12 @@ assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-01' }
 assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-14' })).code, 400);
 assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-02' })).code, 201);
 assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-12' })).code, 201);
+assert.equal((await request('/bookings', { ...bookingInput, depositAcknowledged: false })).code, 400);
+assert.equal((await request('/bookings', { ...bookingInput, depositAcknowledged: undefined })).code, 400);
+const originalPrice = service.price;
+service.price = 49;
+assert.equal((await request('/bookings', bookingInput)).code, 409);
+service.price = originalPrice;
 const booked = await request('/bookings', bookingInput);
 assert.equal(booked.code, 201);
 assert.equal(booked.body.date, '2026-12-04');
@@ -259,4 +268,38 @@ assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date
 assert.equal(bookings.length, beforeClosureBookings);
 provider.closedUntil = new Date(Date.now() - 1000).toISOString();
 assert.equal((await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' })).code, 200);
-console.log('PASS: provider-specific opening/closing, closing-minus-30 cutoff regardless of duration, hours updates, conflict and off-grid rejection, old bookings preserved; vaccination return-window, archive and progress regressions.');
+
+// Course cancellation is independent of appointments/payments and cannot reopen a terminal course.
+providerAccess = 1;
+record.archived = false;
+record.vaccinationProgress = 'completed';
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'cancelled' }, { recordId: '101' })).code, 409);
+record.vaccinationProgress = 'ongoing';
+providerAccess = 2;
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'cancelled' }, { recordId: '101' })).code, 404);
+providerAccess = 1;
+const beforeCourseCancellation = structuredClone(bookings);
+const nextDueBeforeCancellation = record.nextDue;
+const cancellationWrites = recordWrites;
+const cancelledResponses = await Promise.all([1,2].map(() => request('/provider/records/:recordId', { vaccinationProgress: 'cancelled' }, { recordId: '101' })));
+assert.ok(cancelledResponses.every(response => response.code === 200));
+assert.equal(recordWrites, cancellationWrites + 1);
+assert.equal(record.vaccinationProgress, 'cancelled');
+assert.equal(record.status, 'completed');
+assert.equal(record.nextDue, nextDueBeforeCancellation);
+assert.deepEqual(bookings, beforeCourseCancellation);
+assert.equal(GetPetRecordsResponse.parse({ grooming: [], vaccinations: [record] }).vaccinations[0].vaccinationProgress, 'cancelled');
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'completed' }, { recordId: '101' })).code, 409);
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'ongoing' }, { recordId: '101' })).code, 400);
+assert.equal((await request('/provider/records/:recordId', { nextDue: '2027-01-01' }, { recordId: '101' })).code, 409);
+assert.equal((await request('/provider/records/:recordId', { expectedReturnMonths: 3 }, { recordId: '101' })).code, 409);
+assert.equal((await request('/provider/records/:recordId', { notes: 'Course stopped; history retained.' }, { recordId: '101' })).code, 200);
+assert.equal(record.vaccinationProgress, 'cancelled');
+assert.equal((await request('/pets/:petId/records/:recordId/follow-up', {}, { petId: '9', recordId: '101' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, date: '2026-12-05', time: '11:30' })).code, 409);
+assert.equal((await request('/bookings', { ...bookingInput, providerId: 2, serviceId: 22, recordId: null, date: '2026-12-19', time: '11:00' })).code, 201);
+record.archived = true;
+assert.equal((await request('/pets/:petId/records', {}, { petId: '9' })).body.vaccinations[0].vaccinationProgress, 'cancelled');
+assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'completed' }, { recordId: '101' })).code, 409);
+record.archived = false;
+console.log('PASS: provider-specific opening/closing, closing-minus-30 cutoff regardless of duration, hours updates, conflict and off-grid rejection, old bookings preserved; vaccination return-window, archive, completion and cancellation regressions.');

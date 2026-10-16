@@ -134,7 +134,7 @@ export interface CareRecord {
   /** @nullable */
   nextDue?: string | null;
   expectedReturnMonths?: number;
-  vaccinationProgress?: "ongoing" | "completed" | null;
+  vaccinationProgress?: "ongoing" | "completed" | "cancelled" | null;
   time?: string | null;
   bookingId?: number;
   serviceCategory?: CareRecordServiceCategory;
@@ -146,6 +146,7 @@ export interface PetRecords {
 }
 
 export interface BookingInput {
+  depositAcknowledged?: boolean;
   providerId: number;
   serviceId: number;
   petId: number;
@@ -174,6 +175,15 @@ export const BookingCancellationDecision = {
 } as const;
 
 export interface Booking {
+  vaccinationCourseStatus?: "ongoing" | "completed" | "cancelled";
+  depositRequired?: boolean;
+  paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
+  paymentAttemptState?: "CREATING" | "ACTIVE" | "UNCERTAIN" | "FAILED" | "PAID";
+  bookingDepositPaid?: number;
+  remainingServiceBalance?: number;
+  noShowAt?: string;
+  depositForfeitedAt?: string;
+
   id: number;
   providerId: number;
   providerName: string;

@@ -19,7 +19,7 @@ export interface CareRecord {
   /** @nullable */
   nextDue?: string | null;
   expectedReturnMonths?: number;
-  vaccinationProgress?: "ongoing" | "completed" | null;
+  vaccinationProgress?: "ongoing" | "completed" | "cancelled" | null;
   time?: string | null;
   bookingId?: number;
   serviceCategory?: CareRecordServiceCategory;

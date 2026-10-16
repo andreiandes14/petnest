@@ -1,3 +1,14 @@
+import { bookingStatusDisplay, vaccinationCourseLabel } from "@/lib/booking-status";
+import { ProviderReviewButton } from "@/components/provider-review-button";
+import { ProviderReviews } from "@/components/provider-reviews";
+import { customerBookingSections, type BookingServiceFilter } from "@/lib/customer-bookings";
+import { CancelVaccinationDialog } from "@/components/cancel-vaccination-dialog";
+import { bookingDateParts } from "@/lib/booking-date";
+import { BookingDepositDialog } from "@/components/booking-deposit-dialog";
+import { NoShowDialog } from "@/components/no-show-dialog";
+import { canMarkNoShow, noShowExplanation } from "../../../shared/booking-attendance";
+import { calendarBookings } from "../../../shared/booking-calendar";
+import { BOOKING_DEPOSIT, DEPOSIT_NOTICE, DEPOSIT_ACKNOWLEDGMENT, remainingBookingBalance } from "../../../shared/booking-deposit";
 import { ShopClosureControl, useShopClosed } from "@/components/shop-closure";
 import { BusinessHours } from "@/components/business-hours";
 import {
@@ -253,11 +264,16 @@ function statusLabel(value: string) {
     cancellation_pending: "Cancellation Pending",
     cancelled: "Cancelled",
     completed: "Completed",
+    no_show: "No-Show",
   };
   return (
     labels[value.toLowerCase()] ??
     (value ? value[0].toUpperCase() + value.slice(1).toLowerCase() : value)
   );
+}
+
+function bookingStatusLabel(value: string) {
+  return bookingStatusDisplay(value).label ?? statusLabel(value);
 }
 
 /** Two-tone wordmark. Colour is swapped by CSS when it sits on the sidebar. */
@@ -740,6 +756,7 @@ function ProviderLocation({ provider, distance }: { provider: Pick<Provider, "id
 }
 
 function ProviderCard({ provider, distance, showStartingPrice = true }: { provider: Provider; distance?: number; showStartingPrice?: boolean }) {
+  const { user } = useAuth();
   const closed = useShopClosed(provider.closedUntil);
   const [saved, setSaved] = useState(false);
   const queryString = useSearch();
@@ -819,14 +836,17 @@ function ProviderCard({ provider, distance, showStartingPrice = true }: { provid
               </span>
             ))}
           </div>
-          <div className="provider-foot">
+          <div className="provider-foot flex-wrap">
             {showStartingPrice ? <span className="provider-price">
               {money(provider.startingPrice)}
               <span>starting price</span>
             </span> : null}
-            <span className="btn btn-ghost h-9 min-h-0 px-4 text-xs" aria-disabled={closed}>
+            <div className="relative z-20 flex w-full items-center justify-between gap-2">
+            <ProviderReviewButton providerId={provider.id} customerId={user?.role === "customer" ? user.id : undefined} />
+            <Link href={`/providers/${provider.id}${selectedCategory ? `?category=${encodeURIComponent(selectedCategory)}` : ""}`} className="btn btn-ghost ml-auto h-9 min-h-0 px-4 text-xs" aria-disabled={closed} onClick={event => { if (closed) event.preventDefault(); }}>
               View <ArrowRight size={13} />
-            </span>
+            </Link>
+            </div>
           </div>
         </div>
         <div className="shop-closure-overlay" aria-hidden={!closed}><span>Closed for Today</span></div>
@@ -1506,6 +1526,7 @@ function BookingModal({
   const [time, setTime] = useState("");
   const [timeSlots, setTimeSlots] = useState<AvailabilitySlot[]>(followup?.slots ?? []);
   const [notes, setNotes] = useState("");
+  const [depositAcknowledged, setDepositAcknowledged] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [complete, setComplete] = useState(false);
   const [savedBooking, setSavedBooking] = useState<Booking | null>(null);
@@ -1533,10 +1554,11 @@ function BookingModal({
   const scheduleAvailable = Boolean((!bookingWindow || (date >= bookingWindow.start && date <= bookingWindow.end)) && date && time && timeSlots.some(slot => slot.time === time && slot.status === "available"));
 
   const confirm = () => {
-    if (!petId || !scheduleAvailable) return;
+    if (!petId || !scheduleAvailable || !depositAcknowledged || service.price < BOOKING_DEPOSIT) return;
     createBooking.mutate(
       {
         data: {
+          depositAcknowledged,
           providerId: provider.id,
           serviceId: service.id,
           petId: Number(petId),
@@ -1598,6 +1620,8 @@ function BookingModal({
             <X size={17} />
           </button>
         </div>
+        <div className="mt-4"><BookingDepositNotice /></div>
+        {service.price < BOOKING_DEPOSIT ? <p className="mt-3 text-sm text-destructive">This service is priced below the required deposit. Please contact the provider.</p> : null}
         {complete ? (
           <div className="py-10 text-center">
             <div className="empty-icon">
@@ -1617,12 +1641,13 @@ function BookingModal({
                   <strong>Service:</strong> {savedBooking.serviceName}
                 </p>
                 <p className="mt-2">
-                  <strong>When:</strong> {formatDate(savedBooking.date)} at{" "}
+                  <strong>When:</strong> {bookingDateParts(savedBooking.date).full} at{" "}
                   {savedBooking.time}
                 </p>
                 <p className="mt-2">
-                  <strong>Status:</strong> {statusLabel(savedBooking.status)}
+                  <strong>Status:</strong> {bookingStatusLabel(savedBooking.status)}
                 </p>
+                <BookingDepositPanel booking={savedBooking} />
               </div>
             ) : null}
             <button className="btn btn-primary mt-6" onClick={onClose}>
@@ -1673,6 +1698,7 @@ function BookingModal({
                 </p>
               ) : null}
             </div>
+            <label className="flex items-start gap-3 text-sm"><input type="checkbox" className="mt-1" checked={depositAcknowledged} onChange={event => setDepositAcknowledged(event.target.checked)} required /><span>{DEPOSIT_ACKNOWLEDGMENT}</span></label>
             {createBooking.isError ? (
               <p className="text-sm text-destructive">
                 {createBooking.error instanceof Error
@@ -1690,7 +1716,7 @@ function BookingModal({
               <button
                 className="btn btn-primary flex-1"
                 onClick={confirm}
-                disabled={createBooking.isPending}
+                disabled={createBooking.isPending || !depositAcknowledged || service.price < BOOKING_DEPOSIT}
               >
                 {createBooking.isPending ? "Confirming…" : "Confirm booking"}
               </button>
@@ -1802,7 +1828,7 @@ function BookingModal({
             <button
               className="btn btn-primary w-full"
               onClick={() => setReviewing(true)}
-              disabled={!petId || !scheduleAvailable}
+              disabled={!petId || !scheduleAvailable || service.price < BOOKING_DEPOSIT}
             >
               Review booking
             </button>
@@ -1986,7 +2012,10 @@ function ProviderDetailPage() {
               {provider.rating.toFixed(1)}
             </span>
           </div>
-          <h1 className="mt-4">{provider.name}</h1>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <h1 className="min-w-0 break-words">{provider.name}</h1>
+            <ProviderReviews providerId={provider.id} providerName={provider.name} />
+          </div>
           <div className="detail-meta">
             <ProviderLocation provider={provider} />
             <span>
@@ -2322,9 +2351,75 @@ function ProviderDetailPage() {
   );
 }
 
+function BookingDepositNotice() {
+  return <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm"><p className="font-semibold">{money(BOOKING_DEPOSIT)} Booking Deposit Policy</p><p className="mt-2 leading-6">{DEPOSIT_NOTICE}</p></div>;
+}
+function BookingDepositPanel({ booking, customer = false }: { booking: Booking; customer?: boolean }) {
+  const [confirming, setConfirming] = useState(false);
+  const [verification, setVerification] = useState<"idle" | "checking" | "delayed">("idle");
+  useEffect(() => {
+    if (!customer || booking.paymentStatus === "PAID" || booking.status !== "awaiting_payment" ||
+        !["ACTIVE", "UNCERTAIN"].includes(booking.paymentAttemptState ?? "")) {
+      setVerification("idle");
+      return;
+    }
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = Date.now() + 120_000;
+    setVerification("checking");
+    const check = async () => {
+      try {
+        const result = await adminRequest<{ paid: boolean }>(`/api/bookings/${booking.id}/payment/verify`, { method: "POST" });
+        if (stopped) return;
+        await queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() });
+        if (result.paid) { setVerification("idle"); return; }
+      } catch { /* Delayed verification is not evidence of payment failure. */ }
+      if (stopped) return;
+      if (Date.now() >= deadline) { setVerification("delayed"); return; }
+      timer = setTimeout(check, 10_000);
+    };
+    void check();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [customer, booking.id, booking.status, booking.paymentStatus, booking.paymentAttemptState]);
+  const payment = useMutation({
+    mutationFn: () => adminRequest<{ checkout_url: string }>(`/api/bookings/${booking.id}/payment`, { method: "POST" }),
+    onSuccess: ({ checkout_url }) => {
+      const url = new URL(checkout_url);
+      if (url.protocol !== "https:" || url.hostname !== "checkout.paymongo.com" || url.username || url.password || url.port) throw new Error("Invalid checkout URL.");
+      window.location.assign(url.href);
+    },
+    onSettled: () => { queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() }); },
+  });
+  if (!booking.depositRequired) return null;
+  const paid = booking.paymentStatus === "PAID";
+  const processing = verification === "checking" || ["CREATING", "UNCERTAIN"].includes(booking.paymentAttemptState ?? "");
+  return <div className="mt-3 space-y-2 text-sm">
+    <p>Payment Status: <strong>{paid ? "Paid" : "Unpaid"}</strong></p>
+    <p>{paid ? "Booking Deposit Paid" : "Booking Deposit"}: {money(BOOKING_DEPOSIT)}{paid && booking.status === "no_show" ? " — Forfeited" : ""}</p>
+    {paid ? <p>Deposit Status: <strong>{booking.status === "no_show" ? "Forfeited" : booking.status === "completed" ? "Credited" : "Applied toward service price when attended"}</strong></p> : null}
+    <p>Remaining Service Balance: {money(remainingBookingBalance(booking))}</p>
+    <p className="text-xs text-muted-foreground">{booking.status === "no_show" ? "No remaining service payment due. No service was performed." : "The remaining balance is payable directly to the provider."}</p>
+    {verification === "checking" ? <p role="status">Verifying your payment. Your booking will update automatically once payment is confirmed.</p> : null}
+    {verification === "delayed" ? <p role="status">Payment confirmation is delayed. Please check again shortly; do not pay again. Your booking remains unconfirmed until payment is verified.</p> : null}
+    {booking.status === "no_show" && paid ? <p className="text-xs text-destructive">Deposit forfeited under the acknowledged no-show policy.</p> : null}
+    {customer && booking.status === "awaiting_payment" && !paid ? <button className="btn btn-primary" disabled={processing || payment.isPending} onClick={() => setConfirming(true)}>{processing ? "Payment Processing" : "Proceed to Payment"}</button> : null}
+    <BookingDepositDialog open={confirming} onClose={() => setConfirming(false)} onConfirm={() => payment.mutate()} busy={payment.isPending} processing={processing} error={payment.isError ? payment.error.message : undefined}>
+      <BookingDepositNotice />
+    </BookingDepositDialog>
+  </div>;
+}
+
+function CustomerBookingStatusBadge({ booking }: { booking: Booking }) {
+  const discontinued = booking.serviceCategory === "vaccination" && booking.status.toLowerCase() === "completed" && booking.vaccinationCourseStatus === "cancelled";
+  return <span className={`status ${discontinued ? "border border-border bg-muted text-muted-foreground" : `booking-status status-${booking.status.toLowerCase()}`}`}>
+    {discontinued ? "Not Continued" : bookingStatusLabel(booking.status)}
+  </span>;
+}
+
 function BookingsPage() {
+  const [serviceFilter, setServiceFilter] = useState<BookingServiceFilter>("all");
   const query = useListBookings({
-    query: { queryKey: getListBookingsQueryKey() },
+    query: { queryKey: getListBookingsQueryKey(), refetchInterval: 3000 },
   });
   const [cancellationBooking, setCancellationBooking] =
     useState<Booking | null>(null);
@@ -2344,13 +2439,11 @@ function BookingsPage() {
   });
   const bookings: Booking[] = query.data ?? [];
   const isOver = (status: string) =>
-    ["completed", "cancelled"].includes(status.toLowerCase());
-  const upcoming = bookings.filter((booking) => !isOver(booking.status));
-  const past = bookings.filter((booking) => isOver(booking.status));
+    ["completed", "cancelled", "no_show"].includes(status.toLowerCase());
+  const { upcoming, past } = customerBookingSections(bookings, serviceFilter);
 
   const renderBooking = (booking: Booking) => {
-    const when = new Date(booking.date);
-    const valid = !Number.isNaN(when.getTime());
+    const date = bookingDateParts(booking.date);
     return (
       <li
         className={`booking-row status-tone-${booking.status.toLowerCase()}`}
@@ -2359,16 +2452,15 @@ function BookingsPage() {
       >
         <div className="booking-date" aria-hidden>
           <span className="booking-date-day">
-            {valid ? when.getDate() : "—"}
+            {date.day}
           </span>
           <span className="booking-date-month">
-            {valid
-              ? when.toLocaleDateString(undefined, { month: "short" })
-              : ""}
+            {date.month}
           </span>
         </div>
         <div className="booking-main">
           <h3 className="booking-service">{booking.serviceName}</h3>
+          {bookingStatusDisplay(booking.status).description ? <p className="booking-note">{bookingStatusDisplay(booking.status).description}</p> : null}
           <p className="booking-meta">
             <Link
               href={`/providers/${booking.providerId}`}
@@ -2381,6 +2473,8 @@ function BookingsPage() {
             <span>
               <PawPrint size={12} /> {booking.petName}
             </span>
+            <span aria-hidden>·</span>
+            <time dateTime={booking.date}>{date.full}</time>
             <span aria-hidden>·</span>
             <span>
               <Clock3 size={12} /> {booking.time}
@@ -2408,10 +2502,9 @@ function BookingsPage() {
           ) : null}
         </div>
         <div className="booking-side">
-          <span className={`status status-${booking.status.toLowerCase()}`}>
-            {statusLabel(booking.status)}
-          </span>
+          <CustomerBookingStatusBadge booking={booking} />
           <span className="booking-price">{money(booking.price)}</span>
+          <BookingDepositPanel booking={booking} customer />
         </div>
         {!isOver(booking.status) &&
         booking.status.toLowerCase() !== "cancellation_pending" ? (
@@ -2442,6 +2535,7 @@ function BookingsPage() {
             kept simple.
           </h1>
         </div>
+        <div className="booking-header-controls">
         <div className="page-head-counts">
           <span className="head-count">
             <strong>{upcoming.length}</strong> upcoming
@@ -2449,6 +2543,18 @@ function BookingsPage() {
           <span className="head-count">
             <strong>{past.length}</strong> in history
           </span>
+        </div>
+        <label className="booking-service-filter">
+          <span className="form-label">Sort by Service</span>
+          <select className="input select" value={serviceFilter} onChange={event => {
+            const value = event.target.value;
+            if (value === "all" || value === "grooming" || value === "vaccination") setServiceFilter(value);
+          }}>
+            <option value="all">All Bookings</option>
+            <option value="grooming">Grooming</option>
+            <option value="vaccination">Vaccination</option>
+          </select>
+        </label>
         </div>
       </header>
 
@@ -2472,6 +2578,9 @@ function BookingsPage() {
               </Link>
             }
           />
+        ) : !upcoming.length && !past.length ? (
+          <EmptyState icon={CalendarDays} title={`No ${serviceFilter === "grooming" ? "Grooming" : "Vaccination"} bookings yet`}
+            copy="There are no bookings for this service. Choose All Bookings to see your other appointments." />
         ) : (
           <>
             {/* A dated timeline reads far faster than a table of rows. */}
@@ -2611,6 +2720,7 @@ type AdminActivityLog = {
   occurredAt: string;
 };
 type ProviderRecord = CareRecord & {
+  petName?: string;
   archived?: boolean;
   petId: number;
   ownerId: string;
@@ -2945,9 +3055,9 @@ function AdminBookingsPage() {
                     </td>
                     <td>
                       <span
-                        className={`status status-${booking.status.toLowerCase()}`}
+                        className={`status booking-status status-${booking.status.toLowerCase()}`}
                       >
-                        {statusLabel(booking.status)}
+                        {bookingStatusLabel(booking.status)}
                       </span>
                     </td>
                   </tr>
@@ -3422,6 +3532,7 @@ function CustomerProfilePage() {
 }
 
 function ProviderBookingsCalendar({ bookings }: { bookings: AdminBooking[] }) {
+  const visibleBookings = calendarBookings(bookings);
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const firstWeekday = new Date(`${month}-01T00:00:00.000Z`).getUTCDay();
   const days = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
@@ -3439,25 +3550,23 @@ function ProviderBookingsCalendar({ bookings }: { bookings: AdminBooking[] }) {
         {Array.from({ length: firstWeekday }).map((_, index) => <span key={`blank-${index}`} />)}
         {Array.from({ length: days }, (_, index) => index + 1).map((day) => {
           const date = `${month}-${String(day).padStart(2, '0')}`;
-          const dayBookings = bookings.filter((booking) => booking.date === date);
-          const hasActiveBooking = dayBookings.some(
-            (booking) => !["completed", "cancelled"].includes(booking.status),
-          );
+          const dayBookings = visibleBookings.filter((booking) => booking.date === date);
+          const hasActiveBooking = dayBookings.length > 0;
           return (
             <div key={date} className={`min-h-24 rounded-lg border p-2 ${hasActiveBooking ? 'border-primary/40 bg-accent/40' : 'border-border bg-background'}`}>
               <p className="text-xs font-bold">{day}</p>
               {dayBookings.map((booking) => (
-                <div key={booking.id} className={`mt-1 rounded border px-1 py-1 text-[9px] ${["completed", "cancelled"].includes(booking.status) ? "border-border bg-muted text-muted-foreground" : "border-primary/30 bg-background"}`} title={`${booking.customerName ?? "Customer"} · ${booking.petName} · ${booking.serviceName} · ${booking.time}–${booking.endTime ?? booking.time} · ${statusLabel(booking.status)}`}>
+                <div key={booking.id} className={`mt-1 rounded border px-1 py-1 text-[9px] ${["completed", "cancelled", "no_show"].includes(booking.status) ? "border-border bg-muted text-muted-foreground" : "border-primary/30 bg-background"}`} title={`${booking.customerName ?? "Customer"} · ${booking.petName} · ${booking.serviceName} · ${booking.time}–${booking.endTime ?? booking.time} · ${bookingStatusLabel(booking.status)}`}>
                   <p className="truncate font-semibold">{booking.time}–{booking.endTime ?? booking.time}</p>
                   <p className="truncate">{booking.customerName ?? "Customer"} · {booking.petName}</p>
-                  <p className="truncate">{booking.serviceName} · {statusLabel(booking.status)}</p>
+                  <p className="truncate">{booking.serviceName} · {bookingStatusLabel(booking.status)}</p>
                 </div>
               ))}
             </div>
           );
         })}
       </div>
-      <p className="mt-3 text-xs text-muted-foreground">Active bookings are highlighted. Completed and cancelled bookings remain visible with their current status.</p>
+      <p className="mt-3 text-xs text-muted-foreground">Active bookings are highlighted. Completed, No-Show and cancelled bookings remain in the booking table until archived.</p>
     </div>
   );
 }
@@ -3520,6 +3629,8 @@ function ProviderManagementPage() {
   >(null);
   const [completionRecord, setCompletionRecord] = useState<ProviderRecord | null>(null);
   const completionRequest = useRef(false);
+  const [cancellationRecord, setCancellationRecord] = useState<ProviderRecord | null>(null);
+  const vaccinationCancellationRequest = useRef(false);
   const [scheduleRecord, setScheduleRecord] = useState<ProviderRecord | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
   const [expectedReturnMonths, setExpectedReturnMonths] = useState("");
@@ -3555,6 +3666,14 @@ function ProviderManagementPage() {
   const [providerCancellationError, setProviderCancellationError] = useState("");
   const [cancelBookingTarget, setCancelBookingTarget] =
     useState<AdminBooking | null>(null);
+  const [noShowTarget, setNoShowTarget] = useState<number | null>(null);
+  const [completeServiceTarget, setCompleteServiceTarget] = useState<number | null>(null);
+  const [attendanceNow, setAttendanceNow] = useState(Date.now);
+  useEffect(() => {
+    if (providerSection !== "bookings") return;
+    const timer = setInterval(() => setAttendanceNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [providerSection]);
   const [providerBookingCancellationReason, setProviderBookingCancellationReason] =
     useState("");
   const [providerBookingCancellationError, setProviderBookingCancellationError] =
@@ -3629,9 +3748,11 @@ function ProviderManagementPage() {
     mutationFn: ({ id, status }: { id: number; status: string }) =>
       adminRequest<AdminBooking>(`/api/provider/bookings/${id}/status`, {
         method: "PATCH",
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, ...(status === "no_show" ? { noShowWithoutNotice: true } : {}) }),
       }),
     onSuccess: () => {
+      setNoShowTarget(null);
+      setCompleteServiceTarget(null);
       queryClient.invalidateQueries({ queryKey: ["provider", "bookings"] });
       queryClient.invalidateQueries({ queryKey: ["availability"] });
     },
@@ -3898,7 +4019,7 @@ function ProviderManagementPage() {
     enabled: Boolean(selectedProviderPet),
   });
   useEffect(() => {
-    if (!selectedProviderPet || !selectedProviderPetQuery.data || !petRecordsBackdrop.current) return;
+    if (cancellationRecord || !selectedProviderPet || !selectedProviderPetQuery.data || !petRecordsBackdrop.current) return;
     const overlays = [...document.querySelectorAll<HTMLElement>(".modal-backdrop")].filter(element => element.getClientRects().length > 0);
     const overlay = overlays.at(-1) ?? petRecordsBackdrop.current;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -3939,7 +4060,7 @@ function ProviderManagementPage() {
       document.documentElement.style.overflow = htmlOverflow;
       if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
     };
-  }, [selectedProviderPet, selectedProviderPetQuery.data, scheduleRecord, completionRecord, archiveTarget]);
+  }, [selectedProviderPet, selectedProviderPetQuery.data, scheduleRecord, completionRecord, cancellationRecord, archiveTarget]);
   const addRecord = useMutation({
     mutationFn: () =>
       adminRequest<ProviderRecord>("/api/provider/records", {
@@ -3968,13 +4089,14 @@ function ProviderManagementPage() {
     },
   });
   const updateRecord = useMutation({
-    mutationFn: ({ id, changes }: { id: number; changes: { notes?: string; nextDue?: string; expectedReturnMonths?: number; vaccinationProgress?: "completed" } }) =>
+    mutationFn: ({ id, changes }: { id: number; changes: { notes?: string; nextDue?: string; expectedReturnMonths?: number; vaccinationProgress?: "completed" | "cancelled" } }) =>
       adminRequest<ProviderRecord>(`/api/provider/records/${id}`, {
         method: "PATCH",
         body: JSON.stringify(changes),
       }),
     onSuccess: (record, variables) => {
       if (variables.changes.vaccinationProgress === "completed") setCompletionRecord(null);
+      if (variables.changes.vaccinationProgress === "cancelled") setCancellationRecord(null);
       setScheduleRecord(null);
       setScheduleDate("");
       recordsQuery.refetch();
@@ -4168,7 +4290,7 @@ function ProviderManagementPage() {
                         <p className="font-semibold">{record.title}</p>
                         <p className="text-xs text-muted-foreground">
                           {record.providerName} · {formatDate(record.date)} ·{" "}
-                          {statusLabel(record.status)}
+                          {bookingStatusLabel(record.status)}
                         </p>
                         <p className="mt-2 text-sm text-muted-foreground">
                           {record.notes}
@@ -4187,7 +4309,7 @@ function ProviderManagementPage() {
                       selectedProviderPetQuery.data.records.filter((record) => record.type === "vaccination").sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map((record) => (
                         <div className="record-item" key={record.id}>
                           <p className="font-semibold">{record.title}</p>
-                          <p className="text-xs text-muted-foreground">Given: {formatDate(record.date)} · {record.providerName} · {statusLabel(record.status)}</p>
+                          <p className="text-xs text-muted-foreground">Given: {formatDate(record.date)} · {record.providerName} · {bookingStatusLabel(record.status)}</p>
                           <div className="mt-2"><VaccinationProgressBadge progress={record.vaccinationProgress} /></div>
                           {record.notes ? <p className="mt-2 text-sm text-muted-foreground">{record.notes}</p> : null}
                           <p className="mt-2 text-sm font-semibold text-primary">Next Vaccination: {formatDate(record.nextDue)}</p>
@@ -4195,17 +4317,20 @@ function ProviderManagementPage() {
                             <button className="btn btn-ghost" onClick={() => { setArchiveState.reset(); setArchiveTarget({ kind: "record", id: record.id, label: record.title, archived: true }); }}>Archive</button>
                           </div> : (
                           <div className="mt-3 flex flex-wrap justify-end gap-2">
+                          {record.vaccinationProgress !== "cancelled" ? <>
+                          <VaccinationCourseSelect disabled={updateRecord.isPending} onCancel={() => { updateRecord.reset(); setCancellationRecord(record); }} />
                           <button className="btn btn-ghost" onClick={() => {
                             setScheduleRecord(record);
                             setScheduleDate(record.nextDue ?? "");
                     setExpectedReturnMonths(record.expectedReturnMonths ? String(record.expectedReturnMonths) : "");
                             updateRecord.reset();
                           }}>Set Next Vaccination</button>
+                          </> : null}
                           <button className="btn btn-ghost" onClick={() => {
                             const notes = window.prompt("Update notes", record.notes);
                             if (notes !== null) updateRecord.mutate({ id: record.id, changes: { notes } });
                           }}>Edit Notes</button>
-                          <button className="btn btn-secondary" disabled={updateRecord.isPending} onClick={() => { updateRecord.reset(); setCompletionRecord(record); }}>Completed</button>
+                          {record.vaccinationProgress !== "cancelled" ? <button className="btn btn-secondary" disabled={updateRecord.isPending} onClick={() => { updateRecord.reset(); setCompletionRecord(record); }}>Completed</button> : null}
                           </div>
                           )}
                         </div>
@@ -5236,9 +5361,10 @@ function ProviderManagementPage() {
                         <td>{formatDate(booking.date)}</td>
                         <td>{booking.time}–{booking.endTime ?? booking.time}</td>
                         <td>
-                          <span className={`status status-${booking.status}`}>
-                            {statusLabel(booking.status)}
+                          <span className={`status booking-status status-${booking.status}`}>
+                            {bookingStatusLabel(booking.status)}
                           </span>
+                          <BookingDepositPanel booking={booking} />
                           {booking.cancellationReason ? (
                             <p className="mt-2 text-xs text-muted-foreground">
                               <span className="font-semibold text-foreground">
@@ -5309,7 +5435,7 @@ function ProviderManagementPage() {
                                   setCancelBookingTarget(booking);
                                 }}
                               >
-                                Cancel Booking
+                                Cancel
                               </button>
                             </div>
                           ) : null}
@@ -5318,20 +5444,22 @@ function ProviderManagementPage() {
                               <button
                                 className="btn btn-secondary h-9 min-h-0 text-xs"
                                 disabled={updateBooking.isPending}
-                                onClick={() =>
-                                  updateBooking.mutate({
-                                    id: booking.id,
-                                    status: "completed",
-                                  })
-                                }
+                                onClick={() => {
+                                  updateBooking.reset();
+                                  setCompleteServiceTarget(booking.id);
+                                }}
                               >
                                 Complete service
                               </button>
+                              <button className="btn btn-ghost h-9 min-h-0 text-xs" disabled={updateBooking.isPending} title="Review No-Show eligibility and confirm customer attendance" onClick={() => {
+                                updateBooking.reset();
+                                setNoShowTarget(booking.id);
+                              }}>No-Show</button>
                             </div>
                           ) : null}
                         </td>
                         <td>
-                          {["completed", "cancelled"].includes(booking.status.trim().toLowerCase()) ? (
+                          {["completed", "cancelled", "no_show"].includes(booking.status.trim().toLowerCase()) ? (
                             <button
                               className="btn btn-ghost h-9 min-h-0 text-xs"
                               onClick={() => setArchiveTarget({ kind: "booking", id: booking.id, label: `${booking.serviceName} booking`, archived: true })}
@@ -5345,6 +5473,7 @@ function ProviderManagementPage() {
                   </tbody>
                 </table>
               </div>
+              {updateBooking.isError ? <p className="mt-3 text-sm text-destructive" role="alert">{updateBooking.error.message}</p> : null}
               </>
             ) : (
               <p className="mt-5 text-sm text-muted-foreground">
@@ -5400,7 +5529,7 @@ function ProviderManagementPage() {
                     <div className="flex-1">
                       <p className="font-semibold">{booking.serviceName} · {booking.petName}</p>
                       <p className="text-xs text-muted-foreground">{booking.customerName ?? "Customer"} · {formatDate(booking.date)} · {booking.time}</p>
-                      <p className="mt-1 text-sm text-muted-foreground">{statusLabel(booking.status)} · {money(booking.price)}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{bookingStatusLabel(booking.status)} · {money(booking.price)}</p>
                       {booking.cancellationReason ? (
                         <p className="mt-2 text-xs text-muted-foreground">
                           <span className="font-semibold text-foreground">
@@ -5530,7 +5659,7 @@ function ProviderManagementPage() {
               <div className="flex-1">
                 <p className="font-semibold">{record.title}</p>
                 <p className="text-xs text-muted-foreground">
-                  {record.type} · {formatDate(record.date)} · pet {record.petId}
+                  {record.type} · {formatDate(record.date)} · {record.petName?.trim() || "Pet name unavailable"}
                 </p>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {record.notes}
@@ -5551,8 +5680,9 @@ function ProviderManagementPage() {
                   const notes = window.prompt("Update notes", record.notes);
                   if (notes !== null) updateRecord.mutate({ id: record.id, changes: { notes } });
                 }}>Edit notes</button>
-                {record.type === "vaccination" ? (
+                {record.type === "vaccination" && record.vaccinationProgress !== "cancelled" ? (
                   <>
+                  <VaccinationCourseSelect disabled={updateRecord.isPending} onCancel={() => { updateRecord.reset(); setCancellationRecord(record); }} />
                   <button className="btn btn-ghost" onClick={() => {
                     setScheduleRecord(record);
                     setScheduleDate(record.nextDue ?? "");
@@ -5575,6 +5705,16 @@ function ProviderManagementPage() {
           </p>
         ) : null}
       </section>
+      <CancelVaccinationDialog open={cancellationRecord !== null} busy={updateRecord.isPending}
+        error={updateRecord.isError ? updateRecord.error.message : undefined}
+        onClose={() => { setCancellationRecord(null); updateRecord.reset(); }}
+        onConfirm={() => {
+          if (!cancellationRecord || vaccinationCancellationRequest.current || updateRecord.isPending) return;
+          vaccinationCancellationRequest.current = true;
+          updateRecord.mutate({ id: cancellationRecord.id, changes: { vaccinationProgress: "cancelled" } }, {
+            onSettled: () => { vaccinationCancellationRequest.current = false; },
+          });
+        }} />
       {completionRecord ? <div className="modal-backdrop" role="presentation">
         <div className="modal animate-in" role="dialog" aria-modal="true" aria-labelledby="vaccination-completion-title">
           <h2 id="vaccination-completion-title" className="modal-title">Mark Vaccination as Completed?</h2>
@@ -5720,6 +5860,26 @@ function ProviderManagementPage() {
           </div>
         </div>
       ) : null}
+      <NoShowDialog open={completeServiceTarget !== null} completeService busy={updateBooking.isPending}
+        eligible={bookingsQuery.data?.some(booking => booking.id === completeServiceTarget && booking.status === "confirmed" && (!booking.depositRequired || booking.paymentStatus === "PAID")) ?? false}
+        explanation="This booking is no longer eligible for completion."
+        error={updateBooking.isError ? updateBooking.error.message : undefined}
+        onClose={() => { setCompleteServiceTarget(null); updateBooking.reset(); }}
+        onConfirm={() => {
+          if (completeServiceTarget !== null && !updateBooking.isPending && bookingsQuery.data?.some(booking => booking.id === completeServiceTarget && booking.status === "confirmed")) {
+            updateBooking.mutate({ id: completeServiceTarget, status: "completed" });
+          }
+        }} />
+      <NoShowDialog open={noShowTarget !== null} busy={updateBooking.isPending}
+        eligible={canMarkNoShow(bookingsQuery.data?.find(booking => booking.id === noShowTarget), attendanceNow)}
+        explanation={noShowExplanation(bookingsQuery.data?.find(booking => booking.id === noShowTarget), attendanceNow)}
+        error={updateBooking.isError ? updateBooking.error.message : undefined}
+        onClose={() => { setNoShowTarget(null); updateBooking.reset(); }}
+        onConfirm={() => {
+          if (noShowTarget !== null && !updateBooking.isPending && canMarkNoShow(bookingsQuery.data?.find(booking => booking.id === noShowTarget), Date.now())) {
+            updateBooking.mutate({ id: noShowTarget, status: "no_show" });
+          }
+        }} />
       {cancelBookingTarget ? (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -5796,7 +5956,7 @@ function ProviderManagementPage() {
                   });
                 }}
               >
-                {cancelProviderBooking.isPending ? "Cancelling…" : "Cancel Booking"}
+                {cancelProviderBooking.isPending ? "Cancelling..." : "Cancel"}
               </button>
             </div>
           </div>
@@ -6281,9 +6441,16 @@ function VaccinationFollowupModal({ pet, record, onClose }: {
   );
 }
 
-function VaccinationProgressBadge({ progress }: { progress?: "ongoing" | "completed" | null }) {
-  const label = progress === "completed" ? "Completed" : "Ongoing";
-  return <span className={`status ${progress === "completed" ? "status-completed" : "status-pending"}`} aria-label={`Vaccination course: ${label}`}>{label}</span>;
+function VaccinationProgressBadge({ progress }: { progress?: "ongoing" | "completed" | "cancelled" | null }) {
+  const label = vaccinationCourseLabel(progress);
+  return <span className={`status ${progress === "completed" ? "status-completed" : progress === "cancelled" ? "border border-border bg-muted text-muted-foreground" : "status-pending"}`} aria-label={`Vaccination course: ${label}`}>{label}</span>;
+}
+
+function VaccinationCourseSelect({ disabled, onCancel }: { disabled: boolean; onCancel: () => void }) {
+  return <select aria-label="Vaccination course status" className="input w-auto max-w-full" value="ongoing" disabled={disabled} onChange={event => { if (event.target.value === "cancelled") onCancel(); }}>
+    <option value="ongoing">{vaccinationCourseLabel("ongoing")}</option>
+    <option value="cancelled">{vaccinationCourseLabel("cancelled")}</option>
+  </select>;
 }
 
 function RecordCategoryTabs({ category, select }: { category: "grooming" | "vaccination"; select: (category: "grooming" | "vaccination") => void }) {
@@ -6360,8 +6527,8 @@ function RecordsPanel({ pet }: { pet: Pet }) {
                     ) : null}
                   </div>
                   {record.type === "vaccination" ? <VaccinationProgressBadge progress={record.vaccinationProgress} /> : (
-                    <span className={`status status-${record.status.toLowerCase()}`}>
-                      {record.status}
+                    <span className={`status booking-status status-${record.status.toLowerCase()}`}>
+                      {bookingStatusLabel(record.status)}
                     </span>
                   )}
                 </div>
@@ -6370,7 +6537,7 @@ function RecordsPanel({ pet }: { pet: Pet }) {
                     {record.notes}
                   </p>
                 ) : null}
-                {record.type === "vaccination" && record.vaccinationProgress !== "completed" ? (
+                {record.type === "vaccination" && !["completed", "cancelled"].includes(record.vaccinationProgress ?? "") ? (
                   <div className="mt-4 rounded-xl bg-primary/5 p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Vaccination Follow-up</p>
                     <p className="mt-2 text-sm">Last Vaccination: {formatDate(record.date)}</p>

@@ -1,5 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import type { Collection } from "mongodb";
+import type { Filter, UpdateFilter } from "mongodb";
 
 export type PaymentFields = {
   paymentAttemptId?: string;
@@ -12,12 +12,17 @@ export type PaymentFields = {
   paymentNotificationStatus?: "PENDING" | "SENT";
 };
 export type PaymentOrder = PaymentFields & {
+  paymentKind?: "booking";
   id: number; ownerId: string; customerId: string; providerId: number;
   status: string; archived?: boolean; total: number;
   paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
   paymentMethod?: "GCASH";
   items: Array<{ productName: string; price: number; quantity: number }>;
 };
+export interface PaymentRepository<T extends PaymentOrder> {
+  findOne(filter: Filter<T>): Promise<T | null>;
+  updateOne(filter: Filter<T>, update: UpdateFilter<T>): Promise<{ modifiedCount: number }>;
+}
 export class PaymentError extends Error {
   constructor(public readonly status: number, message: string) { super(message); }
 }
@@ -50,16 +55,16 @@ export function safeCheckoutUrl(value: unknown): string {
   throw new PaymentError(502, "PayMongo returned an invalid checkout. Please contact PetNest support.");
 }
 
-function returnUrl(base: string, orderId: number, result: "success" | "cancel") {
+function returnUrl(base: string, orderId: number, result: "success" | "cancel", booking = false) {
   let url: URL;
   try { url = new URL(base); } catch { throw new PaymentError(503, "Payment return URL is not configured."); }
   if (url.username || url.password || url.search || url.hash ||
       !(url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)))) {
     throw new PaymentError(503, "Payment return URL is not configured.");
   }
-  url.pathname = `${url.pathname.replace(/\/$/, "")}/orders`;
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/${booking ? "bookings" : "orders"}`;
   url.searchParams.set("payment", result);
-  url.searchParams.set("order", String(orderId));
+  url.searchParams.set(booking ? "booking" : "order", String(orderId));
   return url.href;
 }
 
@@ -76,7 +81,7 @@ export function paymentWebUrl(env: { APP_URL?: string; NODE_ENV?: string; VERCEL
   return base;
 }
 
-export async function deliverPaymentNotifications<T extends PaymentOrder>(orders: Collection<T>, order: PaymentOrder,
+export async function deliverPaymentNotifications<T extends PaymentOrder>(orders: PaymentRepository<T>, order: PaymentOrder,
   notify: (order: PaymentOrder) => Promise<void>) {
   if (order.paymentNotificationStatus === "SENT") return true;
   try {
@@ -91,7 +96,7 @@ export async function deliverPaymentNotifications<T extends PaymentOrder>(orders
 }
 
 export async function createOrderCheckout<T extends PaymentOrder>(
-  orders: Collection<T>, orderId: number, userId: string,
+  orders: PaymentRepository<T>, orderId: number, userId: string,
   config: { secretKey?: string; webUrl: string }, request: typeof fetch = fetch,
 ) {
   const order = await orders.findOne({ id: orderId } as import("mongodb").Filter<T>);
@@ -113,9 +118,9 @@ export async function createOrderCheckout<T extends PaymentOrder>(
     throw new PaymentError(409, "Checkout creation is being verified. Please try later or contact PetNest support.");
   }
   // Compute configuration before locking. Never take a return URL or amount from the browser.
-  const successUrl = returnUrl(config.webUrl, order.id, "success");
-  const cancelUrl = returnUrl(config.webUrl, order.id, "cancel");
-  const attemptId = `PETNEST-${order.id}-${randomUUID()}`;
+  const successUrl = returnUrl(config.webUrl, order.id, "success", order.paymentKind === "booking");
+  const cancelUrl = returnUrl(config.webUrl, order.id, "cancel", order.paymentKind === "booking");
+  const attemptId = `PETNEST-${order.paymentKind === "booking" ? "BOOKING-" : ""}${order.id}-${randomUUID()}`;
   const filter = { id: order.id, ownerId: userId, status: "CONFIRMED", archived: { $ne: true },
     paymentStatus: { $nin: ["PAID", "CANCELLED"] },
     paymentAttemptState: { $nin: ["CREATING", "ACTIVE", "UNCERTAIN", "PAID"] } } as import("mongodb").Filter<T>;
@@ -133,8 +138,8 @@ export async function createOrderCheckout<T extends PaymentOrder>(
       body: JSON.stringify({ data: { attributes: {
         line_items: lineItems, payment_method_types: ["gcash"], pass_on_fees: false,
         success_url: successUrl, cancel_url: cancelUrl, reference_number: attemptId,
-        description: `PetNest Pet Supplies order #${order.id}`,
-        metadata: { petnest_order_id: String(order.id), petnest_attempt_id: attemptId },
+        description: order.paymentKind === "booking" ? `PetNest booking #${order.id} deposit` : `PetNest Pet Supplies order #${order.id}`,
+        metadata: { [order.paymentKind === "booking" ? "petnest_booking_id" : "petnest_order_id"]: String(order.id), petnest_attempt_id: attemptId },
       } } }),
     });
     if (!response.ok) {
@@ -182,7 +187,7 @@ export function verifyPaymongoSignature(raw: Buffer, header: string | undefined,
   if (!timingSafeEqual(expected, Buffer.from(signature, "hex"))) throw new PaymentError(400, "Invalid payment signature.");
 }
 
-export async function processPaidWebhook<T extends PaymentOrder>(orders: Collection<T>, payload: unknown,
+export async function processPaidWebhook<T extends PaymentOrder>(orders: PaymentRepository<T>, payload: unknown,
   notify: (order: PaymentOrder) => Promise<void>) {
   const body = payload as any;
   // Official legacy event envelope and current Hosted Checkout V2 envelope.
@@ -199,7 +204,7 @@ export async function processPaidWebhook<T extends PaymentOrder>(orders: Collect
   // Retry early deliveries rather than acknowledging an unknown association.
   if (!order) throw new PaymentError(409, "Checkout association is not available yet.");
   if (order.paymongoCheckoutSessionId && order.paymongoCheckoutSessionId !== session.id) throw new PaymentError(400, "Checkout association does not match.");
-  if (attributes.metadata && (attributes.metadata.petnest_order_id !== String(order.id) ||
+  if (attributes.metadata && (attributes.metadata[order.paymentKind === "booking" ? "petnest_booking_id" : "petnest_order_id"] !== String(order.id) ||
       attributes.metadata.petnest_attempt_id !== order.paymentAttemptId)) throw new PaymentError(400, "Checkout metadata does not match.");
   const { amount } = orderLineItems(order);
   const payments = Array.isArray(attributes.payments) ? attributes.payments : [];
@@ -230,4 +235,43 @@ export async function processPaidWebhook<T extends PaymentOrder>(orders: Collect
   if (!paidOrder || paidOrder.paymentStatus !== "PAID") throw new PaymentError(503, "Payment persistence could not be confirmed.");
   // Secondary notification failure must not prevent acknowledgement of an already persisted payment.
   return { notificationsPending: !(await deliverPaymentNotifications(orders, paidOrder, notify)) };
+}
+
+export function paymentEventReference(payload: unknown): string {
+  const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const data = object(object(payload).data);
+  const event = data.attributes ? object(data.attributes) : data;
+  const reference = object(object(event.data).attributes).reference_number;
+  return typeof reference === "string" ? reference : "";
+}
+
+// Recovery for missed webhook delivery. Only an authenticated server-to-server
+// response for the persisted session can enter the same paid-event validator.
+export async function reconcileCheckout<T extends PaymentOrder>(orders: PaymentRepository<T>, id: number,
+  userId: string, secretKey: string | undefined, notify: (order: PaymentOrder) => Promise<void>, request: typeof fetch = fetch) {
+  const order = await orders.findOne({ id } as Filter<T>);
+  if (!order || order.ownerId !== userId) throw new PaymentError(404, "Booking not found.");
+  if (order.paymentStatus === "PAID") return { paid: true };
+  if (!order.paymongoCheckoutSessionId || !order.paymentAttemptId) return { paid: false };
+  if (!secretKey?.startsWith("sk_test_") || secretKey.length <= 8) throw new PaymentError(503, "PayMongo test payments are not configured.");
+  let payload: unknown;
+  try {
+    const response = await request(`https://api.paymongo.com/v1/checkout_sessions/${encodeURIComponent(order.paymongoCheckoutSessionId)}`, {
+      method: "GET", redirect: "error", signal: AbortSignal.timeout(10_000),
+      headers: { Authorization: `Basic ${Buffer.from(`${secretKey}:`).toString("base64")}` },
+    });
+    if (!response.ok) throw new Error("Unavailable");
+    payload = await response.json();
+  } catch { throw new PaymentError(503, "Payment verification is delayed. Please check again shortly; do not pay again."); }
+  const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+  const session = object(object(payload).data);
+  const attributes = object(session.attributes);
+  if (session.id !== order.paymongoCheckoutSessionId || session.type !== "checkout_session" ||
+      attributes.livemode !== false || attributes.reference_number !== order.paymentAttemptId) {
+    throw new PaymentError(409, "Payment verification does not match this booking.");
+  }
+  const payments = Array.isArray(attributes.payments) ? attributes.payments : [];
+  if (!payments.some(payment => object(object(payment).attributes).status === "paid")) return { paid: false };
+  await processPaidWebhook(orders, { data: { attributes: { livemode: false, type: "checkout_session.payment.paid", data: session } } }, notify);
+  return { paid: true };
 }

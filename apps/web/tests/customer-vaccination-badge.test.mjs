@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import ts from 'typescript';
+const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const start = source.indexOf('function CustomerBookingStatusBadge(');
+const end = source.indexOf('function BookingsPage(', start);
+const compiled = ts.transpileModule(source.slice(start, end), { fileName: 'badge.tsx', compilerOptions: { jsx: ts.JsxEmit.React, module: ts.ModuleKind.ESNext } }).outputText;
+const Badge = new Function('React', 'bookingStatusLabel', `${compiled};return CustomerBookingStatusBadge;`)(React, s => s[0].toUpperCase() + s.slice(1));
+const render = booking => renderToStaticMarkup(React.createElement(Badge, { booking }));
+test('actual customer badge uses persisted course response and neutral styling only for completed vaccination appointments', () => {
+  const booking = { serviceCategory: 'vaccination', status: 'completed', vaccinationCourseStatus: 'cancelled' };
+  const html = render(booking);
+  assert.match(html, />Not Continued</);
+  assert.match(html, /bg-muted/);
+  assert.doesNotMatch(html, /status-completed|status-cancelled/);
+  for (const vaccinationCourseStatus of ['ongoing', 'completed', undefined]) assert.match(render({ ...booking, vaccinationCourseStatus }), />Completed</);
+  assert.match(render({ ...booking, serviceCategory: 'grooming' }), />Completed</);
+  for (const status of ['pending', 'confirmed', 'awaiting_payment', 'cancelled', 'no_show']) assert.doesNotMatch(render({ ...booking, status }), /Not Continued/);
+});
