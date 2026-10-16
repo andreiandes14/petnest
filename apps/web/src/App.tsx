@@ -1,3 +1,4 @@
+import { cashPickup, canCompleteProductOrder } from "../../../shared/pickup-payment";
 import { bookingStatusDisplay, vaccinationCourseLabel } from "@/lib/booking-status";
 import { ProviderReviewButton } from "@/components/provider-review-button";
 import { ProviderReviews } from "@/components/provider-reviews";
@@ -260,6 +261,7 @@ function statusLabel(value: string) {
   const labels: Record<string, string> = {
     pending: "Pending",
     confirmed: "Confirmed",
+    ready_for_pickup: "Ready for Pickup",
     awaiting_payment: "Awaiting Payment",
     payment_processing: "Payment Processing",
     cancellation_pending: "Cancellation Pending",
@@ -740,6 +742,18 @@ function HeroSearch() {
       </button>
     </form>
   );
+}
+
+function PickupPaymentDetails({ order }: { order: Order }) {
+  if (order.fulfillmentMethod !== "PICKUP") return null;
+  const unpaid = cashPickup(order);
+  return <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+    <p>Payment Method: {unpaid || order.paymentMethod === "PAY_UPON_PICKUP" ? "Pay Upon Pickup" : order.paymentMethod === "GCASH" ? "GCash" : "Previously verified payment"}</p>
+    {unpaid && !["CANCELLED", "COMPLETED"].includes(order.status) ? <>
+      <p>Amount to Pay: {money(order.total)}</p>
+      <p>Please pay directly at the pet shop when collecting your order.</p>
+    </> : null}
+  </div>;
 }
 
 function ProviderLocation({ provider, distance }: { provider: Pick<Provider, "id" | "name" | "location" | "latitude" | "longitude" | "locationCity" | "locationProvince" | "locationAccuracy">; distance?: number }) {
@@ -3884,7 +3898,7 @@ function ProviderManagementPage() {
       ),
     enabled: isProvider && providerSection === "retail",
     refetchInterval: (current) => current.state.data?.some(
-      order => order.status === "CONFIRMED",
+      order => ["CONFIRMED", "READY_FOR_PICKUP"].includes(order.status),
     ) ? 5000 : false,
   });
   const providerArchiveQuery = useQuery({
@@ -3933,7 +3947,7 @@ function ProviderManagementPage() {
   });
   const completeOrder = useMutation({
     mutationFn: (orderId: number) => adminRequest<Order>(`/api/provider/orders/${orderId}/complete`, {
-      method: "PATCH", body: JSON.stringify({ received: true }),
+      method: "PATCH", body: JSON.stringify({ received: true, paymentReceived: true }),
     }),
     onSuccess: (completedOrder) => {
       setCompleteOrderTarget(null);
@@ -5257,6 +5271,7 @@ function ProviderManagementPage() {
                           <p className="mt-2 text-xs text-muted-foreground">
                             Payment Status: {statusLabel(order.paymentStatus ?? "UNPAID")}
                           </p>
+                          <PickupPaymentDetails order={order} />
                           {order.cancellationReason ? (
                             <p className="mt-2 text-xs text-muted-foreground">
                               <span className="font-semibold text-foreground">
@@ -5296,7 +5311,7 @@ function ProviderManagementPage() {
                               Cancel Order
                             </button>
                             </>
-                          ) : order.status === "CONFIRMED" && order.paymentStatus === "PAID" ? (
+                          ) : canCompleteProductOrder(order) ? (
                             <button type="button" className="btn btn-secondary h-9 min-h-0 px-4 text-xs" disabled={completeOrder.isPending}
                               onClick={() => { completeOrder.reset(); setCompleteOrderTarget(order.id); }}>Complete Order</button>
                           ) : (
@@ -5799,12 +5814,13 @@ function ProviderManagementPage() {
         </div>
       ) : null}
       <CompleteOrderDialog open={completeOrderTarget !== null} busy={completeOrder.isPending}
-        eligible={providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && order.status === "CONFIRMED" && order.paymentStatus === "PAID") ?? false}
+        pickupPayment={providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && cashPickup(order)) ?? false}
+        eligible={providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && canCompleteProductOrder(order)) ?? false}
         error={completeOrder.isError ? completeOrder.error.message : undefined}
         onClose={() => { setCompleteOrderTarget(null); completeOrder.reset(); }}
         onConfirm={() => {
           if (completeOrderTarget === null || completeOrderRequest.current || completeOrder.isPending ||
-              !providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && order.status === "CONFIRMED" && order.paymentStatus === "PAID")) return;
+              !providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && canCompleteProductOrder(order))) return;
           completeOrderRequest.current = true;
           completeOrder.mutate(completeOrderTarget, { onSettled: () => { completeOrderRequest.current = false; } });
         }} />
@@ -6693,7 +6709,7 @@ function OrdersPage() {
     queryKey: getListOrdersQueryKey(),
     refetchInterval: (current) => (paymentReturn === "success" &&
       current.state.data?.find(order => order.id === returnOrderId)?.paymentStatus !== "PAID") ||
-      current.state.data?.some(order => order.status === "CONFIRMED") ? 5000 : false,
+      current.state.data?.some(order => ["CONFIRMED", "READY_FOR_PICKUP"].includes(order.status)) ? 5000 : false,
   } });
   const orders = query.data ?? [];
   const payment = useMutation({
@@ -7203,6 +7219,7 @@ function OrdersPage() {
                       <p className="mt-2 text-xs text-muted-foreground" data-testid={`order-payment-status-${order.id}`}>
                         Payment Status: {statusLabel(order.paymentStatus ?? "UNPAID")}
                       </p>
+                      <PickupPaymentDetails order={order} />
                       {order.cancellationReason ? (
                         <p className="mt-2 text-xs text-muted-foreground">
                           <span className="font-semibold text-foreground">
@@ -7393,6 +7410,10 @@ function OrdersPage() {
                         Fulfillment Method: {fulfillmentLabel(supported[0])}
                       </p>
                     )}
+                    {selectedMethodForProvider(providerId) === "PICKUP" ? <div className="mt-3 text-sm">
+                      <p className="font-semibold">Payment Method: Pay Upon Pickup</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Please pay directly at the pet shop when collecting your order.</p>
+                    </div> : null}
                     {selectedMethodForProvider(providerId) === "DELIVERY" ? (
                       <div className="mt-4 border-t pt-4">
                         <p className="eyebrow">Delivery Address</p>

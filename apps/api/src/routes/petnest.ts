@@ -1,3 +1,4 @@
+import { cashPickup, canCompleteProductOrder } from "../../../../shared/pickup-payment.js";
 import { reviewEligible, validReviewInput } from "../lib/reviews.js";
 import { BOOKING_DEPOSIT } from "../../../../shared/booking-deposit.js";
 import { withRecordPetNames } from "../lib/record-pet-names.js";
@@ -178,7 +179,7 @@ type Order = {
   total: number;
   status: string;
   paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
-  paymentMethod?: "GCASH";
+  paymentMethod?: "GCASH" | "PAY_UPON_PICKUP";
   cancellationReason?: string;
   fulfillmentMethod?: FulfillmentMethod;
   deliveryAddress?: {
@@ -4152,6 +4153,9 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     res.status(400).json({ error: "Choose a valid order." });
     return;
   }
+  const current = await orderCollection.findOne({ id: orderId, providerId: access.providerId });
+  if (!current) { res.status(404).json({ error: "Order not found." }); return; }
+  const pickup = cashPickup(current);
   const result = await orderCollection.updateOne(
     {
       id: orderId,
@@ -4159,7 +4163,7 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
       status: "PENDING",
       archived: { $ne: true },
     },
-    { $set: { status: "CONFIRMED" } },
+    { $set: pickup ? { status: "READY_FOR_PICKUP", paymentStatus: "UNPAID", paymentMethod: "PAY_UPON_PICKUP" } : { status: "CONFIRMED" } },
   );
   if (!result.modifiedCount) {
     const ownedOrder = await orderCollection.findOne({
@@ -4188,7 +4192,7 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     recipientUserId: order.customerId,
     recipientRole: "customer",
     type: "order_confirmed",
-    message: `Your Pet Supplies order #${order.id} has been confirmed by the Provider.`,
+    message: pickup ? `Your Pet Supplies order #${order.id} is ready for pickup. Please pay at the pet shop.` : `Your Pet Supplies order #${order.id} has been confirmed by the Provider.`,
     relatedRecordId: order.id,
     relatedRecordType: "order",
     href: "/orders",
@@ -4203,9 +4207,15 @@ router.patch("/provider/orders/:orderId/complete", async (req, res) => {
   if (!Number.isSafeInteger(orderId) || orderId < 1 || req.body?.received !== true) {
     res.status(400).json({ error: "Confirm that the customer received or picked up this order." }); return;
   }
+  const current = await orderCollection.findOne({ id: orderId, providerId: access.providerId });
+  if (!current) { res.status(404).json({ error: "Order not found." }); return; }
+  if (!canCompleteProductOrder(current)) { res.status(409).json({ error: "This order cannot be completed. Existing online payment attempts must be resolved before accepting pickup payment." }); return; }
+  const pickup = cashPickup(current);
+  if (pickup && req.body?.paymentReceived !== true) { res.status(400).json({ error: "Confirm that pickup payment was received and the products were handed over." }); return; }
   const order = await orderCollection.findOneAndUpdate(
-    { id: orderId, providerId: access.providerId, status: "CONFIRMED", paymentStatus: "PAID", archived: { $ne: true } },
-    { $set: { status: "COMPLETED", completedAt: new Date().toISOString(), completedByProviderId: access.providerId } },
+    { id: orderId, providerId: access.providerId, status: current.status, paymentStatus: current.paymentStatus ?? { $exists: false }, archived: { $ne: true },
+      ...(pickup ? { paymentAttemptState: current.paymentAttemptState ?? { $exists: false }, paymongoCheckoutSessionId: { $exists: false } } : {}) },
+    { $set: { status: "COMPLETED", completedAt: new Date().toISOString(), completedByProviderId: access.providerId, ...(pickup ? { paymentStatus: "PAID", paymentMethod: "PAY_UPON_PICKUP" } : {}) } },
     { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
   );
   if (!order) {
@@ -4387,6 +4397,7 @@ router.post("/orders", async (req, res) => {
     status: "PENDING",
     paymentStatus: "UNPAID",
     fulfillmentMethod: parsed.data.fulfillmentMethod,
+    ...(parsed.data.fulfillmentMethod === "PICKUP" ? { paymentStatus: "UNPAID", paymentMethod: "PAY_UPON_PICKUP" } : {}),
     ...(parsed.data.fulfillmentMethod === "DELIVERY" && deliveryAddress ? {
       deliveryAddress: {
         recipientName: deliveryAddress.recipientName.trim(),

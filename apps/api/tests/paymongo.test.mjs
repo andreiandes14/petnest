@@ -145,14 +145,28 @@ test('early webhook reconciles creating session, V2 envelope works, notification
   let notifications=0;await processPaidWebhook(repo,payload,async()=>{notifications++;});
   assert.equal(repo.state.paidUpdates,1);assert.equal(notifications,1);
 });
-test('legacy orders default unpaid; pickup and delivery use the same confirmed-order eligibility', async () => {
+test('legacy delivery still uses PayMongo; pickup checkout is rejected without another charge', async () => {
   for (const fulfillmentMethod of ['PICKUP','DELIVERY']) {
     const order={...initial(),fulfillmentMethod,deliveryAddress:fulfillmentMethod==='DELIVERY'?{streetAddress:'Synthetic fixture'}:undefined};
     delete order.paymentStatus;
-    const repo=repository(order);await createOrderCheckout(repo,30,'customer-a',config,provider());
+    const repo=repository(order);const calls=[];
+    if(fulfillmentMethod==='PICKUP'){await assert.rejects(createOrderCheckout(repo,30,'customer-a',config,provider(calls)),{status:409});assert.equal(calls.length,0);}
+    else await createOrderCheckout(repo,30,'customer-a',config,provider());
     assert.equal(repo.state.order.fulfillmentMethod,fulfillmentMethod);
     assert.deepEqual(repo.state.order.deliveryAddress,order.deliveryAddress);
   }
+});
+test('previous Pickup checkout payments still verify securely and never create another checkout', async () => {
+  const order = { ...initial(), fulfillmentMethod: 'PICKUP', paymentAttemptId: 'legacy-pickup', paymentAmountCentavos: 1300,
+    paymongoCheckoutSessionId: 'cs_fixture', paymentAttemptState: 'ACTIVE' };
+  const repo = repository(order);
+  await processPaidWebhook(repo, event(order), async () => {});
+  assert.equal(repo.state.order.paymentStatus, 'PAID');
+  assert.equal(repo.state.order.paymentMethod, 'GCASH');
+  assert.equal(repo.state.order.paymongoPaymentReference, 'pay_fixture');
+  const calls = [];
+  await assert.rejects(createOrderCheckout(repo, 30, 'customer-a', config, provider(calls)), { status: 409 });
+  assert.equal(calls.length, 0);
 });
 
 function paymentRoutes(repo, calls=[], webhookSecret=undefined) {

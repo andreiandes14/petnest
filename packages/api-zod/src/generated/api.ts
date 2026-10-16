@@ -315,7 +315,7 @@ export const ListOrdersResponseItem = zod.object({
   "total": zod.number(),
   "status": zod.string(),
   "paymentStatus": zod.enum(['UNPAID', 'PENDING', 'PAID', 'FAILED', 'CANCELLED']).optional(),
-  "paymentMethod": zod.enum(['GCASH']).optional(),
+  "paymentMethod": zod.enum(['GCASH', 'PAY_UPON_PICKUP']).optional(),
   "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "deliveryAddress": zod.object({
@@ -368,7 +368,7 @@ export const CreateOrderResponse = zod.object({
   "total": zod.number(),
   "status": zod.string(),
   "paymentStatus": zod.enum(['UNPAID', 'PENDING', 'PAID', 'FAILED', 'CANCELLED']).optional(),
-  "paymentMethod": zod.enum(['GCASH']).optional(),
+  "paymentMethod": zod.enum(['GCASH', 'PAY_UPON_PICKUP']).optional(),
   "cancellationReason": zod.string().optional(),
   "fulfillmentMethod": zod.enum(['PICKUP', 'DELIVERY']).optional(),
   "deliveryAddress": zod.object({

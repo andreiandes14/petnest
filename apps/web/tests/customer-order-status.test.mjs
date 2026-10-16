@@ -41,3 +41,9 @@ test('cancellation and other existing fulfillment statuses take precedence', () 
   assert.deepEqual(customerOrderStatus({ status: 'COMPLETED', paymentStatus: 'PAID' }),
     { status: 'COMPLETED', tone: 'completed', canPay: false });
 });
+
+test('only unpaid Pickup displays Ready for Pickup with no PayMongo action; verified Pickup and Delivery remain unchanged',()=>{
+ for(const status of ['CONFIRMED','READY_FOR_PICKUP'])assert.deepEqual(customerOrderStatus({status,paymentStatus:'UNPAID',fulfillmentMethod:'PICKUP'},true),{status:'READY_FOR_PICKUP',tone:'confirmed',canPay:false});
+ assert.deepEqual(customerOrderStatus({status:'CONFIRMED',paymentStatus:'PAID',fulfillmentMethod:'PICKUP'}),{status:'CONFIRMED',tone:'confirmed',canPay:false});
+ assert.equal(customerOrderStatus({status:'CONFIRMED',paymentStatus:'UNPAID',fulfillmentMethod:'DELIVERY'}).canPay,true);
+});

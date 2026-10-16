@@ -6,16 +6,18 @@ const compile = s => ts.transpileModule(s, { compilerOptions: { module: ts.Modul
 const source = readFileSync(new URL('../src/routes/petnest.ts', import.meta.url), 'utf8');
 const display = compile(readFileSync(new URL('../../web/src/lib/customer-order-status.ts', import.meta.url), 'utf8'));
 const { customerOrderStatus } = await import(`data:text/javascript;base64,${Buffer.from(display).toString('base64')}`);
+const pickupCode=compile(readFileSync(new URL('../../../shared/pickup-payment.ts',import.meta.url),'utf8'));
+const {cashPickup,canCompleteProductOrder}=await import(`data:text/javascript;base64,${Buffer.from(pickupCode).toString('base64')}`);
 function fixture(changes = {}) {
   const row = { id: 40, providerId: 10, ownerId: 'customer', customerId: 'customer', status: 'CONFIRMED', paymentStatus: 'PAID', paymongoPaymentReference: 'pay_fixture', paidAt: '2026-10-16T00:00:00Z', total: 200, items: [{ productId: 1, productName: 'Food', price: 100, quantity: 2 }], fulfillmentMethod: 'PICKUP', ...changes };
   const handlers = new Map(); let providerId = 10, authenticated = true, writes = 0;
-  const matches = filter => Object.entries(filter).every(([key, value]) => value && typeof value === 'object' && '$ne' in value ? row[key] !== value.$ne : row[key] === value);
-  const deps = { router: { patch(path, fn) { handlers.set(path, fn); } },
+  const matches = filter => Object.entries(filter).every(([key, value]) => value && typeof value === 'object' ? ('$ne' in value ? row[key] !== value.$ne : '$exists' in value ? (row[key] !== undefined) === value.$exists : false) : row[key] === value);
+  const deps = { cashPickup, canCompleteProductOrder, createNotification:async()=>{}, router: { patch(path, fn) { handlers.set(path, fn); } },
     requireProvider: async (req, res) => { if (!authenticated) { res.status(401).json({ error: 'Sign in required' }); return null; } return { providerId }; },
-    orderCollection: { async findOne(filter) { return matches(filter) ? { ...row } : null; }, async findOneAndUpdate(filter, update) { if (!matches(filter)) return null; Object.assign(row, update.$set); writes++; return { ...row }; } },
+    orderCollection: { async updateOne(filter,update){if(!matches(filter))return {modifiedCount:0};Object.assign(row,update.$set);writes++;return{modifiedCount:1};}, async findOne(filter) { return matches(filter) ? { ...row } : null; }, async findOneAndUpdate(filter, update) { if (!matches(filter)) return null; Object.assign(row, update.$set); writes++; return { ...row }; } },
     CreateOrderResponse: { parse: value => value },
   };
-  const start = source.indexOf('router.patch("/provider/orders/:orderId/complete"');
+  const start = source.indexOf('router.patch("/provider/orders/:orderId/confirm"');
   const archive = source.indexOf('router.patch("/provider/orders/:orderId/archive"', start);
   const next = source.indexOf('\nrouter.', archive + 1);
   new Function(...Object.keys(deps), compile(source.slice(start, next < 0 ? undefined : next)))(...Object.values(deps));
@@ -38,9 +40,23 @@ for (const fulfillmentMethod of ['PICKUP', 'DELIVERY']) test(`${fulfillmentMetho
 });
 test('completion endpoint rejects wrong provider, unauthenticated, missing receipt confirmation, invalid IDs and ineligible states', async () => {
   for (const changes of [{ status: 'PENDING' }, { status: 'CANCELLED' }, { status: 'COMPLETED' }, { paymentStatus: 'UNPAID' }, { paymentStatus: 'PENDING' }, { paymentStatus: 'FAILED' }, { archived: true }]) {
-    const f = fixture(changes); assert.equal((await f.call()).code, 409); assert.equal(f.writes, 0);
+    const f = fixture({fulfillmentMethod:"DELIVERY",...changes}); assert.equal((await f.call()).code, 409); assert.equal(f.writes, 0);
   }
   const f = fixture(); assert.equal((await f.call('complete', {})).code, 400); assert.equal((await f.call('complete', { received: true }, 'invalid')).code, 400);
   f.setProvider(20); assert.equal((await f.call()).code, 404);
   f.signOut(); assert.equal((await f.call()).code, 401); assert.equal(f.writes, 0);
+});
+
+test('new pickup acceptance is Ready for Pickup/Unpaid; confirmed in-person payment completes once with cash method',async()=>{
+ const f=fixture({status:'PENDING',paymentStatus:'UNPAID',paymongoPaymentReference:undefined,paidAt:undefined});
+ assert.equal((await f.call('confirm')).code,200);assert.equal(f.row.status,'READY_FOR_PICKUP');assert.equal(f.row.paymentStatus,'UNPAID');assert.equal(f.row.paymentMethod,'PAY_UPON_PICKUP');
+ assert.equal((await f.call('complete',{received:true})).code,400);
+ assert.equal((await f.call('complete',{received:true,paymentReceived:true})).code,200);
+ assert.equal(f.row.status,'COMPLETED');assert.equal(f.row.paymentStatus,'PAID');assert.equal(f.row.paymentMethod,'PAY_UPON_PICKUP');assert.equal(f.row.total,200);assert.equal(f.row.paymongoPaymentReference,undefined);
+ assert.equal((await f.call('complete',{received:true,paymentReceived:true})).code,409);
+});
+test('delivery acceptance/payment rules and previously verified pickup payments remain unchanged',async()=>{
+ const delivery=fixture({fulfillmentMethod:'DELIVERY',status:'PENDING',paymentStatus:'UNPAID'});await delivery.call('confirm');assert.equal(delivery.row.status,'CONFIRMED');assert.equal(delivery.row.paymentStatus,'UNPAID');assert.equal((await delivery.call()).code,409);
+ const paid=fixture({paymentMethod:'GCASH'});await paid.call();assert.equal(paid.row.paymentStatus,'PAID');assert.equal(paid.row.paymentMethod,'GCASH');assert.equal(paid.row.paymongoPaymentReference,'pay_fixture');
+ for(const attempt of ['CREATING','ACTIVE','UNCERTAIN']){const f=fixture({paymentStatus:'UNPAID',paymentAttemptState:attempt,paymongoCheckoutSessionId:'cs_old'});assert.equal((await f.call('complete',{received:true,paymentReceived:true})).code,409);assert.equal(f.writes,0);}
 });

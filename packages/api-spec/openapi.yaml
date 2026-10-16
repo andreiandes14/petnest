@@ -526,7 +526,7 @@ components:
         cancellationReason: { type: string }
         fulfillmentMethod: { $ref: "#/components/schemas/FulfillmentMethod" }
         paymentStatus: { type: string, enum: [UNPAID, PENDING, PAID, FAILED, CANCELLED] }
-        paymentMethod: { type: string, enum: [GCASH] }
+        paymentMethod: { type: string, enum: [GCASH, PAY_UPON_PICKUP] }
         deliveryAddress: { $ref: "#/components/schemas/DeliveryAddress" }
         itemCount: { type: number }
         items:

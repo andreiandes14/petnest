@@ -18,7 +18,7 @@ export interface Order {
   total: number;
   status: string;
   paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
-  paymentMethod?: "GCASH";
+  paymentMethod?: "GCASH" | "PAY_UPON_PICKUP";
   cancellationReason?: string;
   fulfillmentMethod?: FulfillmentMethod;
   deliveryAddress?: DeliveryAddress;

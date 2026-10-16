@@ -16,7 +16,8 @@ export type PaymentOrder = PaymentFields & {
   id: number; ownerId: string; customerId: string; providerId: number;
   status: string; archived?: boolean; total: number;
   paymentStatus?: "UNPAID" | "PENDING" | "PAID" | "FAILED" | "CANCELLED";
-  paymentMethod?: "GCASH";
+  paymentMethod?: "GCASH" | "PAY_UPON_PICKUP";
+  fulfillmentMethod?: "PICKUP" | "DELIVERY";
   items: Array<{ productName: string; price: number; quantity: number }>;
 };
 export interface PaymentRepository<T extends PaymentOrder> {
@@ -102,6 +103,7 @@ export async function createOrderCheckout<T extends PaymentOrder>(
   const order = await orders.findOne({ id: orderId } as import("mongodb").Filter<T>);
   if (!order) throw new PaymentError(404, "Order not found.");
   if (order.ownerId !== userId || order.customerId !== userId) throw new PaymentError(403, "This order belongs to another customer.");
+  if (order.fulfillmentMethod === "PICKUP") throw new PaymentError(409, "Pickup orders are paid directly at the pet shop. Do not make another online payment.");
   if (!checkoutEligible(order)) throw new PaymentError(409, "Only confirmed, unpaid orders can be paid.");
   if (!config.secretKey?.startsWith("sk_test_") || config.secretKey.length <= 8) {
     throw new PaymentError(503, "PayMongo test payments are not configured.");
