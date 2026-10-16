@@ -302,4 +302,11 @@ record.archived = true;
 assert.equal((await request('/pets/:petId/records', {}, { petId: '9' })).body.vaccinations[0].vaccinationProgress, 'cancelled');
 assert.equal((await request('/provider/records/:recordId', { vaccinationProgress: 'completed' }, { recordId: '101' })).code, 409);
 record.archived = false;
+// Removed service references cannot be used for new bookings, even if a stale caller toggles available.
+service.removedAt = '2026-10-02T00:00:00Z';
+const bookingsBeforeRemovedService = bookings.length;
+assert.equal((await request('/bookings', { ...bookingInput, recordId: null, date: '2026-12-19', time: '15:30' })).code, 400);
+assert.equal((await request('/providers/:providerId/availability', {}, { providerId: '1' }, { serviceId: '11', month: '2026-12' })).code, 404);
+assert.equal(bookings.length, bookingsBeforeRemovedService);
+delete service.removedAt;
 console.log('PASS: provider-specific opening/closing, closing-minus-30 cutoff regardless of duration, hours updates, conflict and off-grid rejection, old bookings preserved; vaccination return-window, archive, completion and cancellation regressions.');

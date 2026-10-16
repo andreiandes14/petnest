@@ -3,6 +3,7 @@ import { bookingStatusDisplay, vaccinationCourseLabel } from "@/lib/booking-stat
 import { ProviderReviewButton } from "@/components/provider-review-button";
 import { ProviderReviews } from "@/components/provider-reviews";
 import { CompleteOrderDialog } from "@/components/complete-order-dialog";
+import { RemoveServiceDialog } from "@/components/remove-service-dialog";
 import { customerBookingSections, type BookingServiceFilter } from "@/lib/customer-bookings";
 import { CancelVaccinationDialog } from "@/components/cancel-vaccination-dialog";
 import { bookingDateParts } from "@/lib/booking-date";
@@ -3608,6 +3609,8 @@ function ProviderManagementPage() {
     refetchInterval: 30000,
   });
   const [draft, setDraft] = useState<ProviderDetail | null>(null);
+  const [removeServiceTarget, setRemoveServiceTarget] = useState<number | null>(null);
+  const removeServiceRequest = useRef(false);
   const [serviceForm, setServiceForm] = useState({
     name: "",
     description: "",
@@ -3801,11 +3804,22 @@ function ProviderManagementPage() {
     },
   });
   const deleteService = useMutation({
-    mutationFn: (id: number) =>
-      adminRequest<void>(`/api/provider/services/${id}`, { method: "DELETE" }),
-    onSuccess: () => {
-      query.refetch();
-      setNotice("Service removed.");
+    onMutate: () => queryClient.cancelQueries({ queryKey: ["provider", "profile"] }),
+    mutationFn: async (id: number) => {
+      const result = await adminRequest<{ removed: boolean; serviceId: number }>(`/api/provider/services/${id}`, { method: "DELETE" });
+      if (result?.removed !== true || result.serviceId !== id) throw new Error("Service removal could not be confirmed. Please try again.");
+      return result;
+    },
+    onSuccess: ({ serviceId }) => {
+      setDraft(current => current ? { ...current, services: current.services.filter(service => service.id !== serviceId) } : current);
+      queryClient.setQueryData<ProviderDetail>(["provider", "profile"], current => current ? { ...current, services: current.services.filter(service => service.id !== serviceId) } : current);
+      setRemoveServiceTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["provider", "profile"] });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetProviderQueryKey(draft?.id ?? 0) });
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+      queryClient.invalidateQueries({ queryKey: ["availability"] });
+      setNotice("Service removed successfully.");
     },
   });
   const updateService = useMutation({
@@ -4790,10 +4804,7 @@ function ProviderManagementPage() {
                     </button>
                     <button
                       className="btn btn-ghost"
-                      onClick={() =>
-                        window.confirm(`Remove ${service.name}?`) &&
-                        deleteService.mutate(service.id)
-                      }
+                      onClick={() => { deleteService.reset(); setNotice(""); setRemoveServiceTarget(service.id); }}
                       disabled={deleteService.isPending}
                     >
                       Remove
@@ -5813,6 +5824,14 @@ function ProviderManagementPage() {
           </div>
         </div>
       ) : null}
+      <RemoveServiceDialog open={removeServiceTarget !== null} busy={deleteService.isPending}
+        error={deleteService.isError ? deleteService.error.message : undefined}
+        onClose={() => { setRemoveServiceTarget(null); deleteService.reset(); }}
+        onConfirm={() => {
+          if (removeServiceTarget === null || removeServiceRequest.current || deleteService.isPending) return;
+          removeServiceRequest.current = true;
+          deleteService.mutate(removeServiceTarget, { onSettled: () => { removeServiceRequest.current = false; } });
+        }} />
       <CompleteOrderDialog open={completeOrderTarget !== null} busy={completeOrder.isPending}
         pickupPayment={providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && cashPickup(order)) ?? false}
         eligible={providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && canCompleteProductOrder(order)) ?? false}

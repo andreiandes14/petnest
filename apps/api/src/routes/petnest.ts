@@ -57,6 +57,7 @@ import {
 } from "../lib/fulfillment.js";
 
 type ProviderService = {
+  removedAt?: string;
   id: number;
   name: string;
   description: string;
@@ -1814,7 +1815,7 @@ router.get("/providers/:providerId", async (req, res) => {
     GetProviderResponse.parse({
       ...(await withReviewRatings([provider]))[0],
       services: provider.services.filter((service) =>
-        provider.categories.includes(service.category),
+        !service.removedAt && provider.categories.includes(service.category),
       ),
       products: provider.categories.includes("pet-supplies")
         ? provider.products
@@ -1835,7 +1836,7 @@ router.get("/providers/:providerId/availability", async (req, res) => {
   const service = provider?.services.find((item) => item.id === serviceId && item.available);
   const schedule = provider ? providerSchedule(provider.hours) : null;
   const duration = service ? bookingDuration(service.durationMinutes) : null;
-  if (!provider || !service || !provider.categories.includes(service.category) || !["grooming", "vaccination"].includes(service.category)) {
+  if (!provider || !service || service.removedAt || !provider.categories.includes(service.category) || !["grooming", "vaccination"].includes(service.category)) {
     res.status(404).json({ error: "Availability is not configured for this service." });
     return;
   }
@@ -1950,7 +1951,7 @@ router.get("/services", async (req, res) => {
     provider.services
       .filter(
         (service) =>
-          provider.categories.includes(service.category) &&
+          !service.removedAt && provider.categories.includes(service.category) &&
           (!category || service.category === category),
       )
       .map((service) => ({
@@ -1969,7 +1970,7 @@ router.get("/services/:serviceId", async (req, res) => {
     active: { $ne: false },
   });
   const service = provider?.services.find((item) => item.id === serviceId);
-  if (!provider || !service || !provider.categories.includes(service.category)) {
+  if (!provider || !service || service.removedAt || !provider.categories.includes(service.category)) {
     res.status(404).json({ error: "Service not found" });
     return;
   }
@@ -1991,7 +1992,7 @@ router.get("/provider/profile", async (req, res) => {
     res.status(404).json({ error: "Assigned provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse(provider));
+  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt) }));
 });
 
 router.patch("/provider/password", async (req, res) => {
@@ -2175,16 +2176,17 @@ router.patch("/provider/profile", async (req, res) => {
     products: existing.products,
     updatedAt: new Date().toISOString(),
   };
+  const { services: _preservedServices, ...profileChanges } = changes;
   const provider = await providerCollection.findOneAndUpdate(
     { id: access.providerId },
-    { $set: changes },
+    { $set: profileChanges },
     { returnDocument: "after", projection: { _id: 0 } },
   );
   if (!provider) {
     res.status(404).json({ error: "Assigned provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse(provider));
+  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt) }));
 });
 
 router.patch(["/provider/closure", "/admin/providers/:providerId/closure"], async (req, res) => {
@@ -2199,7 +2201,7 @@ router.patch(["/provider/closure", "/admin/providers/:providerId/closure"], asyn
     { $set: { closedUntil: req.body.closed ? nextManilaMidnight() : null, updatedAt: new Date().toISOString() } },
     { returnDocument: "after", projection: { _id: 0 } });
   if (!provider) { res.status(404).json({ error: "Provider not found." }); return; }
-  res.json(GetProviderResponse.parse(provider));
+  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt) }));
 });
 
 router.get("/admin/providers", async (req, res) => {
@@ -2490,6 +2492,7 @@ router.patch("/provider/services/:serviceId", async (req, res) => {
     return;
   }
   const existing = provider.services.find((item) => item.id === serviceId)!;
+  if (existing.removedAt) { res.status(409).json({ error: "This service has been removed." }); return; }
   const body = (req.body ?? {}) as Record<string, unknown>;
   const category = body.category ?? existing.category;
   if (
@@ -2516,10 +2519,11 @@ router.patch("/provider/services/:serviceId", async (req, res) => {
         : (existing.imageUrl ?? ""),
     updatedAt: new Date().toISOString(),
   };
-  await providerCollection.updateOne(
-    { id: provider.id, "services.id": serviceId },
+  const result = await providerCollection.updateOne(
+    { id: provider.id, services: { $elemMatch: { id: serviceId, removedAt: { $exists: false } } } },
     { $set: { "services.$": updated, updatedAt: new Date().toISOString() } },
   );
+  if (!result.matchedCount) { res.status(409).json({ error: "This service changed or was removed. Please refresh." }); return; }
   res.json(updated);
 });
 
@@ -2527,6 +2531,7 @@ router.delete("/provider/services/:serviceId", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
   const serviceId = Number(req.params.serviceId);
+  if (!Number.isSafeInteger(serviceId) || serviceId < 1) { res.status(400).json({ error: "Choose a valid service." }); return; }
   const provider = await providerCollection.findOne({
     id: access.providerId,
     "services.id": serviceId,
@@ -2540,21 +2545,24 @@ router.delete("/provider/services/:serviceId", async (req, res) => {
     res.status(403).json({ error: "This service is not assigned to your provider account." });
     return;
   }
+  const removedAt = service.removedAt ?? new Date().toISOString();
   const result = await providerCollection.updateOne(
     { id: access.providerId, "services.id": serviceId },
     {
       $set: {
         "services.$.available": false,
+        "services.$.removedAt": removedAt,
         "services.$.updatedAt": new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
     },
   );
-  if (!result.modifiedCount) {
-    res.status(404).json({ error: "Service not found" });
-    return;
+  const saved = await providerCollection.findOne({ id: access.providerId, "services.id": serviceId });
+  const removed = saved?.services.find(item => item.id === serviceId);
+  if (!result.matchedCount || !removed?.removedAt || removed.available !== false) {
+    res.status(503).json({ error: "Service removal could not be confirmed. Please try again." }); return;
   }
-  res.status(204).end();
+  res.json({ removed: true, serviceId });
 });
 
 router.post("/provider/products", async (req, res) => {
@@ -3325,7 +3333,7 @@ router.post("/bookings", async (req, res) => {
       .json({ error: "Choose a valid provider, service, and pet." });
     return;
   }
-  if (!service.available) {
+  if (service.removedAt || !service.available) {
     res.status(400).json({ error: "This service is not currently available." });
     return;
   }
