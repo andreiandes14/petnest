@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { apiRequest } from "@/lib/api-request";
@@ -11,18 +11,21 @@ export function ProviderReviewButton({ providerId, customerId }: { providerId: n
   const [selected, setSelected] = useState(0);
   const [rating, setRating] = useState("");
   const [comment, setComment] = useState("");
+  const requestInFlight = useRef(false);
   const key = ["review-eligibility", customerId];
   const eligibility = useQuery({ queryKey: key, queryFn: () => apiRequest<EligibleBooking[]>("/api/reviews/eligibility"),
     enabled: !!customerId, refetchInterval: customerId ? 15000 : false });
   const bookings = (eligibility.data ?? []).filter(b => b.providerId === providerId);
   const bookingId = bookings.some(b => b.bookingId === selected) ? selected : bookings[0]?.bookingId;
-  const save = useMutation({ mutationFn: () => apiRequest(`/api/providers/${providerId}/reviews`, {
-    method: "POST", body: JSON.stringify({ bookingId, rating: Number(rating), comment }),
-  }), onSuccess: async () => {
+  const save = useMutation({ mutationFn: (reviewedBookingId: number) => apiRequest(`/api/providers/${providerId}/reviews`, {
+    method: "POST", body: JSON.stringify({ bookingId: reviewedBookingId, rating: Number(rating), comment }),
+  }), onSuccess: async (_result, reviewedBookingId) => {
+    client.setQueryData<EligibleBooking[]>(key, (current = []) => current.filter(b => b.bookingId !== reviewedBookingId));
     setOpen(false); setSelected(0); setRating(""); setComment("");
     await Promise.all([client.invalidateQueries({ queryKey: key }), client.invalidateQueries({ queryKey: getListProvidersQueryKey() }),
       client.invalidateQueries({ queryKey: getGetProviderQueryKey(providerId) })]);
-  }, onError: () => { void client.invalidateQueries({ queryKey: key }); } });
+  }, onError: () => { void client.invalidateQueries({ queryKey: key }); },
+  onSettled: () => { requestInFlight.current = false; } });
   if (!customerId || eligibility.isError || !bookings.length) return null;
   return <>
     <button type="button" className="btn btn-secondary h-9 min-h-0 px-3 text-xs" onClick={() => { save.reset(); setOpen(true); }}>Add a Review</button>
@@ -32,7 +35,12 @@ export function ProviderReviewButton({ providerId, customerId }: { providerId: n
         <Dialog.Content className="booking-deposit-dialog" onPointerDownOutside={event => event.preventDefault()} onEscapeKeyDown={event => { if (save.isPending) event.preventDefault(); }}>
           <Dialog.Title className="modal-title booking-deposit-title">Add a Review</Dialog.Title>
           <Dialog.Description className="mt-2 text-sm text-muted-foreground">Review one completed appointment with this provider.</Dialog.Description>
-          <form className="booking-deposit-body" onSubmit={event => { event.preventDefault(); if (!save.isPending && bookingId && rating && comment.trim()) save.mutate(); }}>
+          <form className="booking-deposit-body" onSubmit={event => {
+            event.preventDefault();
+            if (requestInFlight.current || save.isPending || !bookingId || !bookings.some(b => b.bookingId === bookingId) || !rating || !comment.trim()) return;
+            requestInFlight.current = true;
+            save.mutate(bookingId);
+          }}>
             <label className="form-field"><span className="form-label">Completed booking</span>
               <select className="input select" value={bookingId} disabled={save.isPending} onChange={event => setSelected(Number(event.target.value))}>
                 {bookings.map(b => <option key={b.bookingId} value={b.bookingId}>{b.serviceName} · {b.date} · Booking #{b.bookingId}</option>)}

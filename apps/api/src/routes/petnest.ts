@@ -168,6 +168,8 @@ type Booking = {
 };
 
 type Order = {
+  completedAt?: string;
+  completedByProviderId?: number;
   id: number;
   providerId: number;
   providerName: string;
@@ -4191,6 +4193,25 @@ router.patch("/provider/orders/:orderId/confirm", async (req, res) => {
     relatedRecordType: "order",
     href: "/orders",
   });
+  res.json(CreateOrderResponse.parse(order));
+});
+
+router.patch("/provider/orders/:orderId/complete", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const orderId = Number(req.params.orderId);
+  if (!Number.isSafeInteger(orderId) || orderId < 1 || req.body?.received !== true) {
+    res.status(400).json({ error: "Confirm that the customer received or picked up this order." }); return;
+  }
+  const order = await orderCollection.findOneAndUpdate(
+    { id: orderId, providerId: access.providerId, status: "CONFIRMED", paymentStatus: "PAID", archived: { $ne: true } },
+    { $set: { status: "COMPLETED", completedAt: new Date().toISOString(), completedByProviderId: access.providerId } },
+    { returnDocument: "after", projection: { _id: 0, ownerId: 0 } },
+  );
+  if (!order) {
+    const owned = await orderCollection.findOne({ id: orderId, providerId: access.providerId });
+    res.status(owned ? 409 : 404).json({ error: owned ? "Only confirmed, paid, unarchived orders can be completed once." : "Order not found." }); return;
+  }
   res.json(CreateOrderResponse.parse(order));
 });
 

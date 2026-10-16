@@ -1,6 +1,7 @@
 import { bookingStatusDisplay, vaccinationCourseLabel } from "@/lib/booking-status";
 import { ProviderReviewButton } from "@/components/provider-review-button";
 import { ProviderReviews } from "@/components/provider-reviews";
+import { CompleteOrderDialog } from "@/components/complete-order-dialog";
 import { customerBookingSections, type BookingServiceFilter } from "@/lib/customer-bookings";
 import { CancelVaccinationDialog } from "@/components/cancel-vaccination-dialog";
 import { bookingDateParts } from "@/lib/booking-date";
@@ -3662,6 +3663,8 @@ function ProviderManagementPage() {
   } | null>(null);
   const [cancelOrderTarget, setCancelOrderTarget] =
     useState<ProviderOrder | null>(null);
+  const [completeOrderTarget, setCompleteOrderTarget] = useState<number | null>(null);
+  const completeOrderRequest = useRef(false);
   const [providerCancellationReason, setProviderCancellationReason] = useState("");
   const [providerCancellationError, setProviderCancellationError] = useState("");
   const [cancelBookingTarget, setCancelBookingTarget] =
@@ -3881,7 +3884,7 @@ function ProviderManagementPage() {
       ),
     enabled: isProvider && providerSection === "retail",
     refetchInterval: (current) => current.state.data?.some(
-      order => order.status === "CONFIRMED" && order.paymentStatus !== "PAID",
+      order => order.status === "CONFIRMED",
     ) ? 5000 : false,
   });
   const providerArchiveQuery = useQuery({
@@ -3926,6 +3929,18 @@ function ProviderManagementPage() {
       );
       queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
       setNotice(`Order #${confirmedOrder.id} confirmed.`);
+    },
+  });
+  const completeOrder = useMutation({
+    mutationFn: (orderId: number) => adminRequest<Order>(`/api/provider/orders/${orderId}/complete`, {
+      method: "PATCH", body: JSON.stringify({ received: true }),
+    }),
+    onSuccess: (completedOrder) => {
+      setCompleteOrderTarget(null);
+      queryClient.setQueryData<ProviderOrder[]>(["provider", "orders"], (orders = []) => orders.map(order => order.id === completedOrder.id ? { ...order, ...completedOrder } : order));
+      queryClient.invalidateQueries({ queryKey: ["provider", "orders"] });
+      queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+      setNotice(`Order #${completedOrder.id} completed.`);
     },
   });
   const cancelProviderBooking = useMutation({
@@ -5281,6 +5296,9 @@ function ProviderManagementPage() {
                               Cancel Order
                             </button>
                             </>
+                          ) : order.status === "CONFIRMED" && order.paymentStatus === "PAID" ? (
+                            <button type="button" className="btn btn-secondary h-9 min-h-0 px-4 text-xs" disabled={completeOrder.isPending}
+                              onClick={() => { completeOrder.reset(); setCompleteOrderTarget(order.id); }}>Complete Order</button>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
@@ -5780,6 +5798,16 @@ function ProviderManagementPage() {
           </div>
         </div>
       ) : null}
+      <CompleteOrderDialog open={completeOrderTarget !== null} busy={completeOrder.isPending}
+        eligible={providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && order.status === "CONFIRMED" && order.paymentStatus === "PAID") ?? false}
+        error={completeOrder.isError ? completeOrder.error.message : undefined}
+        onClose={() => { setCompleteOrderTarget(null); completeOrder.reset(); }}
+        onConfirm={() => {
+          if (completeOrderTarget === null || completeOrderRequest.current || completeOrder.isPending ||
+              !providerOrdersQuery.data?.some(order => order.id === completeOrderTarget && order.status === "CONFIRMED" && order.paymentStatus === "PAID")) return;
+          completeOrderRequest.current = true;
+          completeOrder.mutate(completeOrderTarget, { onSettled: () => { completeOrderRequest.current = false; } });
+        }} />
       {cancelOrderTarget ? (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -6665,7 +6693,7 @@ function OrdersPage() {
     queryKey: getListOrdersQueryKey(),
     refetchInterval: (current) => (paymentReturn === "success" &&
       current.state.data?.find(order => order.id === returnOrderId)?.paymentStatus !== "PAID") ||
-      current.state.data?.some(order => order.status === "CONFIRMED" && order.paymentStatus !== "PAID") ? 5000 : false,
+      current.state.data?.some(order => order.status === "CONFIRMED") ? 5000 : false,
   } });
   const orders = query.data ?? [];
   const payment = useMutation({
