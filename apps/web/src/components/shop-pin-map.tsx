@@ -3,12 +3,13 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { Coordinates } from "@/lib/nearby-providers";
 
-export function ShopPinMap({ center, pin, onSelect, disabled }: { center: Coordinates | null; pin: Coordinates | null; onSelect: (pin: Coordinates) => void; disabled: boolean }) {
+export function ShopPinMap({ center, pin, onSelect, disabled, focus }: { focus?: (Coordinates & { zoom: number }) | null; center: Coordinates | null; pin: Coordinates | null; onSelect: (pin: Coordinates) => void; disabled: boolean }) {
   const container = useRef<HTMLDivElement>(null);
   const instance = useRef<L.Map | null>(null);
   const marker = useRef<L.Marker | null>(null);
   const callback = useRef(onSelect);
   const locked = useRef(disabled);
+  const positioned = useRef(false);
   const [tileError, setTileError] = useState(false);
   callback.current = onSelect;
   locked.current = disabled;
@@ -25,15 +26,21 @@ export function ShopPinMap({ center, pin, onSelect, disabled }: { center: Coordi
       const point = event.latlng.wrap();
       callback.current({ latitude: point.lat, longitude: point.lng });
     });
-    const resize = new ResizeObserver(() => map.invalidateSize());
+    const resize = new ResizeObserver(() => map.invalidateSize({ pan: false }));
     resize.observe(container.current);
     return () => { resize.disconnect(); map.remove(); instance.current = null; marker.current = null; };
   }, []);
   useEffect(() => {
-    if (center) instance.current?.setView([center.latitude, center.longitude], 12);
-    else if (pin) instance.current?.setView([pin.latitude, pin.longitude], 16);
-    else instance.current?.setView([0, 0], 2); // Explicit global overview, never a shop or city location.
-  }, [center?.latitude, center?.longitude, !center && Boolean(pin)]);
+    if (focus) instance.current?.setView([focus.latitude, focus.longitude], focus.zoom);
+    else if (pin) instance.current?.setView([pin.latitude, pin.longitude], 17);
+    else if (center) instance.current?.setView([center.latitude, center.longitude], 12);
+    else if (!positioned.current) {
+      // Last-resort country overview only before any valid view. A city selection
+      // supplies its bundled centroid; losing coordinates must never reset it.
+      instance.current?.fitBounds([[4, 116], [22, 127]]);
+    }
+    if (focus || pin || center) positioned.current = true;
+  }, [focus?.latitude, focus?.longitude, focus?.zoom, center?.latitude, center?.longitude, pin?.latitude, pin?.longitude]);
   useEffect(() => {
     const map = instance.current;
     if (!map) return;

@@ -1,3 +1,5 @@
+import { philippineCityCoordinates } from "../../../../shared/philippine-city-coordinates.js";
+import { addressSearchQueries, nominatimAddressResult, type AddressLocation } from "../../../../shared/address-location.js";
 import { cashPickup, canCompleteProductOrder } from "../../../../shared/pickup-payment.js";
 import { reviewEligible, validReviewInput } from "../lib/reviews.js";
 import { BOOKING_DEPOSIT } from "../../../../shared/booking-deposit.js";
@@ -2055,6 +2057,9 @@ async function resolveProviderCity(city: string, retry = false, province?: strin
     const candidate = { latitude: provider.cityLatitude ?? (provider.locationAccuracy === "city" ? provider.latitude : null), longitude: provider.cityLongitude ?? (provider.locationAccuracy === "city" ? provider.longitude : null) };
     if (validPin(candidate)) return candidate;
   }
+  const locality = findPhilippineLocation(city, province);
+  const cityFallback = locality ? philippineCityCoordinates[locality.code] : null;
+  if (cityFallback && validPin(cityFallback)) return cityFallback;
   const endpoint = process.env.GEOCODING_URL || "https://photon.komoot.io/api/";
   const photon = process.env.GEOCODING_FORMAT === "photon" || new URL(endpoint).hostname === "photon.komoot.io";
   const cache = database.collection<{ _id: string; result: CityLocation | null; expiresAt: Date }>("shopGeocodingCache");
@@ -2092,6 +2097,54 @@ async function resolveProviderCity(city: string, retry = false, province?: strin
   } catch { return null; }
   finally { await limits.updateOne({ _id: "geocoder" }, { $set: { nextAt: new Date(Date.now() + 1200) } }); }
 }
+
+// Read-only provider address lookup: profile coordinates change only through explicit saves.
+router.post("/provider/location/resolve", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const address = typeof req.body?.address === "string" ? req.body?.address.trim().replace(/\s+/g, " ") : "";
+  const locality = typeof req.body?.city === "string" ? findPhilippineLocation(req.body?.city, typeof req.body?.province === "string" ? req.body?.province : null) : null;
+  if (address.length < 5 || address.length > 300 || /[\u0000-\u001f\u007f]/.test(address) || !locality) {
+    res.status(400).json({ error: "Enter a business address and select a Philippine city or municipality." }); return;
+  }
+  const endpoint = process.env.ADDRESS_GEOCODING_URL || "https://nominatim.openstreetmap.org/search";
+  let url: URL;
+  try { url = new URL(endpoint); } catch { res.status(503).json({ error: "Address search is unavailable. Please position the pin manually." }); return; }
+  if (url.protocol !== "https:") {
+    res.status(503).json({ error: "Address search is unavailable. Please position the pin manually." }); return;
+  }
+  const key = createHash("sha256").update(`address:v5:nominatim:${endpoint}:${address.toLowerCase()}:${locality.code}`).digest("hex");
+  const cache = database.collection<{ _id: string; result: AddressLocation | null; expiresAt: Date }>("shopAddressGeocodingCache");
+  const cached = await cache.findOne({ _id: key, expiresAt: { $gt: new Date() } });
+  if (cached) { res.json({ result: cached.result }); return; }
+  const limits = database.collection<{ _id: string; nextAt: Date }>("shopGeocodingLimits");
+  try {
+    await limits.findOneAndUpdate({ _id: "geocoder", nextAt: { $lte: new Date() } }, { $set: { nextAt: new Date(Date.now() + 60000) } }, { upsert: true });
+  } catch { res.setHeader("Retry-After", "2"); res.status(429).json({ error: "Address search is busy. Retrying shortly." }); return; }
+  const cityFallback: AddressLocation | null = philippineCityCoordinates[locality.code] ? { ...philippineCityCoordinates[locality.code], accuracy: "city", zoom: 12 } : null;
+  try {
+    const queries = addressSearchQueries(address, locality.name, locality.province);
+    let best: AddressLocation | null = null, requested = false;
+    for (const query of queries) {
+      if (requested) await new Promise(resolve => setTimeout(resolve, 1200));
+      requested = true;
+      url.searchParams.set("q", query); url.searchParams.set("limit", "10");
+      url.searchParams.set("format", "jsonv2"); url.searchParams.set("addressdetails", "1");
+      url.searchParams.set("countrycodes", "ph"); url.searchParams.set("accept-language", "en");
+      const response = await fetch(url, { headers: { "User-Agent": "PetNest-AddressLocation/1.0 (+https://petnest-api.vercel.app)", Accept: "application/json" }, signal: AbortSignal.timeout(6000) });
+      if (!response.ok) {
+        res.json({ result: best ?? cityFallback, unavailable: true }); return;
+      }
+      const result = nominatimAddressResult(await response.json(), queries[0], locality.name, locality.province);
+      if (result && (!best || result.zoom > best.zoom)) best = result;
+      if (best && best.accuracy !== "city") break;
+    }
+    const result = best ?? cityFallback;
+    await cache.updateOne({ _id: key }, { $set: { result, expiresAt: new Date(Date.now() + (result && result.accuracy !== "city" ? 7 * 86400000 : 60000)) } }, { upsert: true });
+    res.json({ result });
+  } catch { res.json({ result: cityFallback, unavailable: true }); }
+  finally { await limits.updateOne({ _id: "geocoder" }, { $set: { nextAt: new Date(Date.now() + 1200) } }); }
+});
 
 router.patch("/provider/profile", async (req, res) => {
   const access = await requireProvider(req, res);
