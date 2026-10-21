@@ -19,9 +19,9 @@ function fixture() {
   }, bookingCollection: { find(filter) { return { async toArray() { return bookings.filter(b => match(b, filter)); } }; }, async findOne(filter) { return bookings.find(b => match(b, filter)) ?? null; } }, reviewCollection, reviewEligible, validReviewInput, randomUUID: () => 'review-fixture' };
   const start = source.indexOf('router.get("/reviews/eligibility"');
   new Function(...Object.keys(deps), compile(source.slice(start, source.indexOf('router.get("/providers",', start))))(...Object.values(deps));
-  return { bookings, reviews, setCustomer(value) { customer = value; }, signOut() { authenticated = false; }, async call(path, body = {}, providerId = '10') {
+  return { bookings, reviews, setCustomer(value) { customer = value; }, signOut() { authenticated = false; }, async call(path, body = {}, providerId = '10', query = {}) {
     const res = { code: 200, status(code) { this.code = code; return this; }, json(body) { this.body = body; return this; } };
-    await handlers.get(path)({ params: { providerId }, body }, res); return res;
+    await handlers.get(path)({ params: { providerId }, body, query }, res); return res;
   } };
 }
 const input = { bookingId: 1, rating: 5, comment: 'Verified service review' };
@@ -63,4 +63,18 @@ test('public rating/count summaries reflect actual submitted reviews without ove
   const result = await summarize(providers);
   assert.equal(result[0].reviewCount, 2); assert.equal(result[0].rating, 3);
   assert.deepEqual(result[1], providers[1]); assert.deepEqual(providers, before);
+});
+
+
+test('booking history reports reviewed state from saved reviews without including unperformed or unrelated bookings', async () => {
+  const f=fixture();
+  await f.call(submit,input);
+  const history=await f.call('/reviews/eligibility',{},'10',{includeReviewed:'1'});
+  assert.deepEqual(history.body.map(b=>[b.bookingId,b.reviewed]),[[1,true],[2,false]]);
+  assert.equal((await f.call(submit,{...input,bookingId:2})).code,201);
+  const refreshed=await f.call('/reviews/eligibility',{},'10',{includeReviewed:'1'});
+  assert.ok(refreshed.body.every(b=>b.reviewed));
+  f.bookings[1].status='no_show';
+  assert.deepEqual((await f.call('/reviews/eligibility',{},'10',{includeReviewed:'1'})).body.map(b=>b.bookingId),[1]);
+  f.setCustomer('other');assert.deepEqual((await f.call('/reviews/eligibility',{},'10',{includeReviewed:'1'})).body,[]);
 });

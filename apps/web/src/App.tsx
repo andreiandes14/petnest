@@ -2460,6 +2460,7 @@ function CustomerBookingStatusBadge({ booking }: { booking: Booking }) {
 }
 
 function BookingsPage() {
+  const { user } = useAuth();
   const [serviceFilter, setServiceFilter] = useState<BookingServiceFilter>("all");
   const query = useListBookings({
     query: { queryKey: getListBookingsQueryKey(), refetchInterval: 3000 },
@@ -2545,7 +2546,11 @@ function BookingsPage() {
           ) : null}
         </div>
         <div className="booking-side">
-          <CustomerBookingStatusBadge booking={booking} />
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {booking.status.toLowerCase() === "completed" && ["grooming", "vaccination"].includes(booking.serviceCategory ?? "") ?
+              <ProviderReviewButton providerId={booking.providerId} providerName={booking.providerName} bookingId={booking.id} customerId={user?.role === "customer" ? user.id : undefined} /> : null}
+            <CustomerBookingStatusBadge booking={booking} />
+          </div>
           <span className="booking-price">{money(booking.price)}</span>
           <BookingDepositPanel booking={booking} customer />
         </div>
@@ -3683,6 +3688,34 @@ function ProviderManagementPage() {
   const [scheduleDate, setScheduleDate] = useState("");
   const [expectedReturnMonths, setExpectedReturnMonths] = useState("");
   const [showBackgroundForm, setShowBackgroundForm] = useState(false);
+  const [backgroundSaving, setBackgroundSaving] = useState(false);
+  const [backgroundError, setBackgroundError] = useState("");
+  const backgroundRequest = useRef(false);
+  const saveBackground = async (imageUrl: string) => {
+    if (backgroundRequest.current) return;
+    backgroundRequest.current = true;
+    setBackgroundSaving(true);
+    setBackgroundError("");
+    try {
+      const saved = await adminRequest<{ imageUrl: string }>("/api/provider/background", { method: "PATCH", body: JSON.stringify({ imageUrl }) });
+      if (saved.imageUrl !== imageUrl) throw new Error("Background persistence was not confirmed.");
+      await queryClient.cancelQueries({ queryKey: ["provider", "profile"] });
+      setDraft(current => current ? { ...current, imageUrl: saved.imageUrl } : current);
+      queryClient.setQueryData<ProviderDetail>(["provider", "profile"], current => current ? { ...current, imageUrl: saved.imageUrl } : current);
+      void queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+      if (query.data) void queryClient.invalidateQueries({ queryKey: getGetProviderQueryKey(query.data.id) });
+      setNotice(imageUrl ? "Store background uploaded successfully." : "Store background removed.");
+      setShowBackgroundForm(false);
+    } catch {
+      const message = "Failed to upload store background. Please try again.";
+      setBackgroundError(message);
+      throw new Error(message);
+    } finally {
+      backgroundRequest.current = false;
+      setBackgroundSaving(false);
+    }
+  };
+
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [passwordForm, setPasswordForm] = useState({
     currentPassword: "",
@@ -4432,7 +4465,8 @@ function ProviderManagementPage() {
               </div>
               <button
                 className="btn btn-secondary"
-                onClick={() => setShowBackgroundForm((open) => !open)}
+                disabled={backgroundSaving}
+                onClick={() => { setBackgroundError(""); setShowBackgroundForm((open) => !open); }}
               >
                 {draft.imageUrl
                   ? "Change background"
@@ -4457,35 +4491,12 @@ function ProviderManagementPage() {
                   <h2 id="background-title" className="modal-title mb-5">
                     Store background
                   </h2>
-                  <CroppedImageInput label="Store background image" value={draft.imageUrl} aspect={16 / 9} onChange={imageUrl => setDraft(current => current ? { ...current, imageUrl } : current)} />
+                  <CroppedImageInput label="Store background image" value={query.data?.imageUrl} aspect={16 / 9} disabled={backgroundSaving} onChange={saveBackground} />
+                  {backgroundSaving ? <p className="mt-3 text-sm" role="status">Saving...</p> : null}
+                  {backgroundError ? <p className="mt-3 text-sm text-destructive" role="alert">{backgroundError}</p> : null}
                   <div className="mt-5 flex gap-2">
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => {
-                        updateProfile.mutate(draft);
-                        setShowBackgroundForm(false);
-                      }}
-                    >
-                      Upload
-                    </button>
-                    {draft.imageUrl ? (
-                      <button
-                        className="btn btn-ghost"
-                        onClick={() => {
-                          const next = { ...draft, imageUrl: "" };
-                          setDraft(next);
-                          updateProfile.mutate(next);
-                        }}
-                      >
-                        Remove
-                      </button>
-                    ) : null}
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => setShowBackgroundForm(false)}
-                    >
-                      Cancel
-                    </button>
+                    {query.data?.imageUrl ? <button type="button" className="btn btn-ghost" disabled={backgroundSaving} onClick={() => { void saveBackground("").catch(() => {}); }}>Remove</button> : null}
+                    <button type="button" className="btn btn-ghost" disabled={backgroundSaving} onClick={() => setShowBackgroundForm(false)}>Cancel</button>
                   </div>
                 </div>
               </div>

@@ -8,11 +8,11 @@ import ts from 'typescript';
 const source = readFileSync(new URL('../src/components/provider-review-button.tsx', import.meta.url), 'utf8');
 const component = source.slice(source.indexOf('export function ProviderReviewButton')).replace('export function', 'function');
 const code = ts.transpileModule(component, { fileName: 'button.tsx', compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } }).outputText;
-function render(customerId, bookings, providerId = 10) {
+function render(customerId, bookings, providerId = 10, extra = {}) {
   const deps = { React, Dialog, useRef: value => ({ current: value }), useState: value => [value, () => {}], useQuery: () => ({ data: bookings, isError: false }),
     useMutation: () => ({ isPending: false, isError: false }), useQueryClient: () => ({}), apiRequest() {}, getListProvidersQueryKey() {}, getGetProviderQueryKey() {} };
   const Button = new Function(...Object.keys(deps), `${code};return ProviderReviewButton;`)(...Object.values(deps));
-  return renderToStaticMarkup(React.createElement(Button, { customerId, providerId }));
+  return renderToStaticMarkup(React.createElement(Button, { customerId, providerId, ...extra }));
 }
 test('actual card review control is hidden for signed-out, ineligible, already-reviewed and other-provider customers', () => {
   const booking = { bookingId: 1, providerId: 10, serviceName: 'Grooming', date: '2026-10-16' };
@@ -47,4 +47,14 @@ test('rapid form submissions send one request; success immediately removes only 
   assert.deepEqual(bookings.map(b => b.bookingId), [2]);
   await options.onSuccess({ saved: true }, 2);
   assert.deepEqual(bookings, []);
+});
+
+
+test('booking-specific control never borrows another booking eligibility and restores Reviewed from backend data',()=>{
+  const bookings=[{bookingId:1,providerId:10,serviceName:'Bath',date:'2026-10-16',reviewed:true},{bookingId:2,providerId:10,serviceName:'Anti-rabies',date:'2026-10-17',reviewed:false}];
+  assert.match(render('customer',bookings,10,{bookingId:1,providerName:'Shop'}),/Reviewed/);
+  assert.doesNotMatch(render('customer',bookings,10,{bookingId:1}),/Add a Review/);
+  assert.match(render('customer',bookings,10,{bookingId:2}),/Add a Review/);
+  assert.equal(render('customer',bookings,10,{bookingId:3}),'');
+  assert.equal(render(undefined,bookings,10,{bookingId:2}),'');
 });

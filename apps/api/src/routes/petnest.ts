@@ -1660,7 +1660,10 @@ router.get("/reviews/eligibility", async (req, res) => {
   const completed = await bookingCollection.find({ ownerId: access.userId, status: "completed", serviceCategory: { $in: ["grooming", "vaccination"] } }).toArray();
   const reviewed = completed.length ? await reviewCollection.find({ bookingId: { $in: completed.map(b => b.id) } }, { projection: { bookingId: 1 } }).toArray() : [];
   const ids = new Set(reviewed.map(r => r.bookingId));
-  res.json(completed.filter(b => !ids.has(b.id)).map(b => ({ bookingId: b.id, providerId: b.providerId, serviceName: b.serviceName, date: b.date })));
+  const includeReviewed = req.query?.includeReviewed === "1";
+  res.json(completed.filter(b => includeReviewed || !ids.has(b.id)).map(b => ({ bookingId: b.id, providerId: b.providerId, serviceName: b.serviceName, date: b.date,
+    ...(includeReviewed ? { reviewed: ids.has(b.id) } : {}),
+  })));
 });
 
 router.post("/providers/:providerId/reviews", async (req, res) => {
@@ -2148,6 +2151,37 @@ router.post("/provider/location/resolve", async (req, res) => {
   finally { await limits.updateOne({ _id: "geocoder" }, { $set: { nextAt: new Date(Date.now() + 1200) } }); }
 });
 
+router.patch("/provider/background", async (req, res) => {
+  const access = await requireProvider(req, res);
+  if (!access?.providerId) return;
+  const imageUrl = req.body?.imageUrl;
+  if (typeof imageUrl !== "string" || imageUrl.length > 8_000_000) {
+    res.status(400).json({ error: "Choose an image smaller than 6 MB." }); return;
+  }
+  if (imageUrl) {
+    const match = imageUrl.match(/^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/);
+    const bytes = match ? Buffer.from(match[2], "base64") : null;
+    const format = match?.[1];
+    const validHeader = bytes && (
+      (format === "png" && bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) ||
+      (format === "jpeg" && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) ||
+      (format === "webp" && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") ||
+      (format === "gif" && ["GIF87a", "GIF89a"].includes(bytes.toString("ascii", 0, 6)))
+    );
+    if (!bytes || !validHeader || bytes.length > 6 * 1024 * 1024 || bytes.toString("base64") !== match?.[2]) {
+      res.status(400).json({ error: "Choose a valid JPG, PNG, WebP or GIF image smaller than 6 MB." }); return;
+    }
+  }
+  const saved = await providerCollection.findOneAndUpdate(
+    { id: access.providerId }, { $set: { imageUrl, updatedAt: new Date().toISOString() } },
+    { returnDocument: "after", projection: { imageUrl: 1 } },
+  );
+  if (!saved || saved.imageUrl !== imageUrl) {
+    res.status(503).json({ error: "Failed to upload store background. Please try again." }); return;
+  }
+  res.json({ imageUrl: saved.imageUrl });
+});
+
 router.patch("/provider/profile", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
@@ -2231,7 +2265,7 @@ router.patch("/provider/profile", async (req, res) => {
     products: existing.products,
     updatedAt: new Date().toISOString(),
   };
-  const { services: _preservedServices, products: _preservedProducts, ...profileChanges } = changes;
+  const { services: _preservedServices, products: _preservedProducts, imageUrl: _preservedBackground, ...profileChanges } = changes;
   const provider = await providerCollection.findOneAndUpdate(
     { id: access.providerId },
     { $set: profileChanges },

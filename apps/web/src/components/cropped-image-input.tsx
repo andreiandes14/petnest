@@ -3,8 +3,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import Cropper from "react-easy-crop";
 import { croppedImage, validateCropFile, type CropArea } from "@/lib/image-crop";
 
-export function CroppedImageInput({ label, value, aspect = 1, onChange }: {
-  label: string; value?: string; aspect?: number; onChange: (image: string) => void;
+export function CroppedImageInput({ label, value, aspect = 1, disabled = false, onChange }: {
+  label: string; value?: string; aspect?: number; disabled?: boolean; onChange: (image: string) => void | Promise<void>;
 }) {
   const [source, setSource] = useState<string | null>(null);
   const [crop, setCrop] = useState({ x: 0, y: 0 });
@@ -21,7 +21,7 @@ export function CroppedImageInput({ label, value, aspect = 1, onChange }: {
   return <div className="space-y-2 min-w-0">
     <label className="block text-sm font-semibold">
       {label}
-      <input className="input mt-2 max-w-full" type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={event => {
+      <input className="input mt-2 max-w-full" type="file" disabled={disabled || busy} accept="image/jpeg,image/png,image/webp,image/gif" onChange={event => {
         const file = event.target.files?.[0]; event.target.value = "";
         if (!file) return;
         const problem = validateCropFile(file);
@@ -54,7 +54,7 @@ export function CroppedImageInput({ label, value, aspect = 1, onChange }: {
               applying.current = true; setBusy(true); setError("");
               try {
                 const result = await croppedImage(source, area, aspect > 1 ? 1600 : 1200);
-                if (mounted.current) { onChange(result); setSource(null); }
+                if (mounted.current) { await onChange(result); if (mounted.current) setSource(null); }
               } catch (failure) { if (mounted.current) setError(failure instanceof Error ? failure.message : "The image could not be cropped. Please retry."); }
               finally { applying.current = false; if (mounted.current) setBusy(false); }
             }}>{busy ? "Applying..." : "Apply Crop"}</button>
