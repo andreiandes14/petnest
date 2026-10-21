@@ -254,7 +254,9 @@ export async function reconcileCheckout<T extends PaymentOrder>(orders: PaymentR
   const order = await orders.findOne({ id } as Filter<T>);
   if (!order || order.ownerId !== userId) throw new PaymentError(404, "Booking not found.");
   if (order.paymentStatus === "PAID") return { paid: true };
-  if (!order.paymongoCheckoutSessionId || !order.paymentAttemptId) return { paid: false };
+  if (!order.paymongoCheckoutSessionId || !order.paymentAttemptId) return {
+    paid: false, retryAllowed: !["CREATING", "UNCERTAIN", "ACTIVE"].includes(order.paymentAttemptState ?? ""),
+  };
   if (!secretKey?.startsWith("sk_test_") || secretKey.length <= 8) throw new PaymentError(503, "PayMongo test payments are not configured.");
   let payload: unknown;
   try {
@@ -273,7 +275,23 @@ export async function reconcileCheckout<T extends PaymentOrder>(orders: PaymentR
     throw new PaymentError(409, "Payment verification does not match this booking.");
   }
   const payments = Array.isArray(attributes.payments) ? attributes.payments : [];
-  if (!payments.some(payment => object(object(payment).attributes).status === "paid")) return { paid: false };
+  if (!payments.some(payment => object(object(payment).attributes).status === "paid")) {
+    const intent = object(object(attributes.payment_intent).attributes);
+    const processing = payments.some(payment => ["pending", "processing"].includes(String(object(object(payment).attributes).status))) ||
+      ["processing", "succeeded"].includes(String(intent.status));
+    if (processing) return { paid: false, retryAllowed: false };
+    if (attributes.status === "expired") {
+      const updated = await orders.updateOne({ id: order.id, paymentAttemptId: order.paymentAttemptId,
+        paymongoCheckoutSessionId: session.id, paymentStatus: { $ne: "PAID" },
+      } as Filter<T>, { $set: { paymentAttemptState: "FAILED", paymentStatus: "UNPAID" },
+        $unset: { paymongoCheckoutSessionId: "", paymongoCheckoutUrl: "" },
+      } as unknown as import("mongodb").UpdateFilter<T>);
+      if (!updated.modifiedCount) return { paid: false, retryAllowed: false };
+      return { paid: false, retryAllowed: true };
+    }
+    // Reopening the same unpaid session does not create a second payment attempt.
+    return { paid: false, retryAllowed: attributes.status === "active" && order.paymentAttemptState === "ACTIVE" && Boolean(order.paymongoCheckoutUrl) };
+  }
   await processPaidWebhook(orders, { data: { attributes: { livemode: false, type: "checkout_session.payment.paid", data: session } } }, notify);
   return { paid: true };
 }

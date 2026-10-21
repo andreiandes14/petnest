@@ -110,7 +110,7 @@ test('return before webhook, failed/cancelled payment, bad association, amount a
   if(mode==='wrong-mode')data.attributes.livemode=true;
   if(mode==='wrong-amount')data.attributes.payments[0].attributes.amount=1;
   const get=async()=>({ok:mode!=='unavailable',json:async()=>({data})});
-  if(mode==='pending')assert.deepEqual(await reconcileCheckout(f.repo,7,'customer',config.secretKey,async()=>{},get),{paid:false});
+  if(mode==='pending')assert.deepEqual(await reconcileCheckout(f.repo,7,'customer',config.secretKey,async()=>{},get),{paid:false,retryAllowed:false});
   else await assert.rejects(reconcileCheckout(f.repo,7,'customer',config.secretKey,async()=>{},get));
   assert.equal(f.row.paymentStatus,'UNPAID');assert.equal(f.paidWrites,0);
   if(mode==='pending'){await processPaidWebhook(f.repo,event(f.row),async()=>{});assert.equal(f.row.status,'confirmed');}
@@ -130,4 +130,19 @@ test('verification route requires customer ownership, validates IDs, and never a
  assert.equal((await call('7')).code,404);
  authorized=false;assert.equal((await call('7')).code,401);
  assert.equal(f.paidWrites,0);
+});
+
+
+test('abandoned active checkout is reusable, processing is blocked, expired checkout is safely replaceable', async()=>{
+ for (const mode of ['active','processing','expired','unknown']) {
+  const f=fixture();await createOrderCheckout(f.repo,7,'customer',config,f.request);
+  const data=event(f.row).data.attributes.data;
+  data.attributes.payments=[];data.attributes.status=mode==='processing'?'active':mode;
+  if(mode==='processing')data.attributes.payment_intent={attributes:{status:'processing'}};
+  const result=await reconcileCheckout(f.repo,7,'customer',config.secretKey,async()=>{},async()=>({ok:true,json:async()=>({data})}));
+  assert.equal(result.paid,false);assert.equal(result.retryAllowed,['active','expired'].includes(mode));
+  assert.equal(f.row.status,'awaiting_payment');assert.equal(f.paidWrites,0);
+  if(mode==='active'){await createOrderCheckout(f.repo,7,'customer',config,f.request);assert.equal(f.calls.length,1);}
+  if(mode==='expired'){assert.equal(f.row.paymongoCheckoutSessionId,undefined);await createOrderCheckout(f.repo,7,'customer',config,f.request);assert.equal(f.calls.length,2);}
+ }
 });

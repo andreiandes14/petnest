@@ -2375,30 +2375,43 @@ function BookingDepositNotice() {
 function BookingDepositPanel({ booking, customer = false }: { booking: Booking; customer?: boolean }) {
   const [confirming, setConfirming] = useState(false);
   const [verification, setVerification] = useState<"idle" | "checking" | "delayed">("idle");
+  const [retryAllowed, setRetryAllowed] = useState(false);
+  const [verificationRequest, setVerificationRequest] = useState(0);
   useEffect(() => {
     if (!customer || booking.paymentStatus === "PAID" || booking.status !== "awaiting_payment" ||
-        !["ACTIVE", "UNCERTAIN"].includes(booking.paymentAttemptState ?? "")) {
+        !["CREATING", "ACTIVE", "UNCERTAIN"].includes(booking.paymentAttemptState ?? "")) {
       setVerification("idle");
+      setRetryAllowed(!["CREATING", "ACTIVE", "UNCERTAIN"].includes(booking.paymentAttemptState ?? ""));
       return;
     }
+    const controller = new AbortController();
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
-    const deadline = Date.now() + 120_000;
+    const deadline = setTimeout(() => {
+      stopped = true;
+      controller.abort();
+      clearTimeout(timer);
+      setVerification("delayed");
+    }, 120_000);
+    setRetryAllowed(false);
     setVerification("checking");
     const check = async () => {
       try {
-        const result = await adminRequest<{ paid: boolean }>(`/api/bookings/${booking.id}/payment/verify`, { method: "POST" });
+        const result = await adminRequest<{ paid: boolean; retryAllowed?: boolean }>(`/api/bookings/${booking.id}/payment/verify`, { method: "POST", signal: controller.signal });
         if (stopped) return;
-        await queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() });
-        if (result.paid) { setVerification("idle"); return; }
-      } catch { /* Delayed verification is not evidence of payment failure. */ }
-      if (stopped) return;
-      if (Date.now() >= deadline) { setVerification("delayed"); return; }
-      timer = setTimeout(check, 10_000);
+        void queryClient.invalidateQueries({ queryKey: getListBookingsQueryKey() });
+        if (result.paid || result.retryAllowed) {
+          clearTimeout(deadline);
+          setRetryAllowed(Boolean(result.retryAllowed));
+          setVerification("idle");
+          return;
+        }
+      } catch { /* A network error is not evidence that retrying a payment is safe. */ }
+      if (!stopped) timer = setTimeout(check, 10_000);
     };
     void check();
-    return () => { stopped = true; clearTimeout(timer); };
-  }, [customer, booking.id, booking.status, booking.paymentStatus, booking.paymentAttemptState]);
+    return () => { stopped = true; controller.abort(); clearTimeout(deadline); clearTimeout(timer); };
+  }, [customer, booking.id, booking.status, booking.paymentStatus, booking.paymentAttemptState, verificationRequest]);
   const payment = useMutation({
     mutationFn: () => adminRequest<{ checkout_url: string }>(`/api/bookings/${booking.id}/payment`, { method: "POST" }),
     onSuccess: ({ checkout_url }) => {
@@ -2410,7 +2423,8 @@ function BookingDepositPanel({ booking, customer = false }: { booking: Booking; 
   });
   if (!booking.depositRequired) return null;
   const paid = booking.paymentStatus === "PAID";
-  const processing = verification === "checking" || ["CREATING", "UNCERTAIN"].includes(booking.paymentAttemptState ?? "");
+  const processing = verification === "checking";
+  const needsVerification = ["CREATING", "ACTIVE", "UNCERTAIN"].includes(booking.paymentAttemptState ?? "") && !retryAllowed;
   return <div className="mt-3 space-y-2 text-sm">
     <p>Payment Status: <strong>{paid ? "Paid" : "Unpaid"}</strong></p>
     <p>{paid ? "Booking Deposit Paid" : "Booking Deposit"}: {money(BOOKING_DEPOSIT)}{paid && booking.status === "no_show" ? " — Forfeited" : ""}</p>
@@ -2418,9 +2432,11 @@ function BookingDepositPanel({ booking, customer = false }: { booking: Booking; 
     <p>Remaining Service Balance: {money(remainingBookingBalance(booking))}</p>
     <p className="text-xs text-muted-foreground">{booking.status === "no_show" ? "No remaining service payment due. No service was performed." : "The remaining balance is payable directly to the provider."}</p>
     {verification === "checking" ? <p role="status">Verifying your payment. Your booking will update automatically once payment is confirmed.</p> : null}
-    {verification === "delayed" ? <p role="status">Payment confirmation is delayed. Please check again shortly; do not pay again. Your booking remains unconfirmed until payment is verified.</p> : null}
+    {verification === "delayed" ? <p role="status">We couldn't confirm your payment yet. Please check your payment status before trying again.</p> : null}
     {booking.status === "no_show" && paid ? <p className="text-xs text-destructive">Deposit forfeited under the acknowledged no-show policy.</p> : null}
-    {customer && booking.status === "awaiting_payment" && !paid ? <button className="btn btn-primary" disabled={processing || payment.isPending} onClick={() => setConfirming(true)}>{processing ? "Payment Processing" : "Proceed to Payment"}</button> : null}
+    {customer && booking.status === "awaiting_payment" && !paid ? <button type="button" className="btn btn-primary" disabled={processing || payment.isPending}
+      onClick={() => needsVerification ? setVerificationRequest(value => value + 1) : setConfirming(true)}>
+      {processing ? "Payment Processing" : needsVerification ? "Check Payment Status" : "Proceed to Payment"}</button> : null}
     <BookingDepositDialog open={confirming} onClose={() => setConfirming(false)} onConfirm={() => payment.mutate()} busy={payment.isPending} processing={processing} error={payment.isError ? payment.error.message : undefined}>
       <BookingDepositNotice />
     </BookingDepositDialog>

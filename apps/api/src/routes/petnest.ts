@@ -3989,6 +3989,7 @@ router.post("/bookings/:bookingId/payment", async (req, res) => {
     if (booking.paymongoCheckoutSessionId) {
       const verified = await reconcileCheckout(bookingPaymentRepository(bookingCollection), id, access.userId, process.env.PAYMONGO_SECRET_KEY, notifyPaidBooking);
       if (verified.paid) throw new PaymentError(409, "This booking is already paid. Please refresh your bookings.");
+      if (!verified.retryAllowed) throw new PaymentError(409, "Payment is still being verified. Please check payment status before trying again.");
     }
     res.json(await createOrderCheckout(bookingPaymentRepository(bookingCollection), id, access.userId, { secretKey: process.env.PAYMONGO_SECRET_KEY, webUrl: paymentWebUrl(process.env) }));
   } catch (error) { res.status(error instanceof PaymentError ? error.status : 503).json({ error: error instanceof PaymentError ? error.message : "Booking payment could not be prepared. Please try again." }); }
