@@ -59,6 +59,7 @@ export interface ProviderProduct {
   price: number;
   imageUrl: string;
   category: string;
+  productCategory?: "food" | "supplies";
   /** @minimum 0 */
   stock: number;
   active: boolean;

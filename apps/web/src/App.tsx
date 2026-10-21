@@ -1,3 +1,4 @@
+import { filterSupplyProducts, productCategoryLabel } from "@/lib/product-categories";
 import { RemoveProductDialog } from "@/components/remove-product-dialog";
 import { CroppedImageInput } from "@/components/cropped-image-input";
 import { cashPickup, canCompleteProductOrder } from "../../../shared/pickup-payment";
@@ -1900,6 +1901,7 @@ function ProviderDetailPage() {
       return [];
     }
   });
+  const [productFilter, setProductFilter] = useState("all");
   const [checkingOut, setCheckingOut] = useState(false);
   const createOrder = useCreateOrder();
   const [notice, setNotice] = useState("");
@@ -1927,7 +1929,7 @@ function ProviderDetailPage() {
       : selectedCategory
         ? []
         : provider.services;
-  const visibleProducts =
+  const availableProducts =
     selectedCategory === "pet-supplies"
       ? provider.products.filter(
           (product) => product.category === "pet-supplies" && product.active,
@@ -1935,6 +1937,7 @@ function ProviderDetailPage() {
       : selectedCategory
         ? []
         : provider.products;
+  const visibleProducts = filterSupplyProducts(availableProducts, productFilter);
   const addProduct = (product: ProviderProduct) => {
     setCart((current) => {
       const existing = current.find((item) => item.product.id === product.id);
@@ -2097,7 +2100,7 @@ function ProviderDetailPage() {
       <div className={`detail-panels ${suppliesOnly ? "pet-supplies-panels" : ""}`}>
         {!suppliesOnly ? (
           <section className="surface-card p-5">
-            <div className="mb-4 flex items-end justify-between">
+            <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="eyebrow">Care menu</p>
                 <h2 className="section-title mt-1">Services</h2>
@@ -2147,12 +2150,18 @@ function ProviderDetailPage() {
                 <p className="eyebrow">From their shelves</p>
                 <h2 className="section-title mt-1">Pet supplies</h2>
               </div>
+              <label className="flex flex-col gap-1 text-xs font-semibold">Sort By
+                <select className="input w-[180px] rounded-xl border-primary/20" value={productFilter} onChange={event => setProductFilter(event.target.value)}>
+                  <option value="all">All Products</option><option value="food">Food</option><option value="supplies">Supplies</option>
+                </select>
+              </label>
               {cart.length ? (
                 <span className="tag tag-accent">
                   {cart.reduce((sum, item) => sum + item.quantity, 0)} in basket
                 </span>
               ) : null}
             </div>
+            {visibleProducts.length === 0 ? <p className="py-6 text-sm text-muted-foreground">No products available in this category.</p> : null}
             <div className="pet-supplies-grid">
               {visibleProducts.map((product) => (
                 <div
@@ -3645,6 +3654,7 @@ function ProviderManagementPage() {
     price: "",
     stock: "0",
     category: "pet-supplies",
+    productCategory: "",
     imageUrl: "",
   });
   const [recordForm, setRecordForm] = useState({
@@ -3860,6 +3870,7 @@ function ProviderManagementPage() {
       const description = productForm.description.trim();
       const price = Number(productForm.price);
       const stock = Number(productForm.stock);
+      if (!["food", "supplies"].includes(productForm.productCategory)) throw new Error("Select Food or Supplies as the product category.");
       if (!name) throw new Error("Product name is required.");
       if (!description) throw new Error("Product description is required.");
       if (!Number.isFinite(price) || price < 0)
@@ -3896,6 +3907,7 @@ function ProviderManagementPage() {
         price: "",
         stock: "0",
         category: "pet-supplies",
+        productCategory: "",
         imageUrl: "",
       });
       setShowProductForm(false);
@@ -3931,6 +3943,8 @@ function ProviderManagementPage() {
     onSuccess: () => {
       setEditingProductId(null);
       query.refetch();
+      queryClient.invalidateQueries({ queryKey: getGetProviderQueryKey(query.data!.id) });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
       setNotice("Product updated.");
     },
   });
@@ -4880,7 +4894,7 @@ function ProviderManagementPage() {
                     <div className="flex-1">
                       <p className="font-semibold">{product.name}</p>
                       <p className="text-xs text-muted-foreground">
-                        {product.category} · {money(product.price)} ·{" "}
+                        {productCategoryLabel(product.productCategory)} · {money(product.price)} ·{" "}
                         {product.stock} in stock ·{" "}
                         {product.active ? "Active" : "Inactive"}
                       </p>
@@ -4999,17 +5013,11 @@ function ProviderManagementPage() {
                           })
                         }
                       />
-                      <input
-                        className="input"
-                        placeholder="Product category"
-                        value={productForm.category}
-                        onChange={(event) =>
-                          setProductForm({
-                            ...productForm,
-                            category: event.target.value,
-                          })
-                        }
-                      />
+                      <label className="text-sm font-semibold">Category
+                        <select className="input mt-1" required value={productForm.productCategory} onChange={event => setProductForm({ ...productForm, productCategory: event.target.value })}>
+                          <option value="" disabled>Select category</option><option value="food">Food</option><option value="supplies">Supplies</option>
+                        </select>
+                      </label>
                       <CroppedImageInput label="Product image" value={productForm.imageUrl} onChange={(imageUrl) => setProductForm({ ...productForm, imageUrl })} />
                       <button
                         className="btn btn-primary"
@@ -5111,20 +5119,11 @@ function ProviderManagementPage() {
                           })
                         }
                       />
-                      <input
-                        className="input"
-                        value={editingProduct.category}
-                        onChange={(event) =>
-                          setDraft({
-                            ...draft,
-                            products: draft.products.map((item) =>
-                              item.id === editingProduct.id
-                                ? { ...item, category: event.target.value }
-                                : item,
-                            ),
-                          })
-                        }
-                      />
+                      <label className="text-sm font-semibold">Category
+                        <select className="input mt-1" required value={editingProduct.productCategory ?? ""} onChange={event => setDraft({ ...draft, products: draft.products.map(item => item.id === editingProduct.id ? { ...item, productCategory: event.target.value as "food" | "supplies" } : item) })}>
+                          <option value="" disabled>Select category</option><option value="food">Food</option><option value="supplies">Supplies</option>
+                        </select>
+                      </label>
                       <CroppedImageInput label="Product image" value={editingProduct.imageUrl} onChange={(imageUrl) => setDraft({
                               ...draft,
                               products: draft.products.map((item) =>
@@ -5154,6 +5153,7 @@ function ProviderManagementPage() {
                     <div className="mt-5 flex gap-2">
                       <button
                         className="btn btn-primary"
+                        disabled={updateProduct.isPending || !editingProduct.productCategory}
                         onClick={() =>
                           updateProduct.mutate({
                             id: editingProduct.id,

@@ -103,6 +103,7 @@ export const GetProviderResponse = zod.object({
   "price": zod.number(),
   "imageUrl": zod.string(),
   "category": zod.string(),
+  "productCategory": zod.enum(["food", "supplies"]).optional(),
   "stock": zod.number().min(getProviderResponseTwoProductsItemStockMin),
   "active": zod.boolean(),
   "createdAt": zod.string().optional(),

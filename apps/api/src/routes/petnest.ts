@@ -80,6 +80,7 @@ type ProviderProduct = {
   price: number;
   imageUrl: string;
   category: string;
+  productCategory?: "food" | "supplies";
   stock: number;
   active: boolean;
   removedAt?: string;
@@ -2626,13 +2627,13 @@ router.post("/provider/products", async (req, res) => {
   if (
     !validText(body.name) ||
     !validText(body.description) ||
-    !validText(body.category) ||
+    (body.productCategory !== "food" && body.productCategory !== "supplies") ||
     typeof body.price !== "number" ||
     body.price < 0
   ) {
     res
       .status(400)
-      .json({ error: "Name, description, category, and price are required." });
+      .json({ error: "Name, description, Food or Supplies category, and price are required." });
     return;
   }
   const provider = await providerCollection.findOne({ id: access.providerId });
@@ -2656,6 +2657,7 @@ router.post("/provider/products", async (req, res) => {
     price: body.price,
     imageUrl: typeof body.imageUrl === "string" ? body.imageUrl.trim() : "",
     category: "pet-supplies",
+    productCategory: body.productCategory as "food" | "supplies",
     stock: Number(body.stock),
     active: body.active !== false,
     createdAt: new Date().toISOString(),
@@ -2711,6 +2713,9 @@ router.patch("/provider/products/:productId", async (req, res) => {
       .json({ error: "Stock must be a non-negative whole number." });
     return;
   }
+  if (body.productCategory !== undefined && body.productCategory !== "food" && body.productCategory !== "supplies") {
+    res.status(400).json({ error: "Select Food or Supplies as the product category." }); return;
+  }
   const updated = {
     ...existing,
     name: validText(body.name) ? body.name.trim() : existing.name,
@@ -2722,6 +2727,7 @@ router.patch("/provider/products/:productId", async (req, res) => {
         ? body.price
         : existing.price,
     category: "pet-supplies",
+    productCategory: body.productCategory === undefined ? existing.productCategory : body.productCategory as "food" | "supplies",
     stock: body.stock === undefined ? existing.stock : Number(body.stock),
     active: typeof body.active === "boolean" ? body.active : existing.active,
     imageUrl:
