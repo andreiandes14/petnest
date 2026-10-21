@@ -1,3 +1,4 @@
+import { CroppedImageInput } from "@/components/cropped-image-input";
 import { cashPickup, canCompleteProductOrder } from "../../../shared/pickup-payment";
 import { bookingStatusDisplay, vaccinationCourseLabel } from "@/lib/booking-status";
 import { ProviderReviewButton } from "@/components/provider-review-button";
@@ -4178,27 +4179,6 @@ function ProviderManagementPage() {
     key: "name" | "location" | "description" | "contact" | "hours",
     value: string,
   ) => setDraft({ ...draft, [key]: value });
-  const changeBackground = (file: File | undefined) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () =>
-      setDraft({
-        ...draft,
-        imageUrl: typeof reader.result === "string" ? reader.result : "",
-      });
-    reader.readAsDataURL(file);
-  };
-  const readImage = (
-    file: File | undefined,
-    onRead: (value: string) => void,
-  ) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") onRead(reader.result);
-    };
-    reader.readAsDataURL(file);
-  };
   const editingService = draft.services.find(
     (item) => item.id === editingServiceId,
   );
@@ -4434,13 +4414,7 @@ function ProviderManagementPage() {
                   <h2 id="background-title" className="modal-title mb-5">
                     Store background
                   </h2>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) =>
-                      changeBackground(event.target.files?.[0])
-                    }
-                  />
+                  <CroppedImageInput label="Store background image" value={draft.imageUrl} aspect={16 / 9} onChange={imageUrl => setDraft(current => current ? { ...current, imageUrl } : current)} />
                   <div className="mt-5 flex gap-2">
                     <button
                       className="btn btn-primary"
@@ -4748,16 +4722,7 @@ function ProviderManagementPage() {
                         <option value="vaccination">Vaccination</option>
                       ) : null}
                     </select>
-                    <input
-                      className="input"
-                      type="file"
-                      accept="image/*"
-                      onChange={(event) =>
-                        readImage(event.target.files?.[0], (imageUrl) =>
-                          setServiceForm({ ...serviceForm, imageUrl }),
-                        )
-                      }
-                    />
+                    <CroppedImageInput label="Service image" value={serviceForm.imageUrl} onChange={(imageUrl) => setServiceForm({ ...serviceForm, imageUrl })} />
                     <div className="flex gap-2">
                       <button
                         className="btn btn-primary"
@@ -5014,16 +4979,7 @@ function ProviderManagementPage() {
                           })
                         }
                       />
-                      <input
-                        className="input"
-                        type="file"
-                        accept="image/*"
-                        onChange={(event) =>
-                          readImage(event.target.files?.[0], (imageUrl) =>
-                            setProductForm({ ...productForm, imageUrl }),
-                          )
-                        }
-                      />
+                      <CroppedImageInput label="Product image" value={productForm.imageUrl} onChange={(imageUrl) => setProductForm({ ...productForm, imageUrl })} />
                       <button
                         className="btn btn-primary"
                         onClick={() => addProduct.mutate()}
@@ -5138,23 +5094,14 @@ function ProviderManagementPage() {
                           })
                         }
                       />
-                      <input
-                        className="input"
-                        type="file"
-                        accept="image/*"
-                        onChange={(event) =>
-                          readImage(event.target.files?.[0], (imageUrl) =>
-                            setDraft({
+                      <CroppedImageInput label="Product image" value={editingProduct.imageUrl} onChange={(imageUrl) => setDraft({
                               ...draft,
                               products: draft.products.map((item) =>
                                 item.id === editingProduct.id
                                   ? { ...item, imageUrl }
                                   : item,
                               ),
-                            }),
-                          )
-                        }
-                      />
+                            })} />
                       <label className="flex items-center gap-2 text-sm">
                         <input
                           type="checkbox"
@@ -6101,23 +6048,14 @@ function ProviderManagementPage() {
                   <option value="vaccination">Vaccination</option>
                 ) : null}
               </select>
-              <input
-                className="input"
-                type="file"
-                accept="image/*"
-                onChange={(event) =>
-                  readImage(event.target.files?.[0], (imageUrl) =>
-                    setDraft({
+              <CroppedImageInput label="Service image" value={editingService.imageUrl} onChange={(imageUrl) => setDraft({
                       ...draft,
                       services: draft.services.map((item) =>
                         item.id === editingService.id
                           ? { ...item, imageUrl }
                           : item,
                       ),
-                    }),
-                  )
-                }
-              />
+                    })} />
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"

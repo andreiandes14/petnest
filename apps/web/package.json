@@ -76,6 +76,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "leaflet": "^1.9.4"
+    "leaflet": "^1.9.4",
+    "react-easy-crop": "^6.2.4"
   }
 }

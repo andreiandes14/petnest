@@ -2775,3 +2775,7 @@ textarea.input {
   .booking-deposit-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
   .booking-deposit-actions .btn { width: 100%; }
 }
+
+/* Crop overlays sit above the existing service/background edit dialogs. */
+.image-crop-backdrop { z-index: 300; }
+.image-crop-dialog { z-index: 301; width: min(640px, calc(100vw - 24px)); }
