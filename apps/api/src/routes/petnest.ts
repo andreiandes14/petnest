@@ -82,6 +82,7 @@ type ProviderProduct = {
   category: string;
   stock: number;
   active: boolean;
+  removedAt?: string;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -1820,7 +1821,7 @@ router.get("/providers/:providerId", async (req, res) => {
         !service.removedAt && provider.categories.includes(service.category),
       ),
       products: provider.categories.includes("pet-supplies")
-        ? provider.products
+        ? provider.products.filter(product => !product.removedAt && product.active)
         : [],
     }),
   );
@@ -1994,7 +1995,7 @@ router.get("/provider/profile", async (req, res) => {
     res.status(404).json({ error: "Assigned provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt) }));
+  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
 });
 
 router.patch("/provider/password", async (req, res) => {
@@ -2229,7 +2230,7 @@ router.patch("/provider/profile", async (req, res) => {
     products: existing.products,
     updatedAt: new Date().toISOString(),
   };
-  const { services: _preservedServices, ...profileChanges } = changes;
+  const { services: _preservedServices, products: _preservedProducts, ...profileChanges } = changes;
   const provider = await providerCollection.findOneAndUpdate(
     { id: access.providerId },
     { $set: profileChanges },
@@ -2239,7 +2240,7 @@ router.patch("/provider/profile", async (req, res) => {
     res.status(404).json({ error: "Assigned provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt) }));
+  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
 });
 
 router.patch(["/provider/closure", "/admin/providers/:providerId/closure"], async (req, res) => {
@@ -2254,7 +2255,7 @@ router.patch(["/provider/closure", "/admin/providers/:providerId/closure"], asyn
     { $set: { closedUntil: req.body.closed ? nextManilaMidnight() : null, updatedAt: new Date().toISOString() } },
     { returnDocument: "after", projection: { _id: 0 } });
   if (!provider) { res.status(404).json({ error: "Provider not found." }); return; }
-  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt) }));
+  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
 });
 
 router.get("/admin/providers", async (req, res) => {
@@ -2693,7 +2694,7 @@ router.patch("/provider/products/:productId", async (req, res) => {
   const productId = Number(req.params.productId);
   const provider = await providerCollection.findOne({
     id: access.providerId,
-    "products.id": productId,
+    products: { $elemMatch: { id: productId, removedAt: { $exists: false } } },
   });
   if (!provider) {
     res.status(404).json({ error: "Product not found" });
@@ -2739,10 +2740,11 @@ router.patch("/provider/products/:productId", async (req, res) => {
     });
     return;
   }
-  await providerCollection.updateOne(
-    { id: provider.id, "products.id": productId },
+  const result = await providerCollection.updateOne(
+    { id: provider.id, products: { $elemMatch: { id: productId, removedAt: { $exists: false } } } },
     { $set: { "products.$": updated, updatedAt: new Date().toISOString() } },
   );
+  if (!result.matchedCount) { res.status(409).json({ error: "Product is no longer available." }); return; }
   res.json(updated);
 });
 
@@ -2750,17 +2752,18 @@ router.delete("/provider/products/:productId", async (req, res) => {
   const access = await requireProvider(req, res);
   if (!access?.providerId) return;
   const productId = Number(req.params.productId);
+  if (!Number.isSafeInteger(productId) || productId <= 0) {
+    res.status(400).json({ error: "Invalid product." }); return;
+  }
+  const now = new Date().toISOString();
   const result = await providerCollection.updateOne(
-    { id: access.providerId, "products.id": productId },
-    {
-      $set: { "products.$.active": false, updatedAt: new Date().toISOString() },
-    },
+    { id: access.providerId, products: { $elemMatch: { id: productId, removedAt: { $exists: false } } } },
+    { $set: { "products.$.active": false, "products.$.removedAt": now, "products.$.updatedAt": now, updatedAt: now } },
   );
   if (!result.modifiedCount) {
-    res.status(404).json({ error: "Product not found" });
-    return;
+    res.status(409).json({ error: "Product was not found or has already been removed." }); return;
   }
-  res.status(204).end();
+  res.json({ removed: true, productId });
 });
 
 router.get("/pets", async (req, res) => {
@@ -4392,12 +4395,13 @@ router.post("/orders", async (req, res) => {
       (item) =>
         !item ||
         item.product.active === false ||
+        Boolean(item.product.removedAt) ||
         item.product.stock < item.quantity,
     )
   ) {
     res.status(409).json({
       error:
-        "A product is inactive or no longer has enough stock. Refresh your cart and try again.",
+        "A product is no longer available or has insufficient stock. Refresh your cart and try again.",
     });
     return;
   }
@@ -4426,6 +4430,7 @@ router.post("/orders", async (req, res) => {
           $elemMatch: {
             id: item.productId,
             active: { $ne: false },
+            removedAt: { $exists: false },
             stock: { $gte: item.quantity },
           },
         },

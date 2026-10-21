@@ -1,3 +1,4 @@
+import { RemoveProductDialog } from "@/components/remove-product-dialog";
 import { CroppedImageInput } from "@/components/cropped-image-input";
 import { cashPickup, canCompleteProductOrder } from "../../../shared/pickup-payment";
 import { bookingStatusDisplay, vaccinationCourseLabel } from "@/lib/booking-status";
@@ -3612,6 +3613,8 @@ function ProviderManagementPage() {
   const [draft, setDraft] = useState<ProviderDetail | null>(null);
   const [removeServiceTarget, setRemoveServiceTarget] = useState<number | null>(null);
   const removeServiceRequest = useRef(false);
+  const [removeProductTarget, setRemoveProductTarget] = useState<number | null>(null);
+  const removeProductRequest = useRef(false);
   const [serviceForm, setServiceForm] = useState({
     name: "",
     description: "",
@@ -3889,9 +3892,19 @@ function ProviderManagementPage() {
     },
   });
   const deleteProduct = useMutation({
-    mutationFn: (id: number) =>
-      adminRequest<void>(`/api/provider/products/${id}`, { method: "DELETE" }),
-    onSuccess: () => query.refetch(),
+    mutationFn: async (id: number) => {
+      const result = await adminRequest<{ removed: boolean; productId: number }>(`/api/provider/products/${id}`, { method: "DELETE" });
+      if (!result.removed || result.productId !== id) throw new Error("Product removal could not be confirmed. Please try again.");
+      return id;
+    },
+    onSuccess: (id) => {
+      setDraft(current => current ? { ...current, products: current.products.filter(product => product.id !== id) } : current);
+      setRemoveProductTarget(null);
+      setNotice("Product removed successfully.");
+      query.refetch();
+      queryClient.invalidateQueries({ queryKey: getGetProviderQueryKey(query.data!.id) });
+      queryClient.invalidateQueries({ queryKey: getListProvidersQueryKey() });
+    },
   });
   const updateProduct = useMutation({
     mutationFn: ({ id, product }: { id: number; product: ProviderProduct }) =>
@@ -4867,7 +4880,7 @@ function ProviderManagementPage() {
                         className="btn btn-ghost"
                         onClick={() =>
                           window.confirm(`Deactivate ${product.name}?`) &&
-                          deleteProduct.mutate(product.id)
+                          updateProduct.mutate({ id: product.id, product: { ...product, active: false } })
                         }
                         disabled={deleteProduct.isPending}
                       >
@@ -4886,6 +4899,8 @@ function ProviderManagementPage() {
                         Reactivate
                       </button>
                     )}
+                    <button type="button" className="btn btn-ghost text-destructive" disabled={deleteProduct.isPending}
+                      onClick={() => { deleteProduct.reset(); setRemoveProductTarget(product.id); }}>Remove</button>
                   </div>
                 ))}
               </div>
@@ -5771,6 +5786,14 @@ function ProviderManagementPage() {
           </div>
         </div>
       ) : null}
+      <RemoveProductDialog open={removeProductTarget !== null} busy={deleteProduct.isPending}
+        error={deleteProduct.error?.message}
+        onClose={() => { if (!removeProductRequest.current) setRemoveProductTarget(null); }}
+        onConfirm={() => {
+          if (removeProductTarget === null || removeProductRequest.current || deleteProduct.isPending) return;
+          removeProductRequest.current = true;
+          deleteProduct.mutate(removeProductTarget, { onSettled: () => { removeProductRequest.current = false; } });
+        }} />
       <RemoveServiceDialog open={removeServiceTarget !== null} busy={deleteService.isPending}
         error={deleteService.isError ? deleteService.error.message : undefined}
         onClose={() => { setRemoveServiceTarget(null); deleteService.reset(); }}
