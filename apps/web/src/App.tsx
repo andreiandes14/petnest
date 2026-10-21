@@ -1,3 +1,4 @@
+import { PasswordRecovery, SecurityQuestionSettings } from "@/components/password-recovery";
 import { operatingDaysLabel } from "../../../shared/shop-closure";
 import { businessHoursLabel } from "../../../shared/business-hours";
 import { filterSupplyProducts, productCategoryLabel } from "@/lib/product-categories";
@@ -4504,6 +4505,7 @@ function ProviderManagementPage() {
               </div>
             ) : null}
           </section>
+          {providerSection === "dashboard" ? <SecurityQuestionSettings /> : null}
           <section className={providerSection === "dashboard" ? "surface-card mt-6 p-6" : "hidden"}>
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -7636,6 +7638,7 @@ function AccountPage() {
           PetNest services {health.isError ? "are reconnecting" : "are healthy"}
         </div>
       </div>
+      <SecurityQuestionSettings />
       <Show when="signed-in">
         <LogoutButton />
       </Show>
@@ -7818,6 +7821,7 @@ function SignInPage() {
             </div>
           </div>
         </div>
+        <PasswordRecovery />
         {error ? (
           <p className="mt-4 text-sm text-destructive" role="alert">
             {error}
@@ -7849,6 +7853,7 @@ function SignUpPage() {
     email: "",
     password: "",
     confirmPassword: "",
+    securityAnswer: "",
   });
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -7858,6 +7863,7 @@ function SignUpPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    if (!form.securityAnswer.trim()) { setError("Enter your answer to the security question."); return; }
     if (form.password.length < 8) {
       setError("Password must contain at least 8 characters.");
       return;
@@ -7876,6 +7882,7 @@ function SignUpPage() {
             name: form.name,
             email: form.email,
             password: form.password,
+            securityAnswer: form.securityAnswer,
           }),
         },
         "Account creation failed. Please try again.",
@@ -7997,6 +8004,7 @@ function SignUpPage() {
             </div>
           </div>
         </div>
+        <section className="mt-5 form-field"><h2 className="form-label">Security Question</h2><p className="text-sm">Who is your favorite person?</p><label className="form-label mt-2" htmlFor="signup-security-answer">Your Answer</label><input id="signup-security-answer" className="input" type="password" autoComplete="off" required maxLength={200} value={form.securityAnswer} onChange={event => setForm({ ...form, securityAnswer: event.target.value })} /></section>
         {error ? (
           <p className="mt-4 text-sm text-destructive" role="alert">
             {error}

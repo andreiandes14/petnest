@@ -1,3 +1,4 @@
+import { registerPasswordRecovery, normalizeSecurityAnswer, validSecurityAnswer } from "../lib/password-recovery.js";
 import { philippineCityCoordinates } from "../../../../shared/philippine-city-coordinates.js";
 import { addressSearchQueries, nominatimAddressResult, type AddressLocation } from "../../../../shared/address-location.js";
 import { cashPickup, canCompleteProductOrder } from "../../../../shared/pickup-payment.js";
@@ -531,6 +532,8 @@ type UserProfile = {
   role: Role;
   providerId?: number;
   passwordHash?: string;
+  securityAnswerHash?: string;
+  passwordChangedAt?: string;
   isActive?: boolean;
   removedAt?: string;
   deactivatedAt?: string;
@@ -744,7 +747,7 @@ const sessionLifetimeMs = 1000 * 60 * 60 * 12;
 const scrypt = promisify(scryptCallback);
 
 function publicUser(user: UserProfile) {
-  const { passwordHash: _passwordHash, ...safeUser } = user;
+  const { passwordHash: _passwordHash, securityAnswerHash: _securityAnswerHash, passwordChangedAt: _passwordChangedAt, ...safeUser } = user;
   return safeUser;
 }
 
@@ -806,7 +809,7 @@ async function getAccess(req: Request, res: Response): Promise<Access | null> {
     removedAt: { $exists: false },
     isActive: { $ne: false },
   });
-  if (!user) {
+  if (!user || (user.passwordChangedAt && session.expiresAt.getTime() - sessionLifetimeMs <= Date.parse(user.passwordChangedAt))) {
     res.clearCookie(sessionCookie, { path: "/" });
     res.status(401).json({ error: "Authentication required" });
     return null;
@@ -1298,6 +1301,8 @@ async function register(req: Request, res: Response) {
     return;
   }
 
+  if (!validSecurityAnswer(req.body?.securityAnswer)) { res.status(400).json({ error: "Enter your answer to the security question (up to 200 characters)." }); return; }
+
   let pendingUserId: string | undefined;
   try {
     if (await userCollection.findOne({ email })) {
@@ -1315,6 +1320,7 @@ async function register(req: Request, res: Response) {
       email,
       role,
       passwordHash: await hashPassword(password),
+      securityAnswerHash: await hashPassword(normalizeSecurityAnswer(req.body.securityAnswer)),
       createdAt: now,
       updatedAt: now,
     };
@@ -1349,6 +1355,8 @@ async function register(req: Request, res: Response) {
 
 router.post("/auth/register", register);
 router.post("/auth/sign-up", register);
+
+registerPasswordRecovery(router, database, getAccess, { hashPassword, verifyPassword, secret: sessionSecret });
 
 router.post("/auth/login", async (req, res) => {
   const email =
@@ -1452,6 +1460,8 @@ router.get("/admin/accounts", async (req, res) => {
         projection: {
           _id: 0,
           passwordHash: 0,
+          securityAnswerHash: 0,
+          passwordChangedAt: 0,
         },
       },
     )
@@ -1495,7 +1505,7 @@ router.delete("/admin/accounts/:userId", async (req, res) => {
         deactivatedAt: { $ifNull: ["$deactivatedAt", now] },
         updatedAt: now,
       } }],
-      { returnDocument: "after", projection: { _id: 0, passwordHash: 0 } },
+      { returnDocument: "after", projection: { _id: 0, passwordHash: 0, securityAnswerHash: 0, passwordChangedAt: 0 } },
     );
     if (!account) {
       res.status(404).json({ error: "Customer or provider account not found." });

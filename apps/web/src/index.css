@@ -2779,3 +2779,22 @@ textarea.input {
 /* Crop overlays sit above the existing service/background edit dialogs. */
 .image-crop-backdrop { z-index: 300; }
 .image-crop-dialog { z-index: 301; width: min(640px, calc(100vw - 24px)); }
+
+/* Scoped to password recovery; other dialogs keep their existing appearance. */
+.reset-password-backdrop { background: rgb(20 16 35 / 0.55); }
+.reset-password-dialog { background: #fff; }
+.reset-password-title { margin: 0; flex-shrink: 0; font-size: 24px; font-weight: 800; line-height: 1.25; }
+.reset-password-description { margin-top: 12px; color: hsl(var(--muted-foreground)); font-size: 14px; line-height: 1.6; }
+.reset-password-form { margin-top: 24px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.reset-password-form > .form-field { margin-bottom: 20px; }
+.reset-password-form .form-label { margin-bottom: 8px; }
+.reset-password-form .input { min-height: 48px; background: #fff; }
+.reset-password-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 24px; padding-top: 4px; padding-bottom: 2px; }
+.reset-password-cancel { background: transparent; color: hsl(var(--foreground)); border-color: transparent; }
+.reset-password-cancel:hover { background: hsl(var(--muted)); }
+.reset-password-submit { background: #8b3df5; color: #fff; font-weight: 800; border-color: transparent; }
+.reset-password-submit:hover { background: #792be0; }
+@media (max-width: 359px) {
+  .reset-password-actions { gap: 8px; }
+  .reset-password-actions .btn { padding-left: 12px; padding-right: 12px; }
+}
