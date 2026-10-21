@@ -32,6 +32,8 @@ export const ListProvidersResponseItem = zod.object({
   "latitude": zod.number().min(-90).max(90).nullable().optional(),
   "longitude": zod.number().min(-180).max(180).nullable().optional(),
   "locationCity": zod.string().max(100).nullable().optional(),
+  "operatingDays": zod.array(zod.number().int().min(0).max(6)).min(1).max(7).refine(days => new Set(days).size === days.length, "Choose distinct operating days.").optional(),
+  "isClosedToday": zod.boolean().optional(),
   "closedUntil": zod.string().datetime().nullable().optional(),
   "locationProvince": zod.string().max(100).nullable().optional(),
   "locationCode": zod.string().regex(/^\d{10}$/).nullable().optional(),
@@ -68,6 +70,8 @@ export const GetProviderResponse = zod.object({
   "latitude": zod.number().min(-90).max(90).nullable().optional(),
   "longitude": zod.number().min(-180).max(180).nullable().optional(),
   "locationCity": zod.string().max(100).nullable().optional(),
+  "operatingDays": zod.array(zod.number().int().min(0).max(6)).min(1).max(7).refine(days => new Set(days).size === days.length, "Choose distinct operating days.").optional(),
+  "isClosedToday": zod.boolean().optional(),
   "closedUntil": zod.string().datetime().nullable().optional(),
   "locationProvince": zod.string().max(100).nullable().optional(),
   "locationCode": zod.string().regex(/^\d{10}$/).nullable().optional(),
@@ -85,6 +89,7 @@ export const GetProviderResponse = zod.object({
 }).and(zod.object({
   "contact": zod.string(),
   "hours": zod.string(),
+  "isOpen24Hours": zod.boolean().optional(),
   "services": zod.array(zod.object({
   "id": zod.number(),
   "name": zod.string(),

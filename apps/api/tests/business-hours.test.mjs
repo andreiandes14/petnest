@@ -47,3 +47,46 @@ test('saved selectors preserve old hours and weekdays, and reject incomplete/inv
   assert.equal(parseBusinessHours(normalized).close, 1080);
   for (const [opening, closing] of [['', '18:00'], ['08:00', ''], ['18:00', '08:00'], ['08:00', '08:00'], ['24:00', '25:00']]) assert.equal(selectedBusinessHours(opening, closing, ''), null);
 });
+
+
+test('24-hour schedule retains custom hours and working days and includes all 48 start times', () => {
+  const hours='Mon-Sat 09:00-17:00';
+  const allDay=parseBusinessHours(hours,true);
+  assert.equal(allDay.open,0);assert.equal(allDay.close,1440);assert.equal(allDay.normalized,hours);
+  assert.equal(allDay.workingDays.has(0),false);
+  const slots=[];for(let minute=allDay.open;minute<=allDay.close-30;minute+=30)slots.push(minute);
+  assert.equal(slots.length,48);assert.equal(slots[0],0);assert.equal(slots.at(-1),1410);
+  assert.equal(parseBusinessHours(hours).close,1020);
+  assert.equal(parseBusinessHours('',true).workingDays.size,7);
+});
+
+test('actual availability route exposes overnight slots but preserves closures, conflicts and custom cutoff',async()=>{
+ const routeSource=readFileSync(new URL('../src/routes/petnest.ts',import.meta.url),'utf8');
+ const start=routeSource.indexOf('router.get("/providers/:providerId/availability"');
+ const route=ts.transpileModule(routeSource.slice(start,routeSource.indexOf('router.get("/services"',start)),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ async function run(open24,closed=false){
+  let handler;
+  const provider={id:1,hours:'Mon-Sat 09:00-17:00',isOpen24Hours:open24,operatingDays:[1,2,3,4,5,6],categories:['grooming'],services:[{id:1,name:'Bath',category:'grooming',available:true,durationMinutes:30}]};
+  const deps={router:{get(path,fn){handler=fn;}},providerCollection:{findOne:async()=>provider},providerSchedule:(hours,flag,days)=>parseBusinessHours(hours,flag,days??[0,1,2,3,4,5,6]),bookingDuration,shopClosed:()=>closed,manilaNow:()=>({date:'2026-10-01',minutes:0}),
+   bookingCollection:{find(){return{project(){return{toArray:async()=>[{date:'2026-10-02',time:'01:00',serviceName:'Bath',serviceCategory:'grooming'}]};}};}},
+   timeToMinutes:value=>Number(value.slice(0,2))*60+Number(value.slice(3)),minutesToTime:value=>String(Math.floor(value/60)).padStart(2,'0')+':'+String(value%60).padStart(2,'0')};
+  new Function(...Object.keys(deps),route)(...Object.values(deps));
+  const res={code:200,status(value){this.code=value;return this;},json(value){this.body=value;}};
+  await handler({params:{providerId:'1'},query:{serviceId:'1',month:'2026-10'}},res);return res;
+ }
+ const allDay=await run(true);assert.ok(allDay.body.dates['2026-10-02'].includes('00:00'));assert.ok(allDay.body.dates['2026-10-02'].includes('23:30'));assert.ok(!allDay.body.dates['2026-10-02'].includes('01:00'));assert.deepEqual(allDay.body.dates['2026-10-04'],[]);
+ const custom=await run(false);assert.equal(custom.body.dates['2026-10-02'].at(-1),'16:30');assert.ok(!custom.body.dates['2026-10-02'].includes('00:00'));
+ assert.equal((await run(true,true)).code,409);
+});
+
+
+test('direct booking validation rejects a closed weekday and permits an operating day at 23:30',()=>{
+ const src=readFileSync(new URL('../src/routes/petnest.ts',import.meta.url),'utf8');
+ const start=src.indexOf('  const requestedWeekday =');
+ const snippet=ts.transpileModule(src.slice(start,src.indexOf('  if (parsed.data.recordId',start)),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const check=new Function('parsed','schedule','requestedStart','res',snippet+';return "accepted";');
+ const schedule=parseBusinessHours('09:00-17:00',true,[1,2,3,4,5,6]);
+ const res={status(code){this.code=code;return this;},json(){}};
+ check({data:{date:'2026-10-25'}},schedule,1410,res);assert.equal(res.code,409);
+ assert.equal(check({data:{date:'2026-10-26'}},schedule,1410,res),'accepted');
+});

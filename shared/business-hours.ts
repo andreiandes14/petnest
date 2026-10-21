@@ -16,7 +16,15 @@ function clock(value: string): number | null {
   return hour * 60 + minute;
 }
 const formatClock = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
-export function parseBusinessHours(raw: string) {
+export function parseBusinessHours(raw: string, isOpen24Hours = false, operatingDays?: number[]): { open: number; close: number; workingDays: Set<number>; normalized: string } | null {
+  if (operatingDays) {
+    const hours = parseBusinessHours(raw, isOpen24Hours);
+    return hours ? { ...hours, workingDays: new Set(operatingDays) } : null;
+  }
+  if (isOpen24Hours) {
+    const custom = parseBusinessHours(raw);
+    return { open: 0, close: 1440, workingDays: custom?.workingDays ?? new Set([0, 1, 2, 3, 4, 5, 6]), normalized: raw };
+  }
   const value = raw.trim().replace(/[\u2013\u2014]/g, "-");
   const match = /^(.*?)(\d{1,2}(?::\d{2})?\s*(?:AM|PM)?)\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:AM|PM)?)$/i.exec(value);
   if (!match) return null;
@@ -64,3 +72,5 @@ export function savedBusinessTimes(hours: string) {
   const saved = parseBusinessHours(hours);
   return { opening: saved ? formatClock(saved.open) : "", closing: saved ? formatClock(saved.close) : "" };
 }
+
+export const businessHoursLabel = (hours: string, isOpen24Hours = false) => isOpen24Hours ? "Open 24 Hours" : parseBusinessHours(hours)?.normalized.slice(-11) ?? hours;

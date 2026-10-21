@@ -7,7 +7,7 @@ import { withRecordPetNames } from "../lib/record-pet-names.js";
 import { withVaccinationCourseStatus } from "../lib/booking-course-status.js";
 import { reconcileCheckout } from "../lib/paymongo.js";
 import { bookingPaymentRepository } from "../lib/booking-payments.js";
-import { shopClosed, nextManilaMidnight } from "../../../../shared/shop-closure.js";
+import { shopClosed, nextManilaMidnight, scheduledClosed } from "../../../../shared/shop-closure.js";
 import { parseBusinessHours, bookingDuration, businessHoursMessage } from "../../../../shared/business-hours.js";
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
@@ -96,6 +96,8 @@ type Provider = {
   longitude?: number | null;
   locationCity?: string | null;
   closedUntil?: string | null;
+  operatingDays?: number[];
+  isClosedToday?: boolean;
   locationProvince?: string | null;
   locationCode?: string | null;
   locationAccuracy?: "city" | "shop" | null;
@@ -110,6 +112,7 @@ type Provider = {
   verified: boolean;
   contact: string;
   hours: string;
+  isOpen24Hours?: boolean;
   services: ProviderService[];
   products: ProviderProduct[];
   fulfillmentMethods?: FulfillmentMethod[];
@@ -578,8 +581,8 @@ function timeToMinutes(value: string): number | null {
   return hours * 60 + minutes;
 }
 
-function providerSchedule(hours: string) {
-  return parseBusinessHours(hours);
+function providerSchedule(hours: string, isOpen24Hours = false, operatingDays?: number[]) {
+  return parseBusinessHours(hours, isOpen24Hours, operatingDays ?? [0, 1, 2, 3, 4, 5, 6]);
 }
 
 function minutesToTime(minutes: number) {
@@ -1712,7 +1715,7 @@ router.get("/providers", async (req, res) => {
     .find(filter, { projection: { _id: 0, services: 0, products: 0 } })
     .sort({ id: 1 })
     .toArray();
-  res.json(ListProvidersResponse.parse(await withReviewRatings(providers)));
+  res.json(ListProvidersResponse.parse((await withReviewRatings(providers)).map(provider => ({ ...provider, isClosedToday: shopClosed(provider) }))));
 });
 
 router.get("/providers/:providerId", async (req, res) => {
@@ -1821,6 +1824,7 @@ router.get("/providers/:providerId", async (req, res) => {
   res.json(
     GetProviderResponse.parse({
       ...(await withReviewRatings([provider]))[0],
+      isClosedToday: shopClosed(provider),
       services: provider.services.filter((service) =>
         !service.removedAt && provider.categories.includes(service.category),
       ),
@@ -1841,7 +1845,7 @@ router.get("/providers/:providerId/availability", async (req, res) => {
   }
   const provider = await providerCollection.findOne({ id: providerId, active: { $ne: false } });
   const service = provider?.services.find((item) => item.id === serviceId && item.available);
-  const schedule = provider ? providerSchedule(provider.hours) : null;
+  const schedule = provider ? providerSchedule(provider.hours, provider.isOpen24Hours, provider.operatingDays) : null;
   const duration = service ? bookingDuration(service.durationMinutes) : null;
   if (!provider || !service || service.removedAt || !provider.categories.includes(service.category) || !["grooming", "vaccination"].includes(service.category)) {
     res.status(404).json({ error: "Availability is not configured for this service." });
@@ -1850,7 +1854,7 @@ router.get("/providers/:providerId/availability", async (req, res) => {
   if (!schedule || duration === null) {
     res.status(409).json({ error: !schedule ? "The provider must configure valid business hours before appointments can be booked." : "The provider must configure a valid service duration." }); return;
   }
-  if (shopClosed(provider)) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
+  if (shopClosed({ closedUntil: provider?.closedUntil })) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
   const [year, monthNumber] = month.split("-").map(Number);
   if (monthNumber < 1 || monthNumber > 12 || year < 2000 || year > 2200) {
     res.status(400).json({ error: "Choose a valid month." });
@@ -1999,7 +2003,7 @@ router.get("/provider/profile", async (req, res) => {
     res.status(404).json({ error: "Assigned provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
+  res.json(GetProviderResponse.parse({ ...provider, isClosedToday: shopClosed(provider), services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
 });
 
 router.patch("/provider/password", async (req, res) => {
@@ -2198,7 +2202,10 @@ router.patch("/provider/profile", async (req, res) => {
     return;
   }
   const { id: _id, ...providerInput } = parsed.data;
-  const configuredHours = providerSchedule(providerInput.hours);
+  providerInput.operatingDays = providerInput.operatingDays ?? existing.operatingDays ?? [0, 1, 2, 3, 4, 5, 6];
+  const open24Hours = providerInput.isOpen24Hours ?? existing.isOpen24Hours ?? false;
+  providerInput.isOpen24Hours = open24Hours;
+  const configuredHours = providerSchedule(providerInput.hours, open24Hours);
   if (!configuredHours) { res.status(400).json({ error: businessHoursMessage }); return; }
   providerInput.hours = configuredHours.normalized;
   const businessLocation = providerInput.location.trim().replace(/\s+/g, " ");
@@ -2265,7 +2272,7 @@ router.patch("/provider/profile", async (req, res) => {
     products: existing.products,
     updatedAt: new Date().toISOString(),
   };
-  const { services: _preservedServices, products: _preservedProducts, imageUrl: _preservedBackground, ...profileChanges } = changes;
+  const { services: _preservedServices, products: _preservedProducts, imageUrl: _preservedBackground, isClosedToday: _computedClosure, ...profileChanges } = changes;
   const provider = await providerCollection.findOneAndUpdate(
     { id: access.providerId },
     { $set: profileChanges },
@@ -2275,7 +2282,7 @@ router.patch("/provider/profile", async (req, res) => {
     res.status(404).json({ error: "Assigned provider not found" });
     return;
   }
-  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
+  res.json(GetProviderResponse.parse({ ...provider, isClosedToday: shopClosed(provider), services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
 });
 
 router.patch(["/provider/closure", "/admin/providers/:providerId/closure"], async (req, res) => {
@@ -2286,11 +2293,15 @@ router.patch(["/provider/closure", "/admin/providers/:providerId/closure"], asyn
     res.status(403).json({ error: "Access to this provider is required." }); return;
   }
   if (typeof req.body?.closed !== "boolean") { res.status(400).json({ error: "Choose whether to close or reopen the shop." }); return; }
+  if (req.body.closed === false) {
+    const current = await providerCollection.findOne({ id: providerId, removedAt: { $exists: false } });
+    if (current && scheduledClosed(current)) { res.status(409).json({ error: "The shop is closed by its Days of Operation. Update that schedule to open today." }); return; }
+  }
   const provider = await providerCollection.findOneAndUpdate({ id: providerId, removedAt: { $exists: false } },
     { $set: { closedUntil: req.body.closed ? nextManilaMidnight() : null, updatedAt: new Date().toISOString() } },
     { returnDocument: "after", projection: { _id: 0 } });
   if (!provider) { res.status(404).json({ error: "Provider not found." }); return; }
-  res.json(GetProviderResponse.parse({ ...provider, services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
+  res.json(GetProviderResponse.parse({ ...provider, isClosedToday: shopClosed(provider), services: provider.services.filter(service => !service.removedAt), products: provider.products.filter(product => !product.removedAt) }));
 });
 
 router.get("/admin/providers", async (req, res) => {
@@ -3415,7 +3426,7 @@ router.post("/bookings", async (req, res) => {
     id: parsed.data.providerId,
     active: { $ne: false },
   });
-  if (shopClosed(provider)) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
+  if (shopClosed({ closedUntil: provider?.closedUntil })) { res.status(409).json({ error: "This shop is closed for today. Please try again after it reopens." }); return; }
   const service = provider?.services.find(
     (item) => item.id === parsed.data.serviceId,
   );
@@ -3453,7 +3464,7 @@ router.post("/bookings", async (req, res) => {
     res.status(409).json({ error: "Choose a time later than the current time." });
     return;
   }
-  const schedule = providerSchedule(provider.hours);
+  const schedule = providerSchedule(provider.hours, provider.isOpen24Hours, provider.operatingDays);
   const duration = bookingDuration(service.durationMinutes);
   if (!schedule || duration === null) {
     res.status(409).json({ error: !schedule ? "The provider must configure valid business hours before appointments can be booked." : "The provider must configure a valid service duration." }); return;

@@ -1,3 +1,5 @@
+import { operatingDaysLabel } from "../../../shared/shop-closure";
+import { businessHoursLabel } from "../../../shared/business-hours";
 import { filterSupplyProducts, productCategoryLabel } from "@/lib/product-categories";
 import { RemoveProductDialog } from "@/components/remove-product-dialog";
 import { CroppedImageInput } from "@/components/cropped-image-input";
@@ -776,7 +778,7 @@ function ProviderLocation({ provider, distance }: { provider: Pick<Provider, "id
 
 function ProviderCard({ provider, distance, showStartingPrice = true }: { provider: Provider; distance?: number; showStartingPrice?: boolean }) {
   const { user } = useAuth();
-  const closed = useShopClosed(provider.closedUntil);
+  const closed = useShopClosed(provider.closedUntil, provider.operatingDays);
   const [saved, setSaved] = useState(false);
   const queryString = useSearch();
   const selectedCategory = new URLSearchParams(queryString).get("category");
@@ -2041,7 +2043,7 @@ function ProviderDetailPage() {
             <ProviderLocation provider={provider} />
             <span>
               <Clock3 size={14} className="mr-1 inline text-primary" />
-              {provider.hours}
+              {operatingDaysLabel(provider.operatingDays)} | {businessHoursLabel(provider.hours, provider.isOpen24Hours)}
             </span>
             <span>{provider.contact}</span>
           </div>
@@ -4445,7 +4447,7 @@ function ProviderManagementPage() {
       ) : null}
       {providerTab === "records" ? null : (
         <>
-          {providerSection === "dashboard" ? <ShopClosureControl closedUntil={draft.closedUntil} save={async closed => {
+          {providerSection === "dashboard" ? <ShopClosureControl closedUntil={draft.closedUntil} operatingDays={draft.operatingDays} save={async closed => {
             const profile = await adminRequest<ProviderDetail>("/api/provider/closure", { method: "PATCH", body: JSON.stringify({ closed }) });
             setDraft(profile);
             queryClient.invalidateQueries({ queryKey: ["provider", "profile"] });
@@ -4671,7 +4673,7 @@ function ProviderManagementPage() {
                   onBlur={() => updateProfile.mutate(draft)}
                 />
               </div>
-              <BusinessHours hours={draft.hours} saving={updateProfile.isPending} save={hours => updateProfile.mutateAsync({ ...draft, hours })} />
+              <BusinessHours hours={draft.hours} isOpen24Hours={draft.isOpen24Hours} operatingDays={draft.operatingDays} saving={updateProfile.isPending} save={(hours, isOpen24Hours, operatingDays) => updateProfile.mutateAsync({ ...draft, hours, isOpen24Hours, operatingDays })} />
             </div>
             <div className={providerSection === "services" ? "flex items-center justify-between gap-3" : "hidden"}>
               <h2 className="section-title">My services</h2>

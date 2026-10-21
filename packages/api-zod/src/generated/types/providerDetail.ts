@@ -12,6 +12,7 @@ import type { ProviderService } from './providerService.js';
 export type ProviderDetail = Provider & {
   contact: string;
   hours: string;
+  isOpen24Hours?: boolean;
   services: ProviderService[];
   products: ProviderProduct[];
 };

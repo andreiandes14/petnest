@@ -25,6 +25,8 @@ export interface Provider {
   longitude?: number | null;
   locationCity?: string | null;
   closedUntil?: string | null;
+  operatingDays?: number[];
+  isClosedToday?: boolean;
   locationProvince?: string | null;
   locationCode?: string | null;
   locationAccuracy?: "city" | "shop" | null;
@@ -70,6 +72,7 @@ export interface ProviderProduct {
 export type ProviderDetail = Provider & {
   contact: string;
   hours: string;
+  isOpen24Hours?: boolean;
   services: ProviderService[];
   products: ProviderProduct[];
 };
